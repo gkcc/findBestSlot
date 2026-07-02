@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections import defaultdict
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from itertools import combinations, product
+from itertools import combinations
 import json
 from math import inf, isfinite
 
@@ -13,7 +13,8 @@ from gear_optimizer.scoring import score_piece, score_quality_sort_key, substat_
 
 _ACTION_EV_ROWS_CACHE: dict[str, list[dict[str, float | str]]] = {}
 _RESOURCE_MARGINAL_EV_ROWS_CACHE: dict[str, list[dict[str, float | str]]] = {}
-_BEST_COMBO_VALUE_CACHE: dict[str, tuple[float, ...]] = {}
+_BEST_COMBO_VALUE_CACHE: dict[tuple, tuple[float, ...]] = {}
+_AGGREGATED_ACTION_OUTCOME_CACHE: dict[tuple, list[tuple[list[dict], float]]] = {}
 _VECTOR_EPSILON = 1e-9
 _DISPLAY_EPSILON = 0.0005
 ProgressCallback = Callable[[dict[str, object]], None]
@@ -259,7 +260,7 @@ def _zero_vector(character: CharacterPreset) -> tuple[float, ...]:
     priority = character.substat_priority
     if priority is None:
         return tuple(0.0 for _ in range(1 + len(character.priority_stats())))
-    return tuple(0.0 for _ in range(3 + len(priority.core) + len(priority.usable)))
+    return tuple(0.0 for _ in range(2 + len(priority.core) + len(priority.usable)))
 
 
 def _sum_vectors(vectors: list[tuple[float, ...]]) -> tuple[float, ...]:
@@ -282,6 +283,7 @@ def _current_inventory_rows(
                 "effective_rolls": score.effective_rolls,
                 "quality_score": score.weighted_score,
                 "quality_vector": score_quality_sort_key(score, character),
+                "locked": score.locked,
             }
         )
     return rows
@@ -300,6 +302,8 @@ def _candidate_inventory_row(
         "effective_rolls": score.effective_rolls,
         "quality_score": score.weighted_score,
         "quality_vector": substat_quality_vector(piece, character),
+        "locked": piece.locked,
+        "level": piece.level,
     }
 
 
@@ -317,23 +321,38 @@ def _normalise_inventory_rows(
     game: GameRules,
     character: CharacterPreset,
 ) -> list[dict]:
-    preserved_upgradeable: list[dict] = []
+    upgrade_sources: list[dict] = []
+    locked_by_position: dict[str, dict] = {}
     best_by_position_set: dict[tuple[str, str], dict] = {}
     for row in inventory:
         piece = row.get("_piece")
         if isinstance(piece, GearPiece) and piece.level < game.enhancement.max_level:
-            preserved_upgradeable.append(row)
+            upgrade_sources.append(row)
+            if not row.get("_allow_unfinished_loadout", False):
+                continue
+
+        position = position_key(row["position"])
+        if row.get("locked"):
+            current = locked_by_position.get(position)
+            if current is None or _piece_contribution_key(row) > _piece_contribution_key(current):
+                locked_by_position[position] = row
             continue
-        key = (position_key(row["position"]), str(row["set_name"]))
+
+        key = (position, str(row["set_name"]))
         current = best_by_position_set.get(key)
         if current is None or _piece_contribution_key(row) > _piece_contribution_key(current):
             best_by_position_set[key] = row
 
     return [
-        *preserved_upgradeable,
+        *upgrade_sources,
+        *[
+            locked_by_position[key]
+            for key in sorted(locked_by_position)
+        ],
         *[
             best_by_position_set[key]
             for key in sorted(best_by_position_set)
+            if key[0] not in locked_by_position
         ],
     ]
 
@@ -441,6 +460,7 @@ def _fresh_candidate_row_distribution(
                 "effective_rolls": quality_score,
                 "quality_score": quality_score,
                 "quality_vector": quality_vector,
+                "locked": False,
             },
             probability,
         )
@@ -448,14 +468,196 @@ def _fresh_candidate_row_distribution(
     ]
 
 
+def _row_value(row: dict, character: CharacterPreset) -> tuple[float, ...]:
+    cached = row.get("_value_vector")
+    if isinstance(cached, tuple):
+        return cached
+    value = (
+        float(bool(row["main_preferred"])),
+        *tuple(float(value) for value in row["quality_vector"]),
+        float(row["effective_rolls"]),
+        float(row["quality_score"]),
+    )
+    row["_value_vector"] = value
+    return value
+
+
 def _combo_value(combo: tuple[dict, ...], character: CharacterPreset) -> tuple[float, ...]:
-    quality = _sum_vectors([piece["quality_vector"] for piece in combo])
-    if not quality:
-        quality = _zero_vector(character)
-    main_hits = float(sum(1 for piece in combo if piece["main_preferred"]))
-    effective = float(sum(piece["effective_rolls"] for piece in combo))
-    quality_score = float(sum(piece["quality_score"] for piece in combo))
-    return (main_hits, *quality, effective, quality_score)
+    value = tuple(0.0 for _ in _row_value({"main_preferred": False, "quality_vector": _zero_vector(character), "effective_rolls": 0.0, "quality_score": 0.0}, character))
+    for row in combo:
+        value = _add_vectors(value, _row_value(row, character))
+    return value
+
+
+def _is_upgrade_source(row: dict, game: GameRules) -> bool:
+    piece = row.get("_piece")
+    return isinstance(piece, GearPiece) and piece.level < game.enhancement.max_level
+
+
+def _is_loadout_candidate(row: dict, game: GameRules) -> bool:
+    return not _is_upgrade_source(row, game) or bool(row.get("_allow_unfinished_loadout", False))
+
+
+def _loadout_options_by_position(
+    inventory: list[dict],
+    game: GameRules,
+) -> list[list[dict]]:
+    by_position: dict[str, list[dict]] = defaultdict(list)
+    locked_by_position: dict[str, list[dict]] = defaultdict(list)
+    for row in inventory:
+        if not _is_loadout_candidate(row, game):
+            continue
+        key = position_key(row["position"])
+        if row.get("locked"):
+            locked_by_position[key].append(row)
+        else:
+            by_position[key].append(row)
+
+    options: list[list[dict]] = []
+    for rule in game.positions:
+        key = position_key(rule.id)
+        choices = locked_by_position.get(key) or by_position.get(key, [])
+        if not choices:
+            return []
+        options.append(choices)
+    return options
+
+
+def _set_count_names(character: CharacterPreset) -> list[str]:
+    plan = character.active_set_plan()
+    if plan is None or plan.is_unrestricted:
+        return []
+    return sorted({set_name for requirement in plan.requirements for set_name in requirement.set_names})
+
+
+def _advance_count_state(
+    state: tuple[int, ...],
+    row: dict,
+    set_index: dict[str, int],
+    max_count: int,
+) -> tuple[int, ...]:
+    index = set_index.get(str(row["set_name"]))
+    if index is None:
+        return state
+    next_state = list(state)
+    next_state[index] = min(next_state[index] + 1, max_count)
+    return tuple(next_state)
+
+
+def _count_state_satisfies_plan(
+    state: tuple[int, ...],
+    set_names: list[str],
+    character: CharacterPreset,
+) -> bool:
+    plan = character.active_set_plan()
+    if plan is None or plan.is_unrestricted:
+        return True
+
+    counts = {set_name: state[index] for index, set_name in enumerate(set_names)}
+    requirements = list(plan.requirements)
+
+    def can_satisfy(index: int) -> bool:
+        if index >= len(requirements):
+            return True
+        requirement = requirements[index]
+        for set_name in requirement.set_names:
+            if counts.get(set_name, 0) < requirement.pieces:
+                continue
+            counts[set_name] -= requirement.pieces
+            if can_satisfy(index + 1):
+                counts[set_name] += requirement.pieces
+                return True
+            counts[set_name] += requirement.pieces
+        return False
+
+    return can_satisfy(0)
+
+
+def _best_loadout_dp(
+    inventory: list[dict],
+    game: GameRules,
+    character: CharacterPreset,
+    return_combo: bool = False,
+) -> tuple[float, ...] | tuple[dict, ...]:
+    options = _loadout_options_by_position(inventory, game)
+    if not options:
+        return tuple()
+
+    if all(len(choices) == 1 for choices in options):
+        combo = tuple(choices[0] for choices in options)
+        return combo if return_combo else _combo_value(combo, character)
+
+    if character.active_set_plan() is None or character.active_set_plan().is_unrestricted:
+        combo = tuple(max(choices, key=lambda row: _row_value(row, character)) for choices in options)
+        return combo if return_combo else _combo_value(combo, character)
+
+    set_names = _set_count_names(character)
+    set_index = {set_name: index for index, set_name in enumerate(set_names)}
+    max_count = len(game.positions)
+    initial_state = tuple(0 for _ in set_names)
+    zero_value = tuple(0.0 for _ in _row_value(
+        {
+            "main_preferred": False,
+            "quality_vector": _zero_vector(character),
+            "effective_rolls": 0.0,
+            "quality_score": 0.0,
+        },
+        character,
+    ))
+
+    if return_combo:
+        value_states: dict[tuple[int, ...], tuple[float, ...]] = {initial_state: zero_value}
+        layers: list[dict[tuple[int, ...], tuple[tuple[float, ...], tuple[int, ...], dict]]] = []
+        for choices in options:
+            next_states: dict[tuple[int, ...], tuple[tuple[float, ...], tuple[int, ...], dict]] = {}
+            for count_state, value in value_states.items():
+                for row in choices:
+                    next_state = _advance_count_state(count_state, row, set_index, max_count)
+                    next_value = _add_vectors(value, _row_value(row, character))
+                    current = next_states.get(next_state)
+                    if current is None or next_value > current[0]:
+                        next_states[next_state] = (next_value, count_state, row)
+            layers.append(next_states)
+            value_states = {
+                count_state: value
+                for count_state, (value, _previous_state, _row) in next_states.items()
+            }
+        if not value_states:
+            return tuple()
+        satisfied_states = [
+            count_state
+            for count_state in value_states
+            if _count_state_satisfies_plan(count_state, set_names, character)
+        ]
+        candidate_states = satisfied_states or list(value_states)
+        best_state = max(candidate_states, key=lambda count_state: value_states[count_state])
+        combo_reversed = []
+        current_state = best_state
+        for layer in reversed(layers):
+            _value, previous_state, row = layer[current_state]
+            combo_reversed.append(row)
+            current_state = previous_state
+        return tuple(reversed(combo_reversed))
+
+    value_states: dict[tuple[int, ...], tuple[float, ...]] = {initial_state: zero_value}
+    for choices in options:
+        next_states: dict[tuple[int, ...], tuple[float, ...]] = {}
+        for count_state, value in value_states.items():
+            for row in choices:
+                next_state = _advance_count_state(count_state, row, set_index, max_count)
+                next_value = _add_vectors(value, _row_value(row, character))
+                current = next_states.get(next_state)
+                if current is None or next_value > current:
+                    next_states[next_state] = next_value
+        value_states = next_states
+    if not value_states:
+        return tuple()
+    satisfied_values = [
+        value
+        for count_state, value in value_states.items()
+        if _count_state_satisfies_plan(count_state, set_names, character)
+    ]
+    return max(satisfied_values or list(value_states.values()))
 
 
 def _candidate_combos(
@@ -463,29 +665,19 @@ def _candidate_combos(
     game: GameRules,
     character: CharacterPreset,
 ) -> list[tuple[dict, ...]]:
-    by_position: dict[str, list[dict]] = defaultdict(list)
-    for piece in inventory:
-        by_position[position_key(piece["position"])].append(piece)
-    options = [
-        by_position.get(position_key(rule.id), [])
-        for rule in game.positions
-    ]
-    if any(not item for item in options):
-        return []
-
-    combos = [combo for combo in product(*options) if _set_plan_satisfied(combo, character)]
-    if not combos:
-        combos = list(product(*options))
-    return combos
+    combo = _best_loadout_dp(inventory, game, character, return_combo=True)
+    return [combo] if combo else []
 
 
 def _best_combo_rows(
     inventory: list[dict],
     game: GameRules,
     character: CharacterPreset,
+    return_combo: bool = True,
 ) -> tuple[dict, ...]:
-    combos = _candidate_combos(inventory, game, character)
-    return max(combos, key=lambda combo: _combo_value(combo, character), default=tuple())
+    if not return_combo:
+        raise ValueError("_best_combo_rows requires return_combo=True; use _best_combo_value for value-only DP")
+    return _best_loadout_dp(inventory, game, character, return_combo=True)
 
 
 def _best_combo_value(
@@ -493,8 +685,7 @@ def _best_combo_value(
     game: GameRules,
     character: CharacterPreset,
 ) -> tuple[float, ...]:
-    combo = _best_combo_rows(inventory, game, character)
-    return _combo_value(combo, character) if combo else tuple()
+    return _best_loadout_dp(inventory, game, character, return_combo=False)
 
 
 def best_loadout_value(
@@ -568,19 +759,38 @@ def _set_distribution(
     return [(set_name, probability / len(set_options)) for set_name in set_options]
 
 
+def _inventory_row_signature(row: dict) -> tuple:
+    cached = row.get("_inventory_signature")
+    if isinstance(cached, tuple):
+        return cached
+    piece = row.get("_piece")
+    piece_signature = (
+        (
+            piece.level,
+            piece.initial_substat_count,
+            tuple((line.stat, line.rolls) for line in piece.substats),
+        )
+        if isinstance(piece, GearPiece)
+        else tuple()
+    )
+    signature = (
+        position_key(row["position"]),
+        row["set_name"],
+        bool(row["main_preferred"]),
+        bool(row.get("locked", False)),
+        bool(row.get("_allow_unfinished_loadout", False)),
+        round(float(row["effective_rolls"]), 6),
+        round(float(row["quality_score"]), 6),
+        tuple(round(float(value), 6) for value in row["quality_vector"]),
+        piece_signature,
+    )
+    row["_inventory_signature"] = signature
+    return signature
+
+
 def _inventory_signature(inventory: list[dict]) -> tuple[tuple, ...]:
     return tuple(
-        sorted(
-            (
-                position_key(piece["position"]),
-                piece["set_name"],
-                bool(piece["main_preferred"]),
-                round(float(piece["effective_rolls"]), 6),
-                round(float(piece["quality_score"]), 6),
-                tuple(round(float(value), 6) for value in piece["quality_vector"]),
-            )
-            for piece in inventory
-        )
+        sorted(_inventory_row_signature(piece) for piece in inventory)
     )
 
 
@@ -588,15 +798,14 @@ def _best_combo_cache_key(
     inventory: list[dict],
     game: GameRules,
     character: CharacterPreset,
-) -> str:
+) -> tuple:
     plan = character.active_set_plan()
-    data = {
-        "game": game.id,
-        "character": character.id,
-        "plan": plan.model_dump(mode="json") if plan else None,
-        "inventory": _inventory_signature(inventory),
-    }
-    return json.dumps(data, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    plan_key = (
+        json.dumps(plan.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)
+        if plan
+        else None
+    )
+    return (game.id, character.id, plan_key, _inventory_signature(inventory))
 
 
 def _cached_best_combo_value(
@@ -632,6 +841,45 @@ def _aggregate_inventory_outcomes(
         for inventory, probability in grouped.values()
         if probability > 1e-12
     ]
+
+
+def _probability_model_cache_key(probability_model: ProbabilityModel) -> tuple:
+    return (
+        probability_model.id,
+        probability_model.target_set_probability,
+        tuple(sorted(probability_model.initial_substat_count_probabilities.items())),
+        tuple(sorted(probability_model.resource_costs.items())),
+    )
+
+
+def _aggregated_action_outcomes_for_spec(
+    inventory: list[dict],
+    game: GameRules,
+    character: CharacterPreset,
+    probability_model: ProbabilityModel,
+    spec: ActionSpec,
+    quality_cache: dict[tuple[str, tuple[str, ...]], list[tuple[float, tuple[float, ...], float]]] | None = None,
+) -> list[tuple[list[dict], float]]:
+    key = (
+        game.id,
+        character.id,
+        _probability_model_cache_key(probability_model),
+        _inventory_signature(inventory),
+        spec,
+    )
+    cached = _AGGREGATED_ACTION_OUTCOME_CACHE.get(key)
+    if cached is not None:
+        return cached
+    outcomes = _aggregated_action_outcomes_for_spec(
+        inventory,
+        game,
+        character,
+        probability_model,
+        spec,
+        quality_cache=quality_cache,
+    )
+    _AGGREGATED_ACTION_OUTCOME_CACHE[key] = outcomes
+    return outcomes
 
 
 def _action_position_items(
@@ -980,6 +1228,8 @@ def _set_plan_frontier_action_specs(
             positions_by_requirement[requirement_index].append(row["position"])
 
     for row in inventory:
+        if not _is_loadout_candidate(row, game):
+            continue
         if id(row) in selected_ids:
             continue
         current_requirement_index = assignment_by_position.get(position_key(row["position"]))
@@ -1035,8 +1285,10 @@ def _lookahead_action_specs(
     character: CharacterPreset,
     inventory: list[dict],
 ) -> list[ActionSpec]:
-    frontier_specs = _set_plan_frontier_action_specs(game, character, inventory)
-    generation_specs = frontier_specs or _dominant_generation_action_specs(game, character)
+    # The current frontier generator only emits requirement/position specs that are already
+    # covered by dominant_generation. Keep the non-exclusive semantics without paying for
+    # best-combo reconstruction on every lookahead state.
+    generation_specs = _dominant_generation_action_specs(game, character)
     return [
         *generation_specs,
         *_upgrade_action_specs(inventory, game),
@@ -1503,6 +1755,7 @@ def _action_ev_cache_key(
                 "position": score.position,
                 "set_name": score.set_name,
                 "main_stat": score.main_stat,
+                "locked": score.locked,
                 "main_stat_preferred": score.main_stat_preferred,
                 "effective_rolls": score.effective_rolls,
                 "quality_score": score.weighted_score,
@@ -1514,10 +1767,19 @@ def _action_ev_cache_key(
             {
                 "position": row["position"],
                 "set_name": row["set_name"],
+                "locked": row.get("locked", False),
+                "allow_unfinished_loadout": row.get("_allow_unfinished_loadout", False),
                 "main_preferred": row["main_preferred"],
                 "effective_rolls": row["effective_rolls"],
                 "quality_score": row["quality_score"],
                 "quality_vector": row["quality_vector"],
+                "piece_signature": (
+                    row["_piece"].level,
+                    row["_piece"].initial_substat_count,
+                    [(line.stat, line.rolls) for line in row["_piece"].substats],
+                )
+                if isinstance(row.get("_piece"), GearPiece)
+                else None,
             }
             for row in (inventory_rows or [])
         ],

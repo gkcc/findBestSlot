@@ -105,14 +105,14 @@
 流程：
 
 1. 把所有 `GearPiece` 转成库存 row，每个 row 包含位置、套装、主属性是否命中、有效词条、质量分、质量向量。
-2. 库存归一化：对已满级成品，按 `(位置, 套装)` 只保留贡献最高的一件；未满级胚子保留，因为它们可以作为“强化库存胚子”action。
-3. 按位置分组，每个位置从库存里选一件，形成笛卡尔积候选组合。
-4. 先过滤满足当前套装方案的组合，例如 4+2 或 2+2+2。
-5. 如果没有任何组合满足套装方案，则退回所有位置组合，避免无结果。
-6. 用组合向量选最大值。
-7. best_loadout 结果按库存 signature 缓存。
+2. 库存归一化：未满级胚子默认只作为“强化库存胚子”action source，不进入 `Best(I)`；已满级成品按 `(位置, 套装)` 保留贡献最高的一件。
+3. 如果某个位置有 locked 当前件，该位置的 loadout options 只保留 locked 件，背包/新 outcome 不能替换它。
+4. best_loadout 现在用精确 DP，不再生成完整笛卡尔积。DP 每一步处理一个位置，每个状态记录套装 count-state 下的最优 value_vector。
+5. 最终优先选择满足当前套装方案的状态，例如 4+2 或 2+2+2；如果没有任何状态满足套装方案，则退回所有状态中的最优值，保持旧 fallback 语义。
+6. value-only 路径只保存 value，不回溯组合；`return_combo=True` 路径用 backpointer 回溯组合，供 `_set_plan_frontier_action_specs` 使用。
+7. best_loadout 结果按库存 signature 缓存，signature 包含 locked、未满级 piece 状态和显式允许未满级参与 loadout 的标记。
 
-当前复杂度主要来自第 3 步：按位置做笛卡尔积。库存归一化能降低数量，但理论上仍可能随每个位置候选数量乘积增长。
+当前复杂度主要来自 count-state 数量和每个位置候选数量。对于 4+2 / 2+2+2 这种小套装状态，DP 避免了完整位置笛卡尔积。
 
 ## 5. Action 空间
 
@@ -126,7 +126,7 @@ action 用 `ActionSpec` 表示，主要有：
 
 顶层策略表 `position_strategy_efficiency_rows` 当前使用 `_generation_action_specs` 枚举较完整的 action 空间，再附加 `_upgrade_action_specs`。
 
-horizon 递归内部使用 `_lookahead_action_specs`，它会先调用 `_set_plan_frontier_action_specs` 做一层套装约束剪枝；如果得不到 frontier，再退回 `_dominant_generation_action_specs`。
+horizon 递归内部使用 `_lookahead_action_specs`。当前 hot path 使用 `_dominant_generation_action_specs`，因为它已覆盖现有 frontier 会生成的 requirement/position action；不再使用 frontier-only 排他剪枝，避免漏掉同 requirement 内部提质路径。
 
 ## 6. 已有套装可行性剪枝
 
@@ -143,7 +143,7 @@ horizon 递归内部使用 `_lookahead_action_specs`，它会先调用 `_set_pla
 4. 如果当前 combo 无法分配，就按当前缺口生成补缺 requirement 的 action，并跳过已经是目标套装的位置。
 5. 对生成的 action 去重。
 
-这是一种启发式 frontier 剪枝，主要服务 horizon 递归，避免在 4+2 强约束下枚举大量明显无效或重复意图的 action。
+这是一种启发式 frontier 分析。它不再作为 horizon 递归的排他 action 空间，因为 frontier-only 会漏掉同 requirement 内部提质路径。
 
 ## 7. 新盘概率分布
 

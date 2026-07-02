@@ -1,3 +1,6 @@
+from collections import defaultdict
+from itertools import product
+
 import pytest
 
 from gear_optimizer.game_rules import load_characters, load_game, load_probability_models
@@ -17,6 +20,9 @@ from gear_optimizer.position_ev import (
     resource_marginal_ev_rows,
     lookahead_inventory_value,
     _lookahead_action_specs,
+    _set_plan_frontier_action_specs,
+    _combo_value,
+    _set_plan_satisfied,
     inventory_rows_from_pieces,
 )
 from gear_optimizer.presets import load_current_example
@@ -69,6 +75,20 @@ def _piece(game, character, position: int, set_name: str, quality: int) -> GearP
         substats=[SubstatLine(stat=stat, rolls=max(quality - 1, 0))],
         initial_substat_count=3,
     )
+
+
+def _legacy_cartesian_best_value(rows, game, character):
+    by_position = defaultdict(list)
+    for row in rows:
+        by_position[position_key(row["position"])].append(row)
+    options = [by_position.get(position_key(rule.id), []) for rule in game.positions]
+    if any(not item for item in options):
+        return tuple()
+
+    combos = [combo for combo in product(*options) if _set_plan_satisfied(combo, character)]
+    if not combos:
+        combos = list(product(*options))
+    return _combo_value(max(combos, key=lambda combo: _combo_value(combo, character)), character)
 
 
 def test_quality_vector_uses_configured_priority_order_without_scalar_weights():
@@ -204,6 +224,83 @@ def test_best_loadout_uses_full_inventory_and_migrates_four_plus_two_positions()
     ) > current_value
 
 
+def test_dp_best_loadout_matches_legacy_cartesian_reference_on_small_inventory():
+    game, character, _probability_model, _analysis = _billy_context()
+    inventory = [
+        _piece(game, character, 1, "折枝剑歌", 2),
+        _piece(game, character, 1, "云岿如我", 5),
+        _piece(game, character, 2, "云岿如我", 3),
+        _piece(game, character, 2, "折枝剑歌", 1),
+        _piece(game, character, 3, "折枝剑歌", 4),
+        _piece(game, character, 4, "云岿如我", 4),
+        _piece(game, character, 5, "云岿如我", 4),
+        _piece(game, character, 6, "云岿如我", 1),
+        _piece(game, character, 6, "折枝剑歌", 6),
+    ]
+    rows = inventory_rows_from_pieces(inventory, game, character)
+
+    assert best_loadout_value(inventory, game, character) == _legacy_cartesian_best_value(
+        rows,
+        game,
+        character,
+    )
+
+
+def test_unfinished_inventory_candidate_is_upgrade_source_not_best_loadout_piece():
+    game, character, _probability_model, _analysis = _billy_context()
+    inventory = [
+        _piece(game, character, 1, "折枝剑歌", 2),
+        _piece(game, character, 2, "云岿如我", 4),
+        _piece(game, character, 3, "折枝剑歌", 4),
+        _piece(game, character, 4, "云岿如我", 4),
+        _piece(game, character, 5, "云岿如我", 4),
+        _piece(game, character, 6, "云岿如我", 0),
+    ]
+    unfinished = _piece(game, character, 6, "折枝剑歌", 20).model_copy(update={"level": 0})
+
+    assert best_loadout_value([*inventory, unfinished], game, character) == best_loadout_value(
+        inventory,
+        game,
+        character,
+    )
+
+    specs = _lookahead_action_specs(
+        game,
+        character,
+        inventory_rows_from_pieces([*inventory, unfinished], game, character),
+    )
+    assert any(spec.strategy == "强化库存胚子" for spec in specs)
+
+
+def test_locked_position_cannot_be_replaced_by_inventory_or_upgraded_candidate():
+    game, character, probability_model, analysis = _billy_context()
+    inventory = [
+        _piece(game, character, 1, "折枝剑歌", 2),
+        _piece(game, character, 2, "云岿如我", 4),
+        _piece(game, character, 3, "折枝剑歌", 4),
+        _piece(game, character, 4, "云岿如我", 4),
+        _piece(game, character, 5, "云岿如我", 4),
+        _piece(game, character, 6, "云岿如我", 0).model_copy(update={"locked": True}),
+    ]
+    high_same_position = _piece(game, character, 6, "云岿如我", 20)
+    unfinished_same_position = high_same_position.model_copy(update={"level": 0})
+
+    locked_value = best_loadout_value(inventory, game, character)
+
+    assert best_loadout_value([*inventory, high_same_position], game, character) == locked_value
+
+    rows = position_strategy_efficiency_rows(
+        game,
+        character,
+        probability_model,
+        analysis,
+        inventory_pieces=[*inventory, unfinished_same_position],
+    )
+    upgrade_rows = [row for row in rows if row["策略"] == "强化库存胚子"]
+    assert upgrade_rows
+    assert all(row["质量提升"] == 0 for row in upgrade_rows)
+
+
 def test_piece_can_have_zero_immediate_gain_but_positive_option_value():
     game, character, probability_model, _analysis = _billy_context()
     inventory = [
@@ -229,7 +326,7 @@ def test_piece_can_have_zero_immediate_gain_but_positive_option_value():
     ) > tuple(0.0 for _ in best_loadout_value(inventory, game, character))
 
 
-def test_lookahead_frontier_prunes_to_set_plan_complements():
+def test_lookahead_action_space_keeps_frontier_and_dominant_generation_specs():
     game, character, _probability_model, _analysis = _billy_context()
     inventory = [
         _piece(game, character, 1, "折枝剑歌", 2),
@@ -242,16 +339,24 @@ def test_lookahead_frontier_prunes_to_set_plan_complements():
     ]
     rows = inventory_rows_from_pieces(inventory, game, character)
 
+    frontier = _set_plan_frontier_action_specs(game, character, rows)
+    frontier_generated = [spec for spec in frontier if spec.strategy != "强化库存胚子"]
+    assert {
+        position_key(spec.target_position)
+        for spec in frontier_generated
+        if spec.set_options == ("折枝剑歌",)
+    } == {"2", "4", "5", "6"}
+    assert not any(spec.set_options == ("云岿如我",) for spec in frontier_generated)
+
     specs = _lookahead_action_specs(game, character, rows)
     generated_specs = [spec for spec in specs if spec.strategy != "强化库存胚子"]
 
     assert generated_specs
-    assert {
-        position_key(spec.target_position)
+    assert any(
+        spec.set_options == ("云岿如我",)
+        and position_key(spec.target_position) == "6"
         for spec in generated_specs
-        if spec.set_options == ("折枝剑歌",)
-    } == {"2", "4", "5", "6"}
-    assert not any(spec.set_options == ("云岿如我",) for spec in generated_specs)
+    )
 
 
 def test_exact_horizon_two_value_follows_dynamic_programming_formula():
