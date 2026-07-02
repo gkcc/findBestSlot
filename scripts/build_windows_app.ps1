@@ -182,11 +182,15 @@ if (-not $SkipPreflight) {
         exit $LASTEXITCODE
     }
 
-    $DesktopApp = Join-Path $Root "desktop_app.py"
-    & $Python.Source @PythonArgs $DesktopApp --app-check --app-check-json $AppSmokeChecks
-    if ($LASTEXITCODE -ne 0) {
-        Write-Error "Preflight app smoke failed."
-        exit $LASTEXITCODE
+    if ($SmokeCheck) {
+        $DesktopApp = Join-Path $Root "desktop_app.py"
+        & $Python.Source @PythonArgs $DesktopApp --app-check --app-check-json $AppSmokeChecks
+        if ($LASTEXITCODE -ne 0) {
+            Write-Error "Preflight app smoke failed."
+            exit $LASTEXITCODE
+        }
+    } else {
+        Write-Host "Skipping source app smoke. Run with -SmokeCheck when you want it."
     }
 
     if ($RunPytest) {

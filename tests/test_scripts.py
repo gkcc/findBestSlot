@@ -44,9 +44,11 @@ def test_build_windows_app_runs_preflight_before_pyinstaller():
     assert "--check-json $AcceptanceChecks" in build
     assert 'Join-Path $Root "reports\\source_app_smoke_checks.json"' in build
     assert 'Join-Path $Root "reports\\pytest.xml"' in build
+    assert "if ($SmokeCheck)" in build
     assert "$DesktopApp = Join-Path $Root \"desktop_app.py\"" in build
     assert "& $Python.Source @PythonArgs $DesktopApp --app-check --app-check-json $AppSmokeChecks" in build
     assert 'Write-Error "Preflight app smoke failed."' in build
+    assert "Skipping source app smoke. Run with -SmokeCheck when you want it." in build
     assert "if ($RunPytest)" in build
     assert "-m pytest --junitxml $PytestReport" in build
     assert 'Write-Error "Preflight pytest failed."' in build
@@ -109,6 +111,7 @@ def test_release_gate_runs_doctor_acceptance_pytest_and_optional_package_smoke()
     assert "[switch]$BuildPackage" in release_gate
     assert "[switch]$OneFile" in release_gate
     assert "[switch]$SkipPytest" in release_gate
+    assert "[switch]$SmokeCheck" in release_gate
     assert "[switch]$VerifyManifest" in release_gate
     assert "[int]$SmokeTimeoutSeconds = 45" in release_gate
     assert "function Invoke-GateStep" in release_gate
@@ -118,13 +121,16 @@ def test_release_gate_runs_doctor_acceptance_pytest_and_optional_package_smoke()
     assert 'Join-Path $Root "reports\\source_app_smoke_checks.json"' in release_gate
     assert 'Join-Path $Root "reports\\pytest.xml"' in release_gate
     assert 'Invoke-GateStep "native app smoke"' in release_gate
+    assert "Skipping smoke check. Run with -SmokeCheck when you want it." in release_gate
     assert "$DesktopApp = Join-Path $Root \"desktop_app.py\"" in release_gate
     assert "& $Python.Source @PythonArgs $DesktopApp --app-check --app-check-json $AppSmokeChecks" in release_gate
     assert "-m pytest @PytestArgs" in release_gate
     assert "--junitxml $PytestReport" in release_gate
     assert '"Skipping pytest."' in release_gate
-    assert "& $BuildScript -SkipPreflight -SmokeCheck -SmokeTimeoutSeconds $SmokeTimeoutSeconds" in release_gate
-    assert "& $BuildScript -SkipPreflight -SmokeCheck -OneFile -SmokeTimeoutSeconds $SmokeTimeoutSeconds" in release_gate
+    assert '$BuildArgs = @("-SkipPreflight", "-SmokeTimeoutSeconds", $SmokeTimeoutSeconds)' in release_gate
+    assert '$BuildArgs += "-SmokeCheck"' in release_gate
+    assert '$BuildArgs += "-OneFile"' in release_gate
+    assert "& $BuildScript @BuildArgs" in release_gate
     assert 'Join-Path $Root "reports\\release_artifact_manifest.json"' in release_gate
     assert 'Join-Path $Root "reports\\first_version_readiness_checks.json"' in release_gate
     assert "$BuildPackage -or $VerifyManifest" in release_gate
@@ -132,6 +138,7 @@ def test_release_gate_runs_doctor_acceptance_pytest_and_optional_package_smoke()
     assert '"--pytest-report", $PytestReport' in release_gate
     assert '"--skip-pytest-report"' in release_gate
     assert "& $Python.Source @PythonArgs @ReadinessArgs" in release_gate
+    assert "Skipping readiness because smoke evidence was not requested." in release_gate
     assert "build_windows_app.ps1" in release_gate
     assert "Release gate passed." in release_gate
 

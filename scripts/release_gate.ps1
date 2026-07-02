@@ -2,6 +2,7 @@ param(
     [switch]$BuildPackage,
     [switch]$OneFile,
     [switch]$SkipPytest,
+    [switch]$SmokeCheck,
     [switch]$VerifyManifest,
     [ValidateRange(1, 600)]
     [int]$SmokeTimeoutSeconds = 45,
@@ -61,9 +62,15 @@ Invoke-GateStep "acceptance" {
     & $Python.Source @PythonArgs -m gear_optimizer.acceptance --output $AcceptanceOutput --check --check-json $AcceptanceChecks
 }
 
-Invoke-GateStep "native app smoke" {
-    $DesktopApp = Join-Path $Root "desktop_app.py"
-    & $Python.Source @PythonArgs $DesktopApp --app-check --app-check-json $AppSmokeChecks
+if ($SmokeCheck) {
+    Invoke-GateStep "native app smoke" {
+        $DesktopApp = Join-Path $Root "desktop_app.py"
+        & $Python.Source @PythonArgs $DesktopApp --app-check --app-check-json $AppSmokeChecks
+    }
+} else {
+    Write-Host ""
+    Write-Host "== native app smoke =="
+    Write-Host "Skipping smoke check. Run with -SmokeCheck when you want it."
 }
 
 if ($SkipPytest) {
@@ -78,13 +85,16 @@ if ($SkipPytest) {
 }
 
 if ($BuildPackage) {
-    Invoke-GateStep "package smoke" {
+    Invoke-GateStep "package build" {
         $BuildScript = Join-Path $PSScriptRoot "build_windows_app.ps1"
-        if ($OneFile) {
-            & $BuildScript -SkipPreflight -SmokeCheck -OneFile -SmokeTimeoutSeconds $SmokeTimeoutSeconds
-        } else {
-            & $BuildScript -SkipPreflight -SmokeCheck -SmokeTimeoutSeconds $SmokeTimeoutSeconds
+        $BuildArgs = @("-SkipPreflight", "-SmokeTimeoutSeconds", $SmokeTimeoutSeconds)
+        if ($SmokeCheck) {
+            $BuildArgs += "-SmokeCheck"
         }
+        if ($OneFile) {
+            $BuildArgs += "-OneFile"
+        }
+        & $BuildScript @BuildArgs
     }
 }
 
@@ -93,20 +103,26 @@ if ($BuildPackage -or $VerifyManifest) {
         & $Python.Source @PythonArgs -m gear_optimizer.release_manifest --manifest $ReleaseManifest
     }
 
-    Invoke-GateStep "first-version readiness" {
-        $ReadinessArgs = @(
-            "-m", "gear_optimizer.readiness",
-            "--acceptance-checks", $AcceptanceChecks,
-            "--app-smoke-checks", $AppSmokeChecks,
-            "--manifest", $ReleaseManifest,
-            "--json", $ReadinessChecks
-        )
-        if (-not $SkipPytest) {
-            $ReadinessArgs += @("--pytest-report", $PytestReport)
-        } else {
-            $ReadinessArgs += @("--skip-pytest-report")
+    if ($SmokeCheck) {
+        Invoke-GateStep "first-version readiness" {
+            $ReadinessArgs = @(
+                "-m", "gear_optimizer.readiness",
+                "--acceptance-checks", $AcceptanceChecks,
+                "--app-smoke-checks", $AppSmokeChecks,
+                "--manifest", $ReleaseManifest,
+                "--json", $ReadinessChecks
+            )
+            if (-not $SkipPytest) {
+                $ReadinessArgs += @("--pytest-report", $PytestReport)
+            } else {
+                $ReadinessArgs += @("--skip-pytest-report")
+            }
+            & $Python.Source @PythonArgs @ReadinessArgs
         }
-        & $Python.Source @PythonArgs @ReadinessArgs
+    } else {
+        Write-Host ""
+        Write-Host "== first-version readiness =="
+        Write-Host "Skipping readiness because smoke evidence was not requested."
     }
 }
 

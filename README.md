@@ -56,29 +56,47 @@ python -m pytest -q
 python -m gear_optimizer.acceptance --output reports\first_version_acceptance.md --check
 ```
 
-完整发布门禁：
+完整发布门禁默认不跑 smoke：
 
 ```powershell
 .\scripts\release_gate.ps1
 ```
 
-带 Windows exe 构建和打包 smoke：
+需要 smoke 时显式打开：
+
+```powershell
+.\scripts\release_gate.ps1 -SmokeCheck
+```
+
+带 Windows exe 构建：
 
 ```powershell
 .\scripts\release_gate.ps1 -BuildPackage
+```
+
+带 Windows exe 构建和打包 smoke：
+
+```powershell
+.\scripts\release_gate.ps1 -BuildPackage -SmokeCheck
 ```
 
 ## 打包
 
 ```powershell
 pip install -e ".[packaging]"
-.\scripts\build_windows_app.ps1 -SmokeCheck
+.\scripts\build_windows_app.ps1
 ```
 
 默认输出：
 
 ```text
 dist\gacha-gear-optimizer\gacha-gear-optimizer.exe
+```
+
+需要打包后 smoke 时显式加：
+
+```powershell
+.\scripts\build_windows_app.ps1 -SmokeCheck
 ```
 
 用户保存的套装方案、当前盘面和库存不会写入临时解包目录。打包版默认使用 `%LOCALAPPDATA%\gacha-gear-optimizer\user_data`，源码运行默认使用项目内 `user_data`；可用 `GEAR_OPTIMIZER_USER_DATA_DIR` 自定义。
