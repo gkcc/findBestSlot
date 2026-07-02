@@ -903,7 +903,7 @@ def first_version_acceptance_report_markdown(
         else []
     )
     lines = [
-        f"# {game.name} {character.name} 第一版验收总览",
+        f"# {game.name} {character.name} 算法验收总览",
         "",
         "## 攻略结论",
         "",
@@ -993,7 +993,7 @@ def first_version_acceptance_report_markdown(
             core_best,
         ),
         "",
-        "## 当前调律期望管理",
+        "## 桌面结果区调律期望管理",
         "",
         "按完整概率分布做理论期望，不做抽样模拟；随机/固定都会把新盘加入库存后重求当前套装约束下的最优组合；同时展示有效词条提升/母盘和质量提升/母盘；固定主属性只展示省母盘和期望校音器，不做资源折算。",
         "",
@@ -1109,7 +1109,7 @@ def current_analysis_report_markdown(
         "",
         *_probability_model_assumption_markdown(probability_model),
         "",
-        "## 当前调律期望管理",
+        "## 桌面结果区调律期望管理",
         "",
         "按完整概率分布做理论期望，不做抽样模拟；随机/固定都会把新盘加入库存后重求当前套装约束下的最优组合；同时展示有效词条提升/母盘和质量提升/母盘；固定主属性只展示省母盘和期望校音器，不做资源折算。",
         "",

@@ -47,12 +47,12 @@ function Invoke-GateStep {
     }
 }
 
-$AcceptanceOutput = Join-Path $Root "reports\first_version_acceptance.md"
-$AcceptanceChecks = Join-Path $Root "reports\first_version_acceptance_checks.json"
+$AcceptanceOutput = Join-Path $Root "reports\acceptance_report.md"
+$AcceptanceChecks = Join-Path $Root "reports\acceptance_checks.json"
 $AppSmokeChecks = Join-Path $Root "reports\source_app_smoke_checks.json"
 $PytestReport = Join-Path $Root "reports\pytest.xml"
 $ReleaseManifest = Join-Path $Root "reports\release_artifact_manifest.json"
-$ReadinessChecks = Join-Path $Root "reports\first_version_readiness_checks.json"
+$ReadinessChecks = Join-Path $Root "reports\readiness_checks.json"
 
 Invoke-GateStep "doctor" {
     & $Python.Source @PythonArgs -m gear_optimizer.diagnostics
@@ -104,7 +104,7 @@ if ($BuildPackage -or $VerifyManifest) {
     }
 
     if ($SmokeCheck) {
-        Invoke-GateStep "first-version readiness" {
+        Invoke-GateStep "release readiness" {
             $ReadinessArgs = @(
                 "-m", "gear_optimizer.readiness",
                 "--acceptance-checks", $AcceptanceChecks,
@@ -121,7 +121,7 @@ if ($BuildPackage -or $VerifyManifest) {
         }
     } else {
         Write-Host ""
-        Write-Host "== first-version readiness =="
+        Write-Host "== release readiness =="
         Write-Host "Skipping readiness because smoke evidence was not requested."
     }
 }

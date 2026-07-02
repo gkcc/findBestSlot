@@ -25,10 +25,10 @@ if (-not $Python) {
     exit 1
 }
 
-$Output = Join-Path $Root "reports\first_version_acceptance.md"
-$CheckJson = Join-Path $Root "reports\first_version_acceptance_checks.json"
+$Output = Join-Path $Root "reports\acceptance_report.md"
+$CheckJson = Join-Path $Root "reports\acceptance_checks.json"
 
-Write-Host "Generating first-version acceptance report..."
+Write-Host "Generating algorithm acceptance report..."
 Write-Host "Output file: $Output"
 Write-Host "Check JSON: $CheckJson"
 

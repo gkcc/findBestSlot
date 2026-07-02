@@ -47,7 +47,7 @@ ACCEPTANCE_CHECKS = [
         "12 个高优先级问题闭环",
         (
             "## 高优先级问题闭环",
-            "| 12 | 结果页需要调律操作期望管理 | 已增加随机/固定位置收益表、固定主属性和固定副属性省母盘阶梯 |",
+            "| 12 | 桌面结果区需要调律操作期望管理 | 已增加随机/固定位置收益表、固定主属性和固定副属性省母盘阶梯 |",
         ),
     ),
     (
@@ -73,7 +73,7 @@ ACCEPTANCE_CHECKS = [
         "position_efficiency",
         "随机 vs 固定位置收益效率",
         (
-            "## 当前调律期望管理",
+            "## 桌面结果区调律期望管理",
             "### 随机 vs 固定位置收益效率",
             "| 随机位置 | 云岿如我 | 1-6 随机 |",
             "| 固定位置 | 折枝剑歌 | 6号位 |",
@@ -203,7 +203,7 @@ def format_acceptance_checks(rows: list[dict[str, str]]) -> str:
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Generate a first-version acceptance report for gacha-gear-optimizer.",
+        description="Generate an algorithm acceptance report for gacha-gear-optimizer.",
     )
     parser.add_argument("--game", default=DEFAULT_GAME, help="Game id.")
     parser.add_argument("--character", default=DEFAULT_CHARACTER, help="Character preset id.")
@@ -222,7 +222,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--check",
         action="store_true",
-        help="Verify the generated report contains the first-version acceptance evidence.",
+        help="Verify the generated report contains the algorithm acceptance evidence.",
     )
     parser.add_argument(
         "--check-json",

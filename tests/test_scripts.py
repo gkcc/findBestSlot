@@ -81,7 +81,7 @@ def test_build_windows_app_can_smoke_check_and_verify_packaged_exe():
     assert "--serve-streamlit" not in build
     assert "Invoke-WebRequest -Uri $Url" not in build
     assert 'Join-Path $Root "reports\\release_artifact_manifest.json"' in build
-    assert 'Join-Path $Root "reports\\first_version_readiness_checks.json"' in build
+    assert 'Join-Path $Root "reports\\readiness_checks.json"' in build
     assert "exe_size_bytes" in build
     assert "exe_sha256" in build
     assert "function Get-Sha256Hex" in build
@@ -97,12 +97,12 @@ def test_build_windows_app_can_smoke_check_and_verify_packaged_exe():
     assert "Verifying release artifact manifest" in build
     assert "-m gear_optimizer.release_manifest --manifest $ReleaseManifest" in build
     assert 'Write-Error "Release artifact manifest verification failed."' in build
-    assert "Verifying first-version readiness" in build
+    assert "Verifying release readiness" in build
     assert '"--pytest-report", $PytestReport' in build
     assert '"--skip-pytest-report"' in build
     assert "& $Python.Source @PythonArgs @ReadinessArgs" in build
-    assert 'Write-Error "First-version readiness verification failed."' in build
-    assert "Skipping first-version readiness because preflight evidence is missing" in build
+    assert 'Write-Error "Release readiness verification failed."' in build
+    assert "Skipping release readiness because preflight evidence is missing" in build
 
 
 def test_release_gate_runs_doctor_acceptance_pytest_and_optional_package_smoke():
@@ -132,12 +132,13 @@ def test_release_gate_runs_doctor_acceptance_pytest_and_optional_package_smoke()
     assert '$BuildArgs += "-OneFile"' in release_gate
     assert "& $BuildScript @BuildArgs" in release_gate
     assert 'Join-Path $Root "reports\\release_artifact_manifest.json"' in release_gate
-    assert 'Join-Path $Root "reports\\first_version_readiness_checks.json"' in release_gate
+    assert 'Join-Path $Root "reports\\readiness_checks.json"' in release_gate
     assert "$BuildPackage -or $VerifyManifest" in release_gate
     assert "-m gear_optimizer.release_manifest --manifest $ReleaseManifest" in release_gate
     assert '"--pytest-report", $PytestReport' in release_gate
     assert '"--skip-pytest-report"' in release_gate
     assert "& $Python.Source @PythonArgs @ReadinessArgs" in release_gate
+    assert 'Invoke-GateStep "release readiness"' in release_gate
     assert "Skipping readiness because smoke evidence was not requested." in release_gate
     assert "build_windows_app.ps1" in release_gate
     assert "Release gate passed." in release_gate

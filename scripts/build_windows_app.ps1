@@ -18,12 +18,12 @@ $Root = Resolve-Path (Join-Path $PSScriptRoot "..")
 Set-Location $Root
 $env:PYTHONPATH = "$Root\src;$env:PYTHONPATH"
 $env:PYTHONIOENCODING = "utf-8"
-$AcceptanceOutput = Join-Path $Root "reports\first_version_acceptance.md"
-$AcceptanceChecks = Join-Path $Root "reports\first_version_acceptance_checks.json"
+$AcceptanceOutput = Join-Path $Root "reports\acceptance_report.md"
+$AcceptanceChecks = Join-Path $Root "reports\acceptance_checks.json"
 $AppSmokeChecks = Join-Path $Root "reports\source_app_smoke_checks.json"
 $PytestReport = Join-Path $Root "reports\pytest.xml"
 $ReleaseManifest = Join-Path $Root "reports\release_artifact_manifest.json"
-$ReadinessChecks = Join-Path $Root "reports\first_version_readiness_checks.json"
+$ReadinessChecks = Join-Path $Root "reports\readiness_checks.json"
 $PytestEvidenceAvailable = $false
 
 $PythonArgs = @()
@@ -295,7 +295,7 @@ if ($LASTEXITCODE -ne 0) {
 
 if ($SmokeCheck) {
     if ((Test-Path $AcceptanceChecks) -and (Test-Path $AppSmokeChecks)) {
-        Write-Host "Verifying first-version readiness..."
+        Write-Host "Verifying release readiness..."
         $ReadinessArgs = @(
             "-m", "gear_optimizer.readiness",
             "--acceptance-checks", $AcceptanceChecks,
@@ -310,10 +310,10 @@ if ($SmokeCheck) {
         }
         & $Python.Source @PythonArgs @ReadinessArgs
         if ($LASTEXITCODE -ne 0) {
-            Write-Error "First-version readiness verification failed."
+            Write-Error "Release readiness verification failed."
             exit $LASTEXITCODE
         }
     } else {
-        Write-Warning "Skipping first-version readiness because preflight evidence is missing. Run without -SkipPreflight or use release_gate.ps1."
+        Write-Warning "Skipping release readiness because preflight evidence is missing. Run without -SkipPreflight or use release_gate.ps1."
     }
 }

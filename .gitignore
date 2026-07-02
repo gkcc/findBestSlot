@@ -7,7 +7,5 @@ dist/
 build/
 *.egg-info/
 gacha-gear-optimizer.spec
-.streamlit/
-streamlit*.log
 user_data/
 reports/

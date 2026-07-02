@@ -10,7 +10,7 @@ import xml.etree.ElementTree as ET
 from gear_optimizer.game_rules import PROJECT_ROOT
 from gear_optimizer.release_manifest import _manifest_exe_path, manifest_checks_pass, verify_manifest
 
-DEFAULT_ACCEPTANCE_CHECKS = PROJECT_ROOT / "reports" / "first_version_acceptance_checks.json"
+DEFAULT_ACCEPTANCE_CHECKS = PROJECT_ROOT / "reports" / "acceptance_checks.json"
 DEFAULT_APP_SMOKE_CHECKS = PROJECT_ROOT / "reports" / "source_app_smoke_checks.json"
 DEFAULT_PYTEST_REPORT = PROJECT_ROOT / "reports" / "pytest.xml"
 DEFAULT_RELEASE_MANIFEST = PROJECT_ROOT / "reports" / "release_artifact_manifest.json"
@@ -309,7 +309,7 @@ def _manifest_rows(path: Path) -> list[dict[str, str]]:
             "detail": (
                 "default onedir artifact recorded"
                 if one_file is False
-                else "current first-version release record is not the default onedir artifact"
+                else "current release record is not the default onedir artifact"
             ),
         }
     )
@@ -408,12 +408,12 @@ def format_readiness_rows(rows: list[dict[str, str]]) -> str:
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Verify first-version release readiness for gacha-gear-optimizer.",
+        description="Verify release readiness for gacha-gear-optimizer.",
     )
     parser.add_argument(
         "--acceptance-checks",
         default=str(DEFAULT_ACCEPTANCE_CHECKS),
-        help="Path to first_version_acceptance_checks.json.",
+        help="Path to acceptance_checks.json.",
     )
     parser.add_argument(
         "--app-smoke-checks",

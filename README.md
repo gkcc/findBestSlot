@@ -6,7 +6,7 @@
 
 ## 当前形态
 
-- 主入口是 PySide6 原生窗口：`gacha-gear-optimizer`、`gacha-gear-optimizer-desktop`、`python desktop_app.py` 和 `scripts/start_desktop.cmd` 都启动同一个桌面应用。
+- 主入口是 PySide6 原生窗口：推荐使用 `gacha-gear-optimizer`；`gacha-gear-optimizer-desktop` 是兼容旧用法的别名，`python desktop_app.py` 和 `scripts/start_desktop.cmd` 也会启动同一个桌面应用。
 - 不再保留旧 Web UI、Streamlit 服务、浏览器窗口壳或 `start_app` 脚本。
 - 桌面版复用 `src/gear_optimizer` 的核心算法、YAML 配置、库存保存和当前装备保存逻辑。
 - PyInstaller Windows exe 会打包 `src`、`configs`、`examples`、`assets` 和 PySide6 runtime。
@@ -53,7 +53,7 @@ gacha-gear-optimizer
 ```powershell
 python -m gear_optimizer.diagnostics
 python -m pytest -q
-python -m gear_optimizer.acceptance --output reports\first_version_acceptance.md --check
+python -m gear_optimizer.acceptance --output reports\acceptance_report.md --check --check-json reports\acceptance_checks.json
 ```
 
 完整发布门禁默认不跑 smoke：

@@ -261,7 +261,7 @@ def set_plan_next_action_rows(
             {
                 "order": 1,
                 "action": "按主属性 / 副词条补弱",
-                "entry": "调律策略比较 -> 全局调律推荐 / 当前调律期望管理",
+                "entry": "调律策略比较 -> 全局调律推荐 / 桌面结果区调律期望管理",
                 "target": _strategy_target_label(current_best),
                 "tuning_scope": _strategy_scope_label(current_best),
                 "resource_hint": _strategy_resource_hint(current_best),
@@ -273,7 +273,7 @@ def set_plan_next_action_rows(
             {
                 "order": 1,
                 "action": "不限套装补弱",
-                "entry": "调律策略比较 -> 全局调律推荐 / 当前调律期望管理",
+                "entry": "调律策略比较 -> 全局调律推荐 / 桌面结果区调律期望管理",
                 "target": _strategy_target_label(current_best),
                 "tuning_scope": _strategy_scope_label(current_best),
                 "resource_hint": _strategy_resource_hint(current_best),
@@ -299,7 +299,7 @@ def set_plan_next_action_rows(
                 {
                     "order": 1,
                     "action": "套装已满足，转向质量补强",
-                    "entry": "调律策略比较 -> 全局调律推荐 / 当前调律期望管理",
+                    "entry": "调律策略比较 -> 全局调律推荐 / 桌面结果区调律期望管理",
                     "target": _strategy_target_label(current_best),
                     "tuning_scope": _strategy_scope_label(current_best),
                     "resource_hint": _strategy_resource_hint(current_best),
@@ -313,7 +313,7 @@ def set_plan_next_action_rows(
                     {
                         "order": 1,
                         "action": "按当前评分补弱",
-                        "entry": "调律策略比较 -> 全局调律推荐 / 当前调律期望管理",
+                        "entry": "调律策略比较 -> 全局调律推荐 / 桌面结果区调律期望管理",
                         "target": _strategy_target_label(current_best),
                         "tuning_scope": _strategy_scope_label(current_best),
                         "resource_hint": _strategy_resource_hint(current_best),
@@ -345,7 +345,7 @@ def set_plan_next_action_rows(
                     {
                         "order": 1,
                         "action": _stage_action_text(target),
-                        "entry": "调律策略比较 -> 套装阶段拆解 / 当前调律期望管理",
+                        "entry": "调律策略比较 -> 套装阶段拆解 / 桌面结果区调律期望管理",
                         "target": target_label,
                         "tuning_scope": _strategy_scope_label(current_best),
                         "resource_hint": _strategy_resource_hint(current_best),
@@ -362,7 +362,7 @@ def set_plan_next_action_rows(
             {
                 "order": len(rows) + 1,
                 "action": "保留长期目标",
-                "entry": "调律策略比较 -> 长期目标 / 当前调律期望管理",
+                "entry": "调律策略比较 -> 长期目标 / 桌面结果区调律期望管理",
                 "target": _strategy_target_label(long_term_best),
                 "tuning_scope": _strategy_scope_label(long_term_best),
                 "resource_hint": (

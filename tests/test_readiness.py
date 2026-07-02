@@ -95,7 +95,7 @@ def _write_manifest(path: Path, one_file: bool = False, smoke_passed: bool = Tru
 
 
 def test_readiness_passes_for_acceptance_and_default_onedir_manifest(tmp_path):
-    acceptance = tmp_path / "reports" / "first_version_acceptance_checks.json"
+    acceptance = tmp_path / "reports" / "acceptance_checks.json"
     app_smoke = tmp_path / "reports" / "source_app_smoke_checks.json"
     pytest_report = tmp_path / "reports" / "pytest.xml"
     manifest = tmp_path / "reports" / "release_artifact_manifest.json"
@@ -129,7 +129,7 @@ def test_readiness_passes_for_acceptance_and_default_onedir_manifest(tmp_path):
 
 
 def test_readiness_detects_acceptance_failure(tmp_path):
-    acceptance = tmp_path / "reports" / "first_version_acceptance_checks.json"
+    acceptance = tmp_path / "reports" / "acceptance_checks.json"
     app_smoke = tmp_path / "reports" / "source_app_smoke_checks.json"
     manifest = tmp_path / "reports" / "release_artifact_manifest.json"
     _write_acceptance_checks(acceptance, status="missing")
@@ -145,7 +145,7 @@ def test_readiness_detects_acceptance_failure(tmp_path):
 
 
 def test_readiness_detects_source_app_smoke_failure(tmp_path):
-    acceptance = tmp_path / "reports" / "first_version_acceptance_checks.json"
+    acceptance = tmp_path / "reports" / "acceptance_checks.json"
     app_smoke = tmp_path / "reports" / "source_app_smoke_checks.json"
     manifest = tmp_path / "reports" / "release_artifact_manifest.json"
     _write_acceptance_checks(acceptance)
@@ -161,7 +161,7 @@ def test_readiness_detects_source_app_smoke_failure(tmp_path):
 
 
 def test_readiness_detects_stale_acceptance_checks(tmp_path):
-    acceptance = tmp_path / "reports" / "first_version_acceptance_checks.json"
+    acceptance = tmp_path / "reports" / "acceptance_checks.json"
     app_smoke = tmp_path / "reports" / "source_app_smoke_checks.json"
     manifest = tmp_path / "reports" / "release_artifact_manifest.json"
     _write_acceptance_checks(acceptance)
@@ -178,7 +178,7 @@ def test_readiness_detects_stale_acceptance_checks(tmp_path):
 
 
 def test_readiness_detects_stale_source_app_smoke(tmp_path):
-    acceptance = tmp_path / "reports" / "first_version_acceptance_checks.json"
+    acceptance = tmp_path / "reports" / "acceptance_checks.json"
     app_smoke = tmp_path / "reports" / "source_app_smoke_checks.json"
     manifest = tmp_path / "reports" / "release_artifact_manifest.json"
     _write_acceptance_checks(acceptance)
@@ -195,7 +195,7 @@ def test_readiness_detects_stale_source_app_smoke(tmp_path):
 
 
 def test_readiness_detects_pytest_failure_report(tmp_path):
-    acceptance = tmp_path / "reports" / "first_version_acceptance_checks.json"
+    acceptance = tmp_path / "reports" / "acceptance_checks.json"
     app_smoke = tmp_path / "reports" / "source_app_smoke_checks.json"
     pytest_report = tmp_path / "reports" / "pytest.xml"
     manifest = tmp_path / "reports" / "release_artifact_manifest.json"
@@ -213,7 +213,7 @@ def test_readiness_detects_pytest_failure_report(tmp_path):
 
 
 def test_readiness_detects_stale_pytest_report(tmp_path):
-    acceptance = tmp_path / "reports" / "first_version_acceptance_checks.json"
+    acceptance = tmp_path / "reports" / "acceptance_checks.json"
     app_smoke = tmp_path / "reports" / "source_app_smoke_checks.json"
     pytest_report = tmp_path / "reports" / "pytest.xml"
     manifest = tmp_path / "reports" / "release_artifact_manifest.json"
@@ -232,7 +232,7 @@ def test_readiness_detects_stale_pytest_report(tmp_path):
 
 
 def test_readiness_requires_default_onedir_release_record(tmp_path):
-    acceptance = tmp_path / "reports" / "first_version_acceptance_checks.json"
+    acceptance = tmp_path / "reports" / "acceptance_checks.json"
     app_smoke = tmp_path / "reports" / "source_app_smoke_checks.json"
     manifest = tmp_path / "reports" / "release_artifact_manifest.json"
     _write_acceptance_checks(acceptance)
@@ -247,7 +247,7 @@ def test_readiness_requires_default_onedir_release_record(tmp_path):
 
 
 def test_readiness_detects_stale_package_artifact(tmp_path):
-    acceptance = tmp_path / "reports" / "first_version_acceptance_checks.json"
+    acceptance = tmp_path / "reports" / "acceptance_checks.json"
     app_smoke = tmp_path / "reports" / "source_app_smoke_checks.json"
     manifest_path = tmp_path / "reports" / "release_artifact_manifest.json"
     _write_acceptance_checks(acceptance)
@@ -266,11 +266,11 @@ def test_readiness_detects_stale_package_artifact(tmp_path):
 
 
 def test_readiness_cli_can_write_json(tmp_path, capsys):
-    acceptance = tmp_path / "reports" / "first_version_acceptance_checks.json"
+    acceptance = tmp_path / "reports" / "acceptance_checks.json"
     app_smoke = tmp_path / "reports" / "source_app_smoke_checks.json"
     pytest_report = tmp_path / "reports" / "pytest.xml"
     manifest = tmp_path / "reports" / "release_artifact_manifest.json"
-    output = tmp_path / "reports" / "first_version_readiness_checks.json"
+    output = tmp_path / "reports" / "readiness_checks.json"
     _write_acceptance_checks(acceptance)
     _write_app_smoke_checks(app_smoke)
     _write_pytest_report(pytest_report)
@@ -303,10 +303,10 @@ def test_readiness_cli_can_write_json(tmp_path, capsys):
 
 
 def test_readiness_cli_can_skip_pytest_report(tmp_path, capsys):
-    acceptance = tmp_path / "reports" / "first_version_acceptance_checks.json"
+    acceptance = tmp_path / "reports" / "acceptance_checks.json"
     app_smoke = tmp_path / "reports" / "source_app_smoke_checks.json"
     manifest = tmp_path / "reports" / "release_artifact_manifest.json"
-    output = tmp_path / "reports" / "first_version_readiness_checks.json"
+    output = tmp_path / "reports" / "readiness_checks.json"
     _write_acceptance_checks(acceptance)
     _write_app_smoke_checks(app_smoke)
     _write_manifest(manifest)

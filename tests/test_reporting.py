@@ -60,7 +60,7 @@ def test_current_analysis_report_answers_acceptance_questions():
     assert "## 调律结论" in report
     assert "现在应该固定几号位" in report
     assert "长期绝对最优目标" in report
-    assert "## 第一版验收速览" not in report
+    assert "## 算法验收速览" not in report
     assert "## 下一步行动清单" not in report
     assert "## 资源投入守则" not in report
     assert "## 当前/长期投入对照" not in report
@@ -75,7 +75,7 @@ def test_current_analysis_report_answers_acceptance_questions():
     assert "| 假设 | 当前值 | 说明 |" in report
     assert "| 目标套装概率 | 100.0%" in report
     assert "校音器/固定主属性" in report
-    assert "## 当前调律期望管理" in report
+    assert "## 桌面结果区调律期望管理" in report
     assert "随机/固定都会把新盘加入库存后重求当前套装约束下的最优组合" in report
     assert "### 随机 vs 固定位置收益效率" in report
     assert "| 策略 | 目标套装 | 位置 | 主属性 | 固定副属性 | horizon | immediate_EV | option_EV | horizon_EV | 期望提升 | 代表路径 | 预期搭配 | 互补位 | 套装约束 | 质量提升 | 有效提升 | 母盘/次 | 校音器/次 | 共鸣核/次 | 质量/母盘 | 有效/母盘 | 排序向量/母盘 | 相对随机 |" in report
@@ -221,7 +221,7 @@ def test_first_version_acceptance_report_answers_all_core_questions():
         probability_model=probability_model,
     )
 
-    assert "# 绝区零 星徽·比利 第一版验收总览" in report
+    assert "# 绝区零 星徽·比利 算法验收总览" in report
     assert "## 六个核心问题" in report
     assert "| 验收问题 | 当前答案 | 依据 | 入口 |" in report
     assert "| 我当前 6 件盘哪件最差？ | 6号位 |" in report
@@ -234,18 +234,18 @@ def test_first_version_acceptance_report_answers_all_core_questions():
     assert "| 编号 | 问题 | 闭环状态 | 验收入口 | 证据 |" in report
     assert "| 1 | localhost 形态能不能做成 App | 已切到 PySide6 原生桌面入口和 Windows exe 打包 |" in report
     assert "不再保留 Web 入口" in report
-    assert "| 12 | 结果页需要调律操作期望管理 | 已增加随机/固定位置收益表、固定主属性和固定副属性省母盘阶梯 |" in report
+    assert "| 12 | 桌面结果区需要调律操作期望管理 | 已增加随机/固定位置收益表、固定主属性和固定副属性省母盘阶梯 |" in report
     assert "## 下一步操作卡" in report
     assert "| 顺序 | 行动 | 入口 | 目标 | 调律范围 | 资源提示 | 原因 |" in report
-    assert "| 1 | 先补 2 件套 | 调律策略比较 -> 套装阶段拆解 / 当前调律期望管理 | 折枝剑歌 6号位" in report
-    assert "| 2 | 保留长期目标 | 调律策略比较 -> 长期目标 / 当前调律期望管理 | 云岿如我 5号位 物理伤害" in report
+    assert "| 1 | 先补 2 件套 | 调律策略比较 -> 套装阶段拆解 / 桌面结果区调律期望管理 | 折枝剑歌 6号位" in report
+    assert "| 2 | 保留长期目标 | 调律策略比较 -> 长期目标 / 桌面结果区调律期望管理 | 云岿如我 5号位 物理伤害" in report
     assert "| 3 | 继续强化候选 | 候选胚子评估 -> 下一跳止损卡 / 最终分布图 | 云岿如我 5号位 物理伤害 | 候选胚子强化 |" in report
     assert "## 资源投入守则" not in report
     assert "## 当前/长期投入对照" not in report
     assert "## 候选胚子结论" in report
     assert "## 候选下一跳止损卡" in report
     assert "| 当前动作 | 强化到 +6 |" in report
-    assert "## 当前调律期望管理" in report
+    assert "## 桌面结果区调律期望管理" in report
     assert "### 随机 vs 固定位置收益效率" in report
     assert "| 随机位置 | 云岿如我 | 1-6 随机 |" in report
     assert "| 固定位置 | 折枝剑歌 | 6号位 |" in report

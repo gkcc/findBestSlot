@@ -275,7 +275,7 @@ def test_strategy_probability_scope_prevents_naked_candidate_probability():
     assert current_best is not None
     assert not current_best.fixed_main_stat
     assert "不代表目标主属性或毕业概率" in strategy_probability_scope(current_best)
-    assert "当前调律期望管理" in strategy_cost_basis(current_best)
+    assert "桌面结果区调律期望管理" in strategy_cost_basis(current_best)
     assert "固定主属性只消耗校音器" in strategy_probability_scope(fixed_main)
 
 

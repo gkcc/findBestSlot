@@ -367,7 +367,7 @@ def test_resource_guardrail_rows_state_resource_boundaries():
 def test_first_version_acceptance_report_builder_uses_default_billy_sample():
     report = build_first_version_acceptance_report()
 
-    assert "# 绝区零 星徽·比利 第一版验收总览" in report
+    assert "# 绝区零 星徽·比利 算法验收总览" in report
     assert "| 我当前 6 件盘哪件最差？ | 6号位 |" in report
     assert "| 这个新胚子还值不值得强化？ | 继续 |" in report
     assert "校音器该不该用？" in report
@@ -378,13 +378,13 @@ def test_first_version_acceptance_report_builder_uses_default_billy_sample():
     assert "| 3 | 候选胚子 | 强化到 +6 | 云岿如我 5号位 物理伤害 |" in report
     assert "| 4 | 长期提醒 | 保留长期目标；特殊资源不要追短期弱位 | 固定位置 + 固定主属性：云岿如我 5号位，物理伤害，不固定副属性。 |" in report
     assert "## 高优先级问题闭环" in report
-    assert "| 12 | 结果页需要调律操作期望管理 | 已增加随机/固定位置收益表、固定主属性和固定副属性省母盘阶梯 |" in report
+    assert "| 12 | 桌面结果区需要调律操作期望管理 | 已增加随机/固定位置收益表、固定主属性和固定副属性省母盘阶梯 |" in report
     assert "## 下一步操作卡" in report
     assert "先补 2 件套" in report
     assert "## 资源投入守则" not in report
     assert "## 当前/长期投入对照" not in report
     assert "| 3 | 继续强化候选 | 候选胚子评估 -> 下一跳止损卡 / 最终分布图 | 云岿如我 5号位 物理伤害 | 候选胚子强化 |" in report
-    assert "## 当前调律期望管理" in report
+    assert "## 桌面结果区调律期望管理" in report
     assert "### 随机 vs 固定位置收益效率" in report
     assert "| 随机位置 | 云岿如我 | 1-6 随机 |" in report
     assert "| 固定位置 | 折枝剑歌 | 6号位 |" in report
@@ -435,7 +435,7 @@ def test_acceptance_check_rows_require_business_markers_not_only_section_titles(
             "## 今日行动摘要",
             "## 下一步操作卡",
             "## 候选下一跳止损卡",
-            "## 当前调律期望管理",
+            "## 桌面结果区调律期望管理",
             "### 随机 vs 固定位置收益效率",
             "### 固定主属性省母盘阶梯",
             "### 固定副属性省母盘阶梯",
@@ -476,7 +476,7 @@ def test_first_version_acceptance_cli_can_write_report_and_checks(tmp_path, caps
     check_rows = json.loads(checks.read_text(encoding="utf-8"))
     assert all(row["状态"] == "ok" for row in check_rows)
     assert any(row["id"] == "priority_closure" for row in check_rows)
-    assert "# 绝区零 星徽·比利 第一版验收总览" in report
+    assert "# 绝区零 星徽·比利 算法验收总览" in report
     assert "| 这个新胚子还值不值得强化？ | 继续 |" in report
     assert "继续强化候选" in report
-    assert "## 当前调律期望管理" in report
+    assert "## 桌面结果区调律期望管理" in report

@@ -14,7 +14,11 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
     QFormLayout,
+    QFrame,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
@@ -24,6 +28,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QProgressBar,
+    QSizePolicy,
     QSpinBox,
     QTabWidget,
     QTableWidget,
@@ -49,6 +54,7 @@ from gear_optimizer.position_ev import (
 )
 from gear_optimizer.presets import list_current_examples, load_current_example
 from gear_optimizer.scoring import analyse_current_gear
+from gear_optimizer.scoring import score_piece
 from gear_optimizer.user_current_gear import load_user_current_gears, save_user_current_gear
 from gear_optimizer.user_inventory import load_user_inventory, save_user_inventory, user_inventory_store_path
 
@@ -101,6 +107,118 @@ GEAR_COLUMN_WIDTHS = [
 ]
 LEVEL_COMBO_MIN_WIDTH = 82
 ROLL_SPINBOX_MIN_WIDTH = 72
+SUMMARY_NUMERIC_COLUMNS = {"有效", "质量", "当前有效", "期望有效", "当前质量", "期望质量", "质量/母盘", "有效/母盘"}
+APP_QSS = """
+QMainWindow, QWidget {
+    background: #f4f6f8;
+    color: #202124;
+    font-size: 13px;
+}
+QGroupBox {
+    background: #ffffff;
+    border: 1px solid #d7dce2;
+    border-radius: 8px;
+    margin-top: 12px;
+    padding: 12px;
+    font-weight: 700;
+}
+QGroupBox::title {
+    subcontrol-origin: margin;
+    left: 12px;
+    padding: 0 6px;
+}
+QTabWidget::pane {
+    border: 0;
+}
+QTabBar::tab {
+    background: #e7ebf0;
+    border: 1px solid #d2d8df;
+    border-radius: 6px;
+    padding: 8px 14px;
+    margin-right: 4px;
+}
+QTabBar::tab:selected {
+    background: #ffffff;
+    color: #0b57d0;
+    border-color: #9db7f5;
+}
+QPushButton {
+    background: #1a73e8;
+    color: white;
+    border: 0;
+    border-radius: 6px;
+    padding: 7px 12px;
+    font-weight: 700;
+}
+QPushButton:disabled {
+    background: #c8d1dc;
+    color: #657386;
+}
+QPushButton:hover:!disabled {
+    background: #1558b0;
+}
+QComboBox, QLineEdit, QSpinBox {
+    background: #ffffff;
+    border: 1px solid #cbd3dc;
+    border-radius: 6px;
+    padding: 5px 8px;
+}
+QTableWidget {
+    background: #ffffff;
+    alternate-background-color: #f8fafc;
+    gridline-color: #e5e9ef;
+    border: 1px solid #d7dce2;
+    border-radius: 6px;
+}
+QHeaderView::section {
+    background: #eef2f7;
+    color: #3c4043;
+    border: 0;
+    border-right: 1px solid #d7dce2;
+    padding: 6px;
+    font-weight: 700;
+}
+QTextEdit {
+    background: #ffffff;
+    border: 1px solid #d7dce2;
+    border-radius: 6px;
+}
+QLabel#Badge {
+    border-radius: 10px;
+    padding: 3px 9px;
+    font-weight: 700;
+    background: #e8f0fe;
+    color: #0b57d0;
+}
+QLabel#MutedBadge {
+    border-radius: 10px;
+    padding: 3px 9px;
+    font-weight: 700;
+    background: #edf2f7;
+    color: #56606b;
+}
+QFrame#PieceCard, QFrame#OverviewCard, QFrame#RecommendCard {
+    background: #ffffff;
+    border: 1px solid #d7dce2;
+    border-radius: 8px;
+}
+QFrame#PieceCard:hover {
+    border-color: #1a73e8;
+}
+QProgressBar {
+    border: 1px solid #9db7f5;
+    border-radius: 6px;
+    background: #e8f0fe;
+    color: #174ea6;
+    text-align: center;
+    font-weight: 700;
+}
+QProgressBar::chunk {
+    border-radius: 5px;
+    margin: 2px;
+    background-color: #1a73e8;
+}
+"""
 
 
 def _model_payload(item: Any) -> Any:
@@ -209,6 +327,25 @@ def _format_progress_count(value: Any) -> str:
     if number.is_integer():
         return str(int(number))
     return f"{number:.1f}"
+
+
+def _badge(text: str, muted: bool = False) -> QLabel:
+    label = QLabel(text)
+    label.setObjectName("MutedBadge" if muted else "Badge")
+    label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    return label
+
+
+def _piece_metric_labels(
+    piece: GearPiece,
+    game: GameRules,
+    character: CharacterPreset,
+) -> tuple[str, str]:
+    try:
+        score = score_piece(piece, game, character)
+    except Exception:
+        return "-", "-"
+    return str(score.effective_rolls), f"{score.weighted_score:.2f}"
 
 
 def _loadout_level_label(piece: Any, row: dict[str, Any]) -> str:
@@ -556,6 +693,110 @@ class GearTable(QTableWidget):
         return bool(widget.isChecked()) if isinstance(widget, QCheckBox) else False
 
 
+class PieceCard(QFrame):
+    clicked = Signal(int)
+
+    def __init__(
+        self,
+        row_index: int,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.row_index = row_index
+        self.setObjectName("PieceCard")
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.setMinimumHeight(150)
+
+        layout = QVBoxLayout(self)
+        header = QHBoxLayout()
+        self.position_label = QLabel("-")
+        self.position_label.setStyleSheet("font-weight: 800; font-size: 16px;")
+        self.locked_badge = _badge("未锁", muted=True)
+        header.addWidget(self.position_label)
+        header.addStretch(1)
+        header.addWidget(self.locked_badge)
+        layout.addLayout(header)
+
+        self.set_label = QLabel("-")
+        self.main_label = QLabel("-")
+        self.substat_label = QLabel("-")
+        self.substat_label.setWordWrap(True)
+        self.metrics_label = QLabel("有效 - / 质量 -")
+        self.metrics_label.setObjectName("MutedBadge")
+        layout.addWidget(self.set_label)
+        layout.addWidget(self.main_label)
+        layout.addWidget(self.substat_label, 1)
+        layout.addWidget(self.metrics_label)
+
+    def update_piece(
+        self,
+        piece: GearPiece,
+        game: GameRules,
+        character: CharacterPreset,
+    ) -> None:
+        effective, quality = _piece_metric_labels(piece, game, character)
+        self.position_label.setText(game.position_name(piece.position))
+        self.locked_badge.setText("锁定" if piece.locked else "未锁")
+        self.locked_badge.setObjectName("Badge" if piece.locked else "MutedBadge")
+        self.locked_badge.style().unpolish(self.locked_badge)
+        self.locked_badge.style().polish(self.locked_badge)
+        self.set_label.setText(f"套装：{piece.set_name}")
+        self.main_label.setText(f"主属性：{piece.main_stat}  +{piece.level}")
+        self.substat_label.setText(f"副词条：{_piece_substat_label(piece)}")
+        self.metrics_label.setText(f"有效 {effective} / 质量 {quality}")
+
+    def mousePressEvent(self, event) -> None:  # type: ignore[override]
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit(self.row_index)
+        super().mousePressEvent(event)
+
+
+class GearPieceEditDialog(QDialog):
+    def __init__(
+        self,
+        game: GameRules,
+        character: CharacterPreset,
+        piece: GearPiece,
+        editable_position: bool,
+        title: str,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self._piece: GearPiece | None = None
+        self.table = GearTable(
+            editable_positions=editable_position,
+            row_label_prefix="装备",
+        )
+        self.table.set_context(game, character, [piece])
+        self.table.verticalHeader().setVisible(False)
+        self.table.setMinimumHeight(125)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(self.table)
+        layout.addWidget(buttons)
+        self.resize(1120, 220)
+
+    @property
+    def piece(self) -> GearPiece | None:
+        return self._piece
+
+    def accept(self) -> None:  # type: ignore[override]
+        pieces, warnings = self.table.collect_pieces()
+        if warnings:
+            QMessageBox.warning(self, "装备无法保存", "\n".join(warnings[:8]))
+            return
+        self._piece = pieces[0] if pieces else None
+        super().accept()
+
+
 class ActionEvWorker(QObject):
     progress = Signal(dict)
     finished = Signal(list)
@@ -601,10 +842,16 @@ class OptimizerWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("gacha-gear-optimizer")
         self.resize(width, height)
+        self.setStyleSheet(APP_QSS)
         self.games = load_games()
         self.characters: list[CharacterPreset] = []
         self.probabilities: list[ProbabilityModel] = []
         self.current_confirmed_digest: str | None = None
+        self._results_stale = True
+        self._has_calculated_once = False
+        self._last_weakest_label = "-"
+        self._last_recommended_action_summary = "尚未计算"
+        self._last_main_metric_summary = "-"
         self._worker_thread: QThread | None = None
         self._worker: ActionEvWorker | None = None
         self._action_progress_started_at: float | None = None
@@ -620,12 +867,32 @@ class OptimizerWindow(QMainWindow):
         self.probability_combo = QComboBox()
         self.current_table = GearTable(editable_positions=False, row_label_prefix="当前")
         self.inventory_table = GearTable(editable_positions=True, row_label_prefix="库存")
+        self.current_cards: list[PieceCard] = []
+        self.overview_game_label = QLabel("-")
+        self.overview_character_label = QLabel("-")
+        self.overview_probability_label = QLabel("-")
+        self.overview_confirm_label = _badge("未确认", muted=True)
+        self.overview_inventory_label = _badge("库存 0 件", muted=True)
+        self.overview_stale_label = _badge("结果未生成", muted=True)
+        self.overview_weakest_label = QLabel("-")
+        self.overview_action_label = QLabel("尚未计算")
+        self.overview_action_label.setWordWrap(True)
+        self.overview_metric_label = QLabel("-")
+        self.overview_metric_label.setWordWrap(True)
+        self.overview_guide_label = QLabel("先维护库存与当前装备，确认当前装备后再计算最优搭配或调律建议。")
+        self.overview_guide_label.setWordWrap(True)
         self.confirm_button = QPushButton("确认当前装备")
         self.save_current_button = QPushButton("保存当前装备到本机")
         self.load_example_button = QPushButton("载入示例当前装备")
         self.add_inventory_button = QPushButton("添加库存件")
         self.delete_inventory_button = QPushButton("删除选中库存件")
         self.save_inventory_button = QPushButton("保存库存到本机")
+        self.position_filter = QComboBox()
+        self.set_filter = QComboBox()
+        self.main_filter = QComboBox()
+        self.inventory_summary_table = QTableWidget()
+        self.inventory_detail_label = QLabel("选择一件库存查看副词条详情。")
+        self.inventory_detail_label.setWordWrap(True)
         self.best_button = QPushButton("计算当前最优搭配")
         self.action_button = QPushButton("计算调律建议")
         self.horizon_combo = QComboBox()
@@ -634,23 +901,6 @@ class OptimizerWindow(QMainWindow):
         self.progress_bar.setTextVisible(True)
         self.progress_bar.setMinimumHeight(30)
         self.progress_bar.setFormat("0%")
-        self.progress_bar.setStyleSheet(
-            """
-            QProgressBar {
-                border: 1px solid #7d8590;
-                border-radius: 6px;
-                background: #16181c;
-                color: #ffffff;
-                text-align: center;
-                font-weight: 700;
-            }
-            QProgressBar::chunk {
-                border-radius: 5px;
-                margin: 2px;
-                background-color: #2f8cff;
-            }
-            """
-        )
         self.progress_label = QLabel("当前装备未确认。")
         self.progress_detail_label = QLabel("")
         self.progress_detail_label.setWordWrap(True)
@@ -658,11 +908,19 @@ class OptimizerWindow(QMainWindow):
             Qt.TextInteractionFlag.TextSelectableByMouse
         )
         self.tabs = QTabWidget()
+        self.result_tabs = QTabWidget()
+        self.result_recommend_title = QLabel("暂无推荐")
+        self.result_recommend_title.setStyleSheet("font-weight: 800; font-size: 17px;")
+        self.result_recommend_detail = QLabel("计算调律建议后会在这里显示推荐 action 和主要收益。")
+        self.result_recommend_detail.setWordWrap(True)
         self.best_table = QTableWidget()
         self.action_table = QTableWidget()
         self.action_loadout_table = QTableWidget()
+        self.log_toggle_button = QPushButton("显示运行日志")
+        self.log_toggle_button.setCheckable(True)
         self.log = QTextEdit()
         self.log.setReadOnly(True)
+        self.log.setVisible(False)
 
         self._build_ui()
         self._connect_signals()
@@ -679,11 +937,57 @@ class OptimizerWindow(QMainWindow):
         form.addRow("概率模型", self.probability_combo)
         layout.addWidget(selectors)
 
+        overview_page = QWidget()
+        overview_layout = QVBoxLayout(overview_page)
+        status_group = QGroupBox("总览")
+        status_layout = QGridLayout(status_group)
+        status_layout.addWidget(QLabel("游戏"), 0, 0)
+        status_layout.addWidget(self.overview_game_label, 0, 1)
+        status_layout.addWidget(QLabel("角色"), 0, 2)
+        status_layout.addWidget(self.overview_character_label, 0, 3)
+        status_layout.addWidget(QLabel("概率模型"), 0, 4)
+        status_layout.addWidget(self.overview_probability_label, 0, 5)
+        status_layout.addWidget(QLabel("当前装备"), 1, 0)
+        status_layout.addWidget(self.overview_confirm_label, 1, 1)
+        status_layout.addWidget(QLabel("库存"), 1, 2)
+        status_layout.addWidget(self.overview_inventory_label, 1, 3)
+        status_layout.addWidget(QLabel("结果状态"), 1, 4)
+        status_layout.addWidget(self.overview_stale_label, 1, 5)
+        status_layout.addWidget(QLabel("当前最弱位置"), 2, 0)
+        status_layout.addWidget(self.overview_weakest_label, 2, 1, 1, 5)
+        overview_layout.addWidget(status_group)
+
+        recommendation_group = QGroupBox("推荐摘要")
+        recommendation_layout = QVBoxLayout(recommendation_group)
+        recommendation_layout.addWidget(self.overview_action_label)
+        recommendation_layout.addWidget(self.overview_metric_label)
+        recommendation_layout.addWidget(self.overview_guide_label)
+        overview_layout.addWidget(recommendation_group)
+        overview_layout.addStretch(1)
+        self.tabs.addTab(overview_page, "总览")
+
         inventory_page = QWidget()
         inventory_page_layout = QVBoxLayout(inventory_page)
         inventory_group = QGroupBox("背包库存（未装备盘）")
         inventory_layout = QVBoxLayout(inventory_group)
-        inventory_layout.addWidget(self.inventory_table)
+        filter_layout = QHBoxLayout()
+        filter_layout.addWidget(QLabel("位置"))
+        filter_layout.addWidget(self.position_filter)
+        filter_layout.addWidget(QLabel("套装"))
+        filter_layout.addWidget(self.set_filter)
+        filter_layout.addWidget(QLabel("主属性"))
+        filter_layout.addWidget(self.main_filter)
+        filter_layout.addStretch(1)
+        inventory_layout.addLayout(filter_layout)
+        self.inventory_summary_table.setAlternatingRowColors(True)
+        self.inventory_summary_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.inventory_summary_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.inventory_summary_table.verticalHeader().setVisible(False)
+        inventory_layout.addWidget(self.inventory_summary_table)
+        detail_group = QGroupBox("副词条详情")
+        detail_layout = QVBoxLayout(detail_group)
+        detail_layout.addWidget(self.inventory_detail_label)
+        inventory_layout.addWidget(detail_group)
         inventory_buttons = QHBoxLayout()
         inventory_buttons.addWidget(self.add_inventory_button)
         inventory_buttons.addWidget(self.delete_inventory_button)
@@ -697,7 +1001,10 @@ class OptimizerWindow(QMainWindow):
         current_page_layout = QVBoxLayout(current_page)
         current_group = QGroupBox("当前装备（身上 6 件）")
         current_layout = QVBoxLayout(current_group)
-        current_layout.addWidget(self.current_table)
+        self.current_card_grid = QGridLayout()
+        self.current_card_grid.setHorizontalSpacing(12)
+        self.current_card_grid.setVerticalSpacing(12)
+        current_layout.addLayout(self.current_card_grid)
         current_buttons = QHBoxLayout()
         current_buttons.addWidget(self.confirm_button)
         current_buttons.addWidget(self.save_current_button)
@@ -725,28 +1032,52 @@ class OptimizerWindow(QMainWindow):
         action_layout.addWidget(self.progress_bar)
         result_page_layout.addWidget(action_group)
 
+        recommend_card = QFrame()
+        recommend_card.setObjectName("RecommendCard")
+        recommend_layout = QVBoxLayout(recommend_card)
+        recommend_layout.addWidget(self.result_recommend_title)
+        recommend_layout.addWidget(self.result_recommend_detail)
+        result_page_layout.addWidget(recommend_card)
+
+        action_detail_page = QWidget()
+        action_detail_layout = QVBoxLayout(action_detail_page)
+        action_detail_layout.addWidget(self.action_table)
+        self.result_tabs.addTab(action_detail_page, "Action EV 明细")
+
+        loadout_page = QWidget()
+        loadout_layout = QVBoxLayout(loadout_page)
+        loadout_layout.addWidget(QLabel("当前最优搭配"))
+        loadout_layout.addWidget(self.best_table)
+        loadout_layout.addWidget(QLabel("推荐调律后代表搭配"))
+        loadout_layout.addWidget(self.action_loadout_table)
+        self.result_tabs.addTab(loadout_page, "代表搭配")
+
+        log_page = QWidget()
+        log_layout = QVBoxLayout(log_page)
+        log_layout.addWidget(self.log_toggle_button)
+        log_layout.addWidget(self.log)
+        self.result_tabs.addTab(log_page, "运行日志")
         result_group = QGroupBox("结果")
         result_layout = QVBoxLayout(result_group)
-        result_layout.addWidget(QLabel("当前最优搭配"))
-        result_layout.addWidget(self.best_table)
-        result_layout.addWidget(QLabel("调律建议 Action EV"))
-        result_layout.addWidget(self.action_table)
-        result_layout.addWidget(QLabel("推荐调律后代表搭配"))
-        result_layout.addWidget(self.action_loadout_table)
-        result_layout.addWidget(QLabel("运行日志"))
-        result_layout.addWidget(self.log)
+        result_layout.addWidget(self.result_tabs)
         result_page_layout.addWidget(result_group)
         self.tabs.addTab(result_page, "计算结果")
         layout.addWidget(self.tabs, 1)
+        self.tabs.setCurrentIndex(0)
 
         self.setCentralWidget(root)
 
     def _connect_signals(self) -> None:
         self.game_combo.currentIndexChanged.connect(lambda _index: self._reload_game_context())
         self.character_combo.currentIndexChanged.connect(lambda _index: self._reload_character_context())
-        self.probability_combo.currentIndexChanged.connect(lambda _index: self._clear_results("概率模型已变化。"))
+        self.probability_combo.currentIndexChanged.connect(lambda _index: self._probability_changed())
         self.current_table.changed.connect(self._current_changed)
-        self.inventory_table.changed.connect(lambda: self._clear_results("库存已变化。"))
+        self.inventory_table.changed.connect(self._inventory_changed)
+        self.position_filter.currentIndexChanged.connect(lambda _index: self._refresh_inventory_view())
+        self.set_filter.currentIndexChanged.connect(lambda _index: self._refresh_inventory_view())
+        self.main_filter.currentIndexChanged.connect(lambda _index: self._refresh_inventory_view())
+        self.inventory_summary_table.itemSelectionChanged.connect(self._refresh_inventory_detail)
+        self.log_toggle_button.toggled.connect(self._set_log_visible)
         self.confirm_button.clicked.connect(self.confirm_current)
         self.save_current_button.clicked.connect(self.save_current)
         self.load_example_button.clicked.connect(self.load_example_current)
@@ -788,6 +1119,13 @@ class OptimizerWindow(QMainWindow):
         self.current_table.set_context(game, character, current_pieces)
         self.inventory_table.set_context(game, character, inventory_pieces)
         self.current_confirmed_digest = None
+        self._last_weakest_label = "-"
+        self._last_recommended_action_summary = "尚未计算"
+        self._last_main_metric_summary = "-"
+        self._has_calculated_once = False
+        self._refresh_current_cards()
+        self._refresh_inventory_filters()
+        self._refresh_inventory_view()
         self._clear_results("已切换角色或游戏，请先确认当前装备。")
         self._update_action_buttons()
 
@@ -812,12 +1150,261 @@ class OptimizerWindow(QMainWindow):
                 return model
         return self.probabilities[0]
 
+    def _probability_changed(self) -> None:
+        self._clear_results("概率模型已变化。")
+        self._refresh_overview()
+
+    def _set_badge_text(self, label: QLabel, text: str, muted: bool = False) -> None:
+        label.setText(text)
+        label.setObjectName("MutedBadge" if muted else "Badge")
+        label.style().unpolish(label)
+        label.style().polish(label)
+
+    def _has_visible_results(self) -> bool:
+        return self.best_table.rowCount() > 0 or self.action_table.rowCount() > 0
+
+    def _result_status_text(self) -> tuple[str, bool]:
+        if self._results_stale and self._has_calculated_once:
+            return "结果已过期", False
+        if self._has_visible_results() and not self._results_stale:
+            return "结果有效", False
+        return "结果未生成", True
+
+    def _refresh_overview(self) -> None:
+        if not self.games or not self.characters or not self.probabilities:
+            return
+        self.overview_game_label.setText(self.game_combo.currentText() or "-")
+        self.overview_character_label.setText(self.character_combo.currentText() or "-")
+        self.overview_probability_label.setText(self.probability_combo.currentText() or "-")
+        confirmed = self.current_confirmed_digest is not None
+        self._set_badge_text(self.overview_confirm_label, "已确认" if confirmed else "未确认", not confirmed)
+        self._set_badge_text(
+            self.overview_inventory_label,
+            f"库存 {self.inventory_table.rowCount()} 件",
+            self.inventory_table.rowCount() == 0,
+        )
+        status_text, muted = self._result_status_text()
+        self._set_badge_text(self.overview_stale_label, status_text, muted)
+        self.overview_weakest_label.setText(self._last_weakest_label)
+        self.overview_action_label.setText(self._last_recommended_action_summary)
+        self.overview_metric_label.setText(self._last_main_metric_summary)
+        guide = "没有结果。按顺序维护库存、确认当前装备，然后点击“计算当前最优搭配”或“计算调律建议”。"
+        if self._results_stale and self._has_calculated_once:
+            guide = "装备、库存或概率模型已变化，旧结果不可作为当前结论，请重新计算。"
+        elif self._has_visible_results() and not self._results_stale:
+            guide = "结果已更新，可在“计算结果”页查看 Action EV 明细、代表搭配和运行日志。"
+        self.overview_guide_label.setText(guide)
+
+    def _hidden_table_pieces(self, table: GearTable) -> list[GearPiece]:
+        pieces, _warnings = table.collect_pieces()
+        return pieces
+
+    def _refresh_current_cards(self) -> None:
+        if not hasattr(self, "current_card_grid") or not self.characters:
+            return
+        while self.current_card_grid.count():
+            item = self.current_card_grid.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+        self.current_cards = []
+        game = self.selected_game()
+        character = self.selected_character()
+        pieces = self._hidden_table_pieces(self.current_table)
+        by_position = {position_key(piece.position): index for index, piece in enumerate(pieces)}
+        layout = game.board_layout or [
+            [rule.id for rule in game.positions[:3]],
+            [rule.id for rule in game.positions[3:6]],
+        ]
+        for row_index, layout_row in enumerate(layout):
+            for column_index, position in enumerate(layout_row):
+                if position is None:
+                    spacer = QLabel("")
+                    self.current_card_grid.addWidget(spacer, row_index, column_index)
+                    continue
+                source_row = by_position.get(position_key(position))
+                if source_row is None:
+                    continue
+                card = PieceCard(source_row)
+                card.update_piece(pieces[source_row], game, character)
+                card.clicked.connect(self.edit_current_piece)
+                self.current_cards.append(card)
+                self.current_card_grid.addWidget(card, row_index, column_index)
+        self._refresh_overview()
+
+    def edit_current_piece(self, row: int) -> None:
+        pieces = self._hidden_table_pieces(self.current_table)
+        if row < 0 or row >= len(pieces):
+            return
+        dialog = GearPieceEditDialog(
+            self.selected_game(),
+            self.selected_character(),
+            pieces[row],
+            editable_position=False,
+            title=f"编辑当前装备：{self.selected_game().position_name(pieces[row].position)}",
+            parent=self,
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted or dialog.piece is None:
+            return
+        pieces[row] = dialog.piece
+        self.current_table.set_context(self.selected_game(), self.selected_character(), pieces)
+        self._current_changed()
+
+    def edit_inventory_piece(self, source_row: int) -> None:
+        pieces = self._hidden_table_pieces(self.inventory_table)
+        if source_row < 0 or source_row >= len(pieces):
+            return
+        dialog = GearPieceEditDialog(
+            self.selected_game(),
+            self.selected_character(),
+            pieces[source_row],
+            editable_position=True,
+            title=f"编辑库存件 #{source_row + 1}",
+            parent=self,
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted or dialog.piece is None:
+            return
+        pieces[source_row] = dialog.piece
+        self.inventory_table.set_context(self.selected_game(), self.selected_character(), pieces)
+        self._inventory_changed()
+
+    def _inventory_source_row_for_visible_row(self, visible_row: int) -> int | None:
+        item = self.inventory_summary_table.item(visible_row, 0)
+        if item is None:
+            return None
+        value = item.data(Qt.ItemDataRole.UserRole)
+        return int(value) if value is not None else None
+
+    def _selected_inventory_source_row(self) -> int | None:
+        selected = self.inventory_summary_table.selectionModel().selectedRows()
+        if not selected:
+            return None
+        return self._inventory_source_row_for_visible_row(selected[0].row())
+
+    def _refresh_inventory_filters(self) -> None:
+        game = self.selected_game()
+        pieces = self._hidden_table_pieces(self.inventory_table)
+        current_values = {
+            "position": self.position_filter.currentData(),
+            "set": self.set_filter.currentData(),
+            "main": self.main_filter.currentData(),
+        }
+        self.position_filter.blockSignals(True)
+        self.set_filter.blockSignals(True)
+        self.main_filter.blockSignals(True)
+        try:
+            self.position_filter.clear()
+            self.position_filter.addItem("全部", "")
+            for rule in game.positions:
+                self.position_filter.addItem(game.position_name(rule.id), position_key(rule.id))
+            self.set_filter.clear()
+            self.set_filter.addItem("全部", "")
+            for set_name in game.sets:
+                self.set_filter.addItem(set_name, set_name)
+            self.main_filter.clear()
+            self.main_filter.addItem("全部", "")
+            for main_stat in sorted({piece.main_stat for piece in pieces}):
+                self.main_filter.addItem(main_stat, main_stat)
+            for combo, value in [
+                (self.position_filter, current_values["position"]),
+                (self.set_filter, current_values["set"]),
+                (self.main_filter, current_values["main"]),
+            ]:
+                index = combo.findData(value)
+                combo.setCurrentIndex(index if index >= 0 else 0)
+        finally:
+            self.position_filter.blockSignals(False)
+            self.set_filter.blockSignals(False)
+            self.main_filter.blockSignals(False)
+
+    def _inventory_piece_visible(self, piece: GearPiece) -> bool:
+        position_filter = str(self.position_filter.currentData() or "")
+        set_filter = str(self.set_filter.currentData() or "")
+        main_filter = str(self.main_filter.currentData() or "")
+        if position_filter and position_key(piece.position) != position_filter:
+            return False
+        if set_filter and piece.set_name != set_filter:
+            return False
+        if main_filter and piece.main_stat != main_filter:
+            return False
+        return True
+
+    def _refresh_inventory_view(self) -> None:
+        if not self.characters:
+            return
+        game = self.selected_game()
+        character = self.selected_character()
+        pieces = self._hidden_table_pieces(self.inventory_table)
+        rows = [
+            (source_row, piece)
+            for source_row, piece in enumerate(pieces)
+            if self._inventory_piece_visible(piece)
+        ]
+        columns = ["位置", "套装", "主属性", "等级", "有效", "质量", "锁定", "操作"]
+        self.inventory_summary_table.clear()
+        self.inventory_summary_table.setColumnCount(len(columns))
+        self.inventory_summary_table.setHorizontalHeaderLabels(columns)
+        self.inventory_summary_table.setRowCount(len(rows))
+        for row_index, (source_row, piece) in enumerate(rows):
+            effective, quality = _piece_metric_labels(piece, game, character)
+            values = [
+                game.position_name(piece.position),
+                piece.set_name,
+                piece.main_stat,
+                f"+{piece.level}",
+                effective,
+                quality,
+                "锁定" if piece.locked else "-",
+            ]
+            for column_index, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                if column_index == 0:
+                    item.setData(Qt.ItemDataRole.UserRole, source_row)
+                if columns[column_index] in SUMMARY_NUMERIC_COLUMNS:
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                self.inventory_summary_table.setItem(row_index, column_index, item)
+            button = QPushButton("编辑")
+            button.clicked.connect(lambda _checked=False, r=source_row: self.edit_inventory_piece(r))
+            self.inventory_summary_table.setCellWidget(row_index, len(columns) - 1, button)
+        self.inventory_summary_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.ResizeToContents
+        )
+        self.inventory_summary_table.horizontalHeader().setStretchLastSection(True)
+        self._refresh_inventory_detail()
+        self._refresh_overview()
+
+    def _refresh_inventory_detail(self) -> None:
+        source_row = self._selected_inventory_source_row()
+        pieces = self._hidden_table_pieces(self.inventory_table)
+        if source_row is None or source_row < 0 or source_row >= len(pieces):
+            self.inventory_detail_label.setText("选择一件库存查看副词条详情。")
+            return
+        piece = pieces[source_row]
+        effective, quality = _piece_metric_labels(piece, self.selected_game(), self.selected_character())
+        self.inventory_detail_label.setText(
+            f"库存 #{source_row + 1} | {self.selected_game().position_name(piece.position)} | "
+            f"{piece.set_name} | {piece.main_stat} +{piece.level} | "
+            f"有效 {effective} / 质量 {quality} | 副词条：{_piece_substat_label(piece)}"
+        )
+
+    def _inventory_changed(self) -> None:
+        self._refresh_inventory_filters()
+        self._refresh_inventory_view()
+        self._clear_results("库存已变化。")
+
+    def _set_log_visible(self, visible: bool) -> None:
+        self.log.setVisible(visible)
+        self.log_toggle_button.setText("隐藏运行日志" if visible else "显示运行日志")
+
     def _current_changed(self) -> None:
         self.current_confirmed_digest = None
         self._clear_results("当前装备已变化，请重新确认。")
         self._update_action_buttons()
+        self._refresh_current_cards()
 
     def _clear_results(self, message: str = "") -> None:
+        self._results_stale = True
         self.best_table.setRowCount(0)
         self.best_table.setColumnCount(0)
         self.action_table.setRowCount(0)
@@ -834,6 +1421,15 @@ class OptimizerWindow(QMainWindow):
             self.progress_bar.setFormat("0%")
             self.progress_label.setText(message or "等待操作。")
             self.progress_detail_label.setText("")
+            if self._has_calculated_once:
+                self._last_recommended_action_summary = "结果已过期，请重新计算。"
+                self._last_main_metric_summary = "-"
+                self.result_recommend_title.setText("结果已过期")
+                self.result_recommend_detail.setText(message or "输入已变化，请重新计算。")
+            else:
+                self.result_recommend_title.setText("暂无推荐")
+                self.result_recommend_detail.setText("计算调律建议后会在这里显示推荐 action 和主要收益。")
+            self._refresh_overview()
 
     def _start_action_progress(self) -> None:
         now = time.monotonic()
@@ -990,10 +1586,12 @@ class OptimizerWindow(QMainWindow):
             return
         self.current_confirmed_digest = _pieces_digest(pieces)
         analysis = analyse_current_gear(pieces, self.selected_game(), self.selected_character())
+        self._last_weakest_label = analysis.weakest_position_name or "-"
         self.progress_label.setText(
             f"当前装备已确认。最弱位置：{analysis.weakest_position_name or '-'}。"
         )
         self._update_action_buttons()
+        self._refresh_overview()
 
     def save_current(self) -> None:
         pieces = self._collect_current_or_warn()
@@ -1029,7 +1627,14 @@ class OptimizerWindow(QMainWindow):
         self.progress_label.setText("已添加一件库存；不会自动计算。")
 
     def delete_inventory(self) -> None:
-        self.inventory_table.remove_selected()
+        source_row = self._selected_inventory_source_row()
+        if source_row is None:
+            return
+        pieces = self._hidden_table_pieces(self.inventory_table)
+        if 0 <= source_row < len(pieces):
+            pieces.pop(source_row)
+            self.inventory_table.set_context(self.selected_game(), self.selected_character(), pieces)
+            self._inventory_changed()
         self.progress_label.setText("已删除选中库存；不会自动计算。")
 
     def save_inventory(self) -> None:
@@ -1066,8 +1671,16 @@ class OptimizerWindow(QMainWindow):
             self.best_table,
             _loadout_display_rows(rows, game, len(current_pieces)),
         )
-        self.tabs.setCurrentIndex(2)
+        self._has_calculated_once = True
+        self._results_stale = False
+        self._last_recommended_action_summary = "当前最优搭配已更新。"
+        self._last_main_metric_summary = f"代表搭配 {len(rows)} 件；库存合计 {len(current_pieces) + len(inventory_pieces)} 件。"
+        self.result_recommend_title.setText("当前最优搭配已更新")
+        self.result_recommend_detail.setText(self._last_main_metric_summary)
+        self.tabs.setCurrentIndex(3)
+        self.result_tabs.setCurrentIndex(1)
         self.progress_label.setText("当前最优搭配已计算完成。")
+        self._refresh_overview()
 
     def run_action_ev(self) -> None:
         current_pieces = self._collect_current_or_warn()
@@ -1097,7 +1710,7 @@ class OptimizerWindow(QMainWindow):
         self._worker_thread.finished.connect(self._worker.deleteLater)
         self._worker_thread.finished.connect(self._worker_thread.deleteLater)
         self._worker_thread.start()
-        self.tabs.setCurrentIndex(2)
+        self.tabs.setCurrentIndex(3)
 
     def _on_action_progress(self, payload: dict) -> None:
         self._last_action_progress_payload = dict(payload)
@@ -1150,8 +1763,30 @@ class OptimizerWindow(QMainWindow):
                 f"推荐：{recommended['策略']} / {recommended['目标套装']} / {recommended['位置']} / "
                 f"{recommended.get('主属性', '-')}"
             )
+            self._last_recommended_action_summary = (
+                f"{recommended['策略']} / {recommended['目标套装']} / {recommended['位置']} / "
+                f"{recommended.get('主属性', '-')}"
+            )
+            self._last_main_metric_summary = (
+                f"期望提升：{recommended.get('期望提升', '-')}；"
+                f"有效/母盘：{recommended.get('有效/母盘', '-')}；"
+                f"质量/母盘：{recommended.get('质量/母盘', '-')}"
+            )
+            self.result_recommend_title.setText("推荐调律 action")
+            self.result_recommend_detail.setText(
+                f"{self._last_recommended_action_summary}\n{self._last_main_metric_summary}"
+            )
+        else:
+            self._last_recommended_action_summary = "没有找到满足当前硬约束的推荐 action。"
+            self._last_main_metric_summary = "-"
+            self.result_recommend_title.setText("暂无可推荐 action")
+            self.result_recommend_detail.setText(self._last_recommended_action_summary)
+        self._has_calculated_once = True
+        self._results_stale = False
         self.progress_label.setText("调律建议已计算完成。")
         self.progress_detail_label.setText("整体 100/100 | 已完成")
+        self.result_tabs.setCurrentIndex(0)
+        self._refresh_overview()
         self._update_action_buttons()
 
     def _on_action_failed(self, traceback_text: str) -> None:
@@ -1161,7 +1796,13 @@ class OptimizerWindow(QMainWindow):
         self.progress_label.setText("调律建议计算失败。")
         self.progress_detail_label.setText("后台计算已停止，错误详情已写入运行日志。")
         self.log.append(traceback_text)
+        self.result_recommend_title.setText("调律建议计算失败")
+        self.result_recommend_detail.setText("运行日志已展开，请查看错误详情。")
+        self.log_toggle_button.setChecked(True)
+        self.result_tabs.setCurrentIndex(2)
+        self.tabs.setCurrentIndex(3)
         QMessageBox.critical(self, "计算失败", traceback_text)
+        self._refresh_overview()
         self._update_action_buttons()
 
     def _fill_table(self, table: QTableWidget, rows: list[dict[str, Any]]) -> None:
@@ -1178,6 +1819,8 @@ class OptimizerWindow(QMainWindow):
         for row_index, row in enumerate(rows):
             for column_index, column in enumerate(columns):
                 item = QTableWidgetItem(_format_value(row.get(column)))
+                if column in SUMMARY_NUMERIC_COLUMNS:
+                    item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
                 item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
                 table.setItem(row_index, column_index, item)
         table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
