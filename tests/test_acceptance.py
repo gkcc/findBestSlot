@@ -229,7 +229,7 @@ def test_high_priority_closure_rows_cover_user_feedback_items():
     assert len(rows) == 12
     assert "PySide6 原生桌面入口" in by_number["1"]["闭环状态"]
     assert "Windows exe 打包" in by_number["1"]["闭环状态"]
-    assert "不再启动本地 Streamlit 服务" in by_number["1"]["证据"]
+    assert "不再保留 Web 入口" in by_number["1"]["证据"]
     assert "目标套装方案" in by_number["2"]["验收入口"]
     assert "副词条优先级" in by_number["4"]["验收入口"]
     assert "2x3 矩阵" in by_number["6"]["闭环状态"]

@@ -18,14 +18,11 @@ from gear_optimizer.presets import list_candidate_examples, list_current_example
 
 REQUIRED_PYTHON = (3, 11)
 REQUIRED_RUNTIME_DEPENDENCIES = [
-    ("streamlit", "streamlit", "local web UI server"),
     ("pydantic", "pydantic", "configuration models"),
     ("PyYAML", "yaml", "YAML configuration loading"),
-    ("pandas", "pandas", "tables and report data frames"),
-    ("plotly", "plotly", "charts"),
 ]
 EXPECTED_CONSOLE_SCRIPTS = {
-    "gacha-gear-optimizer": "gear_optimizer.launcher:streamlit_main",
+    "gacha-gear-optimizer": "gear_optimizer.launcher:desktop_main",
     "gacha-gear-optimizer-desktop": "gear_optimizer.launcher:desktop_main",
     "gacha-gear-optimizer-doctor": "gear_optimizer.diagnostics:main",
     "gacha-gear-optimizer-acceptance": "gear_optimizer.acceptance:main",
@@ -225,7 +222,6 @@ def resource_check_rows() -> list[dict[str, str]]:
     rows = [
         *_runtime_dependency_rows(),
         _path_row("project root", PROJECT_ROOT),
-        _path_row("app.py", PROJECT_ROOT / "app.py"),
         _path_row("desktop app entry", PROJECT_ROOT / "desktop_app.py"),
         _path_row("native PySide6 UI", PROJECT_ROOT / "src" / "gear_optimizer" / "pyside6_app.py"),
         _path_row("game configs", PROJECT_ROOT / "configs" / "games"),
@@ -235,7 +231,6 @@ def resource_check_rows() -> list[dict[str, str]]:
         _path_row("zzz drive disc icons", PROJECT_ROOT / "assets" / "zzz" / "drive_discs"),
         _console_scripts_row(),
         _release_helper_modules_row(),
-        _path_row("start app script", PROJECT_ROOT / "scripts" / "start_app.ps1"),
         _path_row("start desktop script", PROJECT_ROOT / "scripts" / "start_desktop.ps1"),
         _path_row("acceptance report script", PROJECT_ROOT / "scripts" / "acceptance_report.ps1"),
         _path_row("Windows packaging script", PROJECT_ROOT / "scripts" / "build_windows_app.ps1"),

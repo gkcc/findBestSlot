@@ -5,15 +5,12 @@ description = "Local visual optimizer for gacha gear substat probability and exp
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-  "streamlit>=1.36",
   "pydantic>=2.7",
   "PyYAML>=6.0",
-  "pandas>=2.2",
-  "plotly>=5.22",
 ]
 
 [project.scripts]
-gacha-gear-optimizer = "gear_optimizer.launcher:streamlit_main"
+gacha-gear-optimizer = "gear_optimizer.launcher:desktop_main"
 gacha-gear-optimizer-desktop = "gear_optimizer.launcher:desktop_main"
 gacha-gear-optimizer-doctor = "gear_optimizer.diagnostics:main"
 gacha-gear-optimizer-acceptance = "gear_optimizer.acceptance:main"
@@ -35,10 +32,6 @@ packaging = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src", "."]
-addopts = "-m 'not streamlit_ui'"
-markers = [
-  "streamlit_ui: Streamlit AppTest UI regression tests; run explicitly with -m streamlit_ui",
-]
 
 [tool.ruff]
 line-length = 100

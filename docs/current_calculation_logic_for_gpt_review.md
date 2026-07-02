@@ -254,7 +254,7 @@ V_h(I) = max(Best(I), max_a EV_h(I, a))
 
 - `position_strategy_efficiency_rows` 和 `resource_marginal_ev_rows` 接收 `progress_callback`。
 - 底层 `_expected_action_value` 和 `lookahead_inventory_value` 会发出 action、outcome、state、memo hit 等事件。
-- Streamlit UI 用这些事件显示进度条、当前 action、DP 状态数和缓存命中数。
+- PySide6 UI 用这些事件显示进度条、当前 action、DP 状态数和缓存命中数。
 
 UI 为避免误以为卡死：
 

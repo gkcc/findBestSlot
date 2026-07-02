@@ -6,20 +6,12 @@ import importlib
 import importlib.util
 import json
 from pathlib import Path
-import subprocess
 import sys
 
 from gear_optimizer.game_rules import PROJECT_ROOT
 
-APP_PATH = PROJECT_ROOT / "app.py"
 PYSIDE6_APP_MODULE = "gear_optimizer.pyside6_app"
 PYSIDE6_APP_PATH = PROJECT_ROOT / "src" / "gear_optimizer" / "pyside6_app.py"
-WEB_DEFAULT_STREAMLIT_ARGS = [
-    "--server.address",
-    "127.0.0.1",
-    "--browser.gatherUsageStats",
-    "false",
-]
 
 
 @dataclass(frozen=True)
@@ -30,22 +22,6 @@ class DesktopRuntimeCheck:
 
     def as_row(self) -> dict[str, str]:
         return {"item": self.item, "status": self.status, "detail": self.detail}
-
-
-def build_web_command(args: list[str] | None = None) -> list[str]:
-    return [
-        sys.executable,
-        "-m",
-        "streamlit",
-        "run",
-        str(APP_PATH),
-        *WEB_DEFAULT_STREAMLIT_ARGS,
-        *(args or []),
-    ]
-
-
-def streamlit_main(argv: list[str] | None = None) -> int:
-    return subprocess.call(build_web_command(argv), cwd=PROJECT_ROOT)
 
 
 def has_desktop_runtime() -> bool:
@@ -186,7 +162,7 @@ def module_main(argv: list[str] | None = None) -> int:
     args = list(argv if argv is not None else sys.argv[1:])
     if args and args[0] == "--desktop":
         return desktop_main(args[1:])
-    return streamlit_main(args)
+    return desktop_main(args)
 
 
 if __name__ == "__main__":

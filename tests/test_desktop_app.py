@@ -13,18 +13,6 @@ from gear_optimizer import launcher
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_build_web_command_keeps_legacy_streamlit_entry():
-    command = launcher.build_web_command(["--server.port", "8505"])
-
-    assert command[:4] == [sys.executable, "-m", "streamlit", "run"]
-    assert str(launcher.APP_PATH) in command
-    assert "--server.address" in command
-    assert "127.0.0.1" in command
-    assert "--browser.gatherUsageStats" in command
-    assert "false" in command
-    assert command[-2:] == ["--server.port", "8505"]
-
-
 def test_parse_args_defaults_to_native_desktop_size():
     args = desktop_app.parse_args([])
 
@@ -104,7 +92,7 @@ def test_desktop_main_launches_pyside6_app_when_runtime_available(monkeypatch):
     fake_pyside6_app.main = lambda args: calls.append(args) or 0
 
     monkeypatch.setattr(launcher, "has_desktop_runtime", lambda: True)
-    monkeypatch.setitem(sys.modules, "gear_optimizer.pyside6_app", fake_pyside6_app)
+    monkeypatch.setattr(launcher.importlib, "import_module", lambda name: fake_pyside6_app)
 
     assert launcher.desktop_main(["--width", "1400", "--height", "900"]) == 0
     assert calls == [["--width", "1400", "--height", "900"]]
@@ -123,17 +111,17 @@ def test_module_main_dispatches_to_native_desktop(monkeypatch):
     assert calls == [["--width", "1400"]]
 
 
-def test_module_main_defaults_to_legacy_web_launcher(monkeypatch):
+def test_module_main_defaults_to_native_desktop(monkeypatch):
     calls = []
 
-    def fake_streamlit_main(args):
+    def fake_desktop_main(args):
         calls.append(args)
         return 0
 
-    monkeypatch.setattr(launcher, "streamlit_main", fake_streamlit_main)
+    monkeypatch.setattr(launcher, "desktop_main", fake_desktop_main)
 
-    assert launcher.module_main(["--server.port", "8506"]) == 0
-    assert calls == [["--server.port", "8506"]]
+    assert launcher.module_main(["--width", "1400"]) == 0
+    assert calls == [["--width", "1400"]]
 
 
 def test_desktop_app_main_wraps_desktop_args(monkeypatch):
@@ -172,8 +160,11 @@ def test_pyproject_declares_native_desktop_scripts_and_dependencies():
     scripts = data["project"]["scripts"]
     optional = data["project"]["optional-dependencies"]
 
-    assert scripts["gacha-gear-optimizer"] == "gear_optimizer.launcher:streamlit_main"
+    assert scripts["gacha-gear-optimizer"] == "gear_optimizer.launcher:desktop_main"
     assert scripts["gacha-gear-optimizer-desktop"] == "gear_optimizer.launcher:desktop_main"
+    assert not any(dependency.startswith("streamlit") for dependency in data["project"]["dependencies"])
+    assert not any(dependency.startswith("pandas") for dependency in data["project"]["dependencies"])
+    assert not any(dependency.startswith("plotly") for dependency in data["project"]["dependencies"])
     assert "PySide6-Essentials==6.11.1" in optional["desktop"]
     assert "PySide6-Essentials==6.11.1" in optional["packaging"]
     assert not any(dependency.startswith("pywebview") for dependency in optional["desktop"])

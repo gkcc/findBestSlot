@@ -11,7 +11,6 @@ def _read(name: str) -> str:
 
 def test_cmd_wrappers_forward_cli_arguments_to_powershell_scripts():
     for name in [
-        "start_app.cmd",
         "start_desktop.cmd",
         "acceptance_report.cmd",
         "build_windows_app.cmd",
@@ -21,13 +20,10 @@ def test_cmd_wrappers_forward_cli_arguments_to_powershell_scripts():
 
 
 def test_powershell_entrypoints_forward_remaining_arguments_to_python():
-    start_app = _read("start_app.ps1")
     start_desktop = _read("start_desktop.ps1")
     acceptance = _read("acceptance_report.ps1")
     release_gate = _read("release_gate.ps1")
 
-    assert "ValueFromRemainingArguments" in start_app
-    assert "@LauncherArgs" in start_app
     assert "ValueFromRemainingArguments" in start_desktop
     assert "@LauncherArgs" in start_desktop
     assert "ValueFromRemainingArguments" in acceptance
@@ -35,16 +31,6 @@ def test_powershell_entrypoints_forward_remaining_arguments_to_python():
     assert "--check-json $CheckJson" in acceptance
     assert "ValueFromRemainingArguments" in release_gate
     assert "@PytestArgs" in release_gate
-
-
-def test_start_app_reports_url_from_forwarded_streamlit_args():
-    start_app = _read("start_app.ps1")
-
-    assert "Get-LauncherArgValue" in start_app
-    assert "--server.address" in start_app
-    assert "--server.port" in start_app
-    assert 'Write-Host "Page URL: http://${PageHost}:$DisplayPort/"' in start_app
-    assert "http://localhost:8501/" not in start_app
 
 
 def test_build_windows_app_runs_preflight_before_pyinstaller():
@@ -152,7 +138,6 @@ def test_release_gate_runs_doctor_acceptance_pytest_and_optional_package_smoke()
 
 def test_powershell_scripts_use_ascii_text_for_windows_powershell_parser():
     for name in [
-        "start_app.ps1",
         "start_desktop.ps1",
         "acceptance_report.ps1",
         "build_windows_app.ps1",
@@ -164,7 +149,6 @@ def test_powershell_scripts_use_ascii_text_for_windows_powershell_parser():
 
 def test_powershell_entrypoints_force_utf8_python_output():
     for name in [
-        "start_app.ps1",
         "start_desktop.ps1",
         "acceptance_report.ps1",
         "build_windows_app.ps1",

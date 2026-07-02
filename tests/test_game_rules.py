@@ -35,7 +35,8 @@ def test_project_root_prefers_pyinstaller_bundle_root(monkeypatch, tmp_path):
     bundle = tmp_path / "bundle"
     (bundle / "configs" / "games").mkdir(parents=True)
     (bundle / "examples").mkdir()
-    (bundle / "app.py").write_text("# bundled app", encoding="utf-8")
+    (bundle / "desktop_app.py").write_text("# bundled app", encoding="utf-8")
+    (bundle / "pyproject.toml").write_text("[project]\nname='bundle'\n", encoding="utf-8")
 
     monkeypatch.setattr(game_rules.sys, "_MEIPASS", str(bundle), raising=False)
 

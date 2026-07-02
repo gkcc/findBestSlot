@@ -529,7 +529,7 @@ def high_priority_closure_rows() -> list[dict[str, str]]:
             "问题": "localhost 形态能不能做成 App",
             "闭环状态": "已切到 PySide6 原生桌面入口和 Windows exe 打包",
             "验收入口": "README / gacha-gear-optimizer-desktop / scripts/build_windows_app.ps1",
-            "证据": "桌面入口直接启动 PySide6 窗口，不再启动本地 Streamlit 服务或浏览器 app window；PyInstaller 脚本会打包 src、configs、examples、assets 和 PySide6 runtime。",
+            "证据": "桌面入口直接启动 PySide6 窗口，不再保留 Web 入口或浏览器 app window；PyInstaller 脚本会打包 src、configs、examples、assets 和 PySide6 runtime。",
         },
         {
             "编号": "2",

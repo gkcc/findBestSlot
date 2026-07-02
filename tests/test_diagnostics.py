@@ -12,12 +12,8 @@ def test_resource_check_rows_cover_required_local_assets():
 
     assert by_item["project root"]["status"] == "ok"
     assert by_item["python version"]["status"] == "ok"
-    assert by_item["dependency streamlit"]["status"] == "ok"
     assert by_item["dependency pydantic"]["status"] == "ok"
     assert by_item["dependency PyYAML"]["status"] == "ok"
-    assert by_item["dependency pandas"]["status"] == "ok"
-    assert by_item["dependency plotly"]["status"] == "ok"
-    assert by_item["app.py"]["status"] == "ok"
     assert by_item["desktop app entry"]["status"] == "ok"
     assert by_item["native PySide6 UI"]["status"] == "ok"
     assert by_item["game configs"]["status"] == "ok"
@@ -27,7 +23,6 @@ def test_resource_check_rows_cover_required_local_assets():
     assert "6 configured" in by_item["console scripts"]["detail"]
     assert by_item["release helper modules"]["status"] == "ok"
     assert "3 importable" in by_item["release helper modules"]["detail"]
-    assert by_item["start app script"]["status"] == "ok"
     assert by_item["start desktop script"]["status"] == "ok"
     assert by_item["acceptance report script"]["status"] == "ok"
     assert by_item["Windows packaging script"]["status"] == "ok"
@@ -56,7 +51,7 @@ def test_missing_runtime_dependency_fails_doctor(monkeypatch):
         lambda name: None,
     )
 
-    row = _dependency_row("streamlit", "streamlit", "local web UI server")
+    row = _dependency_row("pydantic", "pydantic", "configuration models")
 
     assert row["status"] == "missing"
     assert "pip install -e ." in row["detail"]
@@ -66,10 +61,10 @@ def test_missing_runtime_dependency_fails_doctor(monkeypatch):
 def test_format_resource_check_is_human_readable():
     text = format_resource_check(
         [
-            {"item": "app.py", "status": "ok", "detail": "app.py"},
+            {"item": "desktop app entry", "status": "ok", "detail": "desktop_app.py"},
             {"item": "examples", "status": "missing", "detail": "examples"},
         ]
     )
 
-    assert "app.py" in text
+    assert "desktop app entry" in text
     assert "missing" in text

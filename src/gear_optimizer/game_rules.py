@@ -19,7 +19,8 @@ from gear_optimizer.models import (
 
 def _looks_like_project_root(path: Path) -> bool:
     return (
-        (path / "app.py").exists()
+        (path / "pyproject.toml").exists()
+        and (path / "desktop_app.py").exists()
         and (path / "configs" / "games").exists()
         and (path / "examples").exists()
     )

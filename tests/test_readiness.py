@@ -37,9 +37,9 @@ def _write_app_smoke_checks(path: Path, status: str = "ok") -> None:
         json.dumps(
             [
                 {
-                    "item": "streamlit app",
+                    "item": "PySide6 app",
                     "status": status,
-                    "detail": "rendered without exceptions" if status == "ok" else "failed",
+                    "detail": "native UI module importable" if status == "ok" else "failed",
                 }
             ]
         ),

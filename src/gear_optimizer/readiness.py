@@ -15,7 +15,6 @@ DEFAULT_APP_SMOKE_CHECKS = PROJECT_ROOT / "reports" / "source_app_smoke_checks.j
 DEFAULT_PYTEST_REPORT = PROJECT_ROOT / "reports" / "pytest.xml"
 DEFAULT_RELEASE_MANIFEST = PROJECT_ROOT / "reports" / "release_artifact_manifest.json"
 EVIDENCE_FRESHNESS_INPUTS = [
-    PROJECT_ROOT / "app.py",
     PROJECT_ROOT / "desktop_app.py",
     PROJECT_ROOT / "pyproject.toml",
     PROJECT_ROOT / "src",
@@ -25,7 +24,6 @@ EVIDENCE_FRESHNESS_INPUTS = [
 ]
 EVIDENCE_FRESHNESS_SUFFIXES = {".png", ".py", ".toml", ".yaml", ".yml"}
 PYTEST_FRESHNESS_INPUTS = [
-    PROJECT_ROOT / "app.py",
     PROJECT_ROOT / "desktop_app.py",
     PROJECT_ROOT / "pyproject.toml",
     PROJECT_ROOT / "src",
