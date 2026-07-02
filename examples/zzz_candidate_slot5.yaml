@@ -1,0 +1,16 @@
+game: zzz
+label: 5号物伤，3中2，+3 歪
+position: 5
+set_name: 云岿如我
+main_stat: 物理伤害
+initial_substat_count: 3
+level: 3
+substats:
+  - stat: 暴击率
+    rolls: 0
+  - stat: 暴击伤害
+    rolls: 0
+  - stat: 攻击力百分比
+    rolls: 0
+  - stat: 防御力
+    rolls: 0

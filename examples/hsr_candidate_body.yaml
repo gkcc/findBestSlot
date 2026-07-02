@@ -1,0 +1,14 @@
+game: hsr
+label: 崩铁躯干暴击，3中1，等速度
+position: body
+set_name: 占位遗器套装
+main_stat: 暴击率
+initial_substat_count: 3
+level: 0
+substats:
+  - stat: 暴击伤害
+    rolls: 0
+  - stat: 攻击力百分比
+    rolls: 0
+  - stat: 生命值百分比
+    rolls: 0
