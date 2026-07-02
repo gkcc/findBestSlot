@@ -1,0 +1,16 @@
+game: zzz
+label: 4号暴击，3中0，+3 出暴伤
+position: 4
+set_name: 云岿如我
+main_stat: 暴击率
+initial_substat_count: 3
+level: 3
+substats:
+  - stat: 攻击力百分比
+    rolls: 0
+  - stat: 防御力百分比
+    rolls: 0
+  - stat: 穿透值
+    rolls: 0
+  - stat: 暴击伤害
+    rolls: 0

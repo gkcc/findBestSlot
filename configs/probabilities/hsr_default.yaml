@@ -1,0 +1,14 @@
+id: hsr_default
+game: hsr
+name: 崩铁默认占位模型
+target_set_probability: 1.0
+initial_substat_count_probabilities:
+  "3": 0.8
+  "4": 0.2
+resource_costs:
+  mother_disk_random_position_attempt: 1.0
+  mother_disk_fixed_position_attempt: 1.0
+  tuner_per_fixed_main_attempt: 1.0
+  core_per_fixed_substat_attempt: 1.0
+notes:
+  占位模型仅用于加载和 UI 验证；目标套装按指定目标 100% 口径展示，暂不代表真实崩铁刷取/合成概率；校音器/共鸣核只单独计数，不折算成母盘。

@@ -1,0 +1,82 @@
+game: zzz
+character: zzz_starlight_billy
+label: 星徽·比利当前驱动盘示例
+pieces:
+  - position: 1
+    set_name: 云岿如我
+    main_stat: 生命值
+    level: 15
+    substats:
+      - stat: 暴击率
+        rolls: 2
+      - stat: 暴击伤害
+        rolls: 1
+      - stat: 生命值百分比
+        rolls: 1
+      - stat: 防御力
+        rolls: 1
+  - position: 2
+    set_name: 云岿如我
+    main_stat: 攻击力
+    level: 15
+    substats:
+      - stat: 暴击率
+        rolls: 1
+      - stat: 暴击伤害
+        rolls: 1
+      - stat: 生命值百分比
+        rolls: 1
+      - stat: 攻击力百分比
+        rolls: 2
+  - position: 3
+    set_name: 云岿如我
+    main_stat: 防御力
+    level: 15
+    substats:
+      - stat: 暴击率
+        rolls: 0
+      - stat: 暴击伤害
+        rolls: 1
+      - stat: 生命值百分比
+        rolls: 0
+      - stat: 穿透值
+        rolls: 4
+  - position: 4
+    set_name: 云岿如我
+    main_stat: 暴击率
+    level: 15
+    substats:
+      - stat: 暴击伤害
+        rolls: 2
+      - stat: 生命值百分比
+        rolls: 1
+      - stat: 攻击力百分比
+        rolls: 1
+      - stat: 防御力百分比
+        rolls: 1
+  - position: 5
+    set_name: 云岿如我
+    main_stat: 物理伤害
+    level: 15
+    substats:
+      - stat: 暴击率
+        rolls: 1
+      - stat: 暴击伤害
+        rolls: 0
+      - stat: 生命值百分比
+        rolls: 0
+      - stat: 攻击力
+        rolls: 4
+  - position: 6
+    set_name: 云岿如我
+    main_stat: 生命值百分比
+    level: 15
+    substats:
+      - stat: 暴击率
+        rolls: 0
+      - stat: 攻击力
+        rolls: 2
+      - stat: 防御力
+        rolls: 2
+      - stat: 穿透值
+        rolls: 1

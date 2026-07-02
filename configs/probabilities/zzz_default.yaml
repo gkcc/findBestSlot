@@ -1,0 +1,14 @@
+id: zzz_default
+game: zzz
+name: 绝区零默认近似模型
+target_set_probability: 1.0
+initial_substat_count_probabilities:
+  "3": 0.8
+  "4": 0.2
+resource_costs:
+  mother_disk_random_position_attempt: 3.0
+  mother_disk_fixed_position_attempt: 6.0
+  tuner_per_fixed_main_attempt: 1.0
+  core_per_fixed_substat_attempt: 1.0
+notes:
+  调律指定套装时目标套装按 100% 处理；随机位置约 3 母盘/次，固定位置约 6 母盘/次，固定主属性消耗校音器，固定副属性消耗共鸣核；界面只单独计数，不折算成母盘。

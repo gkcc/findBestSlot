@@ -1,0 +1,225 @@
+id: zzz
+name: 绝区零
+gear_name: 驱动盘
+sets:
+  - 云岿如我
+  - 啄木鸟电音
+  - 激素朋克
+  - 河豚电音
+  - 摇摆爵士
+  - 震星迪斯科
+  - 自由蓝调
+  - 灵魂摇滚
+  - 炎狱重金属
+  - 混沌重金属
+  - 雷暴重金属
+  - 极地重金属
+  - 獠牙重金属
+  - 混沌爵士
+  - 原始朋克
+  - 折枝剑歌
+  - 静听嘉音
+  - 如影相随
+  - 法厄同之歌
+  - 山大王
+  - 拂晓生花
+  - 月光骑士颂
+  - 流光咏叹
+  - 沧浪行歌
+  - 雪兔梦游仙境
+  - 囚徒手记
+  - 拂晓行纪
+  - 呼啸沙龙
+set_icons:
+  云岿如我: assets/zzz/drive_discs/yunkui_tales.png
+  啄木鸟电音: assets/zzz/drive_discs/woodpecker_electro.png
+  激素朋克: assets/zzz/drive_discs/hormone_punk.png
+  河豚电音: assets/zzz/drive_discs/puffer_electro.png
+  摇摆爵士: assets/zzz/drive_discs/swing_jazz.png
+  震星迪斯科: assets/zzz/drive_discs/shockstar_disco.png
+  自由蓝调: assets/zzz/drive_discs/freedom_blues.png
+  灵魂摇滚: assets/zzz/drive_discs/soul_rock.png
+  炎狱重金属: assets/zzz/drive_discs/inferno_metal.png
+  混沌重金属: assets/zzz/drive_discs/chaotic_metal.png
+  雷暴重金属: assets/zzz/drive_discs/thunder_metal.png
+  极地重金属: assets/zzz/drive_discs/polar_metal.png
+  獠牙重金属: assets/zzz/drive_discs/fanged_metal.png
+  混沌爵士: assets/zzz/drive_discs/chaos_jazz.png
+  原始朋克: assets/zzz/drive_discs/proto_punk.png
+  折枝剑歌: assets/zzz/drive_discs/branch_blade_song.png
+  静听嘉音: assets/zzz/drive_discs/astral_voice.png
+  如影相随: assets/zzz/drive_discs/shadow_harmony.png
+  法厄同之歌: assets/zzz/drive_discs/phaethon_s_melody.png
+  山大王: assets/zzz/drive_discs/king_of_the_summit.png
+  拂晓生花: assets/zzz/drive_discs/dawn_s_bloom.png
+  月光骑士颂: assets/zzz/drive_discs/moonlight_lullaby.png
+  流光咏叹: assets/zzz/drive_discs/shining_aria.png
+  沧浪行歌: assets/zzz/drive_discs/white_water_ballad.png
+  雪兔梦游仙境: assets/zzz/drive_discs/bunny_in_wonderland.png
+  囚徒手记: assets/zzz/drive_discs/notes_from_the_chained.png
+  拂晓行纪: assets/zzz/drive_discs/the_sky_ablaze.png
+  呼啸沙龙: assets/zzz/drive_discs/wuthering_salon.png
+set_effects:
+  云岿如我:
+    two_piece: "生命值 +10%。"
+    four_piece: "强化特殊技、连携技或终结技发动时暴击率提高，最多 3 层；满层时额外提高 Sheer 伤害。"
+  啄木鸟电音:
+    two_piece: "暴击率 +8%。"
+    four_piece: "普通攻击、闪避反击或强化特殊技暴击时攻击力提高，各自独立计时。"
+  激素朋克:
+    two_piece: "攻击力 +10%。"
+    four_piece: "入场或换入前场时短时间大幅提高攻击力。"
+  河豚电音:
+    two_piece: "穿透率 +8%。"
+    four_piece: "终结技伤害提高；发动终结技后攻击力短时间提高。"
+  摇摆爵士:
+    two_piece: "能量自动回复 +20%。"
+    four_piece: "发动连携技或终结技后，全队伤害短时间提高。"
+  震星迪斯科:
+    two_piece: "冲击力 +6%。"
+    four_piece: "普通攻击、冲刺攻击、闪避反击对主要目标造成的失衡值提高。"
+  自由蓝调:
+    two_piece: "异常精通 +30。"
+    four_piece: "强化特殊技命中后，降低目标对装备者属性的异常积蓄抗性。"
+  灵魂摇滚:
+    two_piece: "防御力 +16%。"
+    four_piece: "受到攻击并损失生命后，短时间降低装备者受到的伤害。"
+  炎狱重金属:
+    two_piece: "火属性伤害 +10%。"
+    four_piece: "命中灼烧状态敌人时，暴击率短时间提高。"
+  混沌重金属:
+    two_piece: "以太伤害 +10%。"
+    four_piece: "暴击伤害提高；队伍触发侵蚀额外伤害时，效果可叠加提高。"
+  雷暴重金属:
+    two_piece: "电属性伤害 +10%。"
+    four_piece: "场上存在感电敌人时，装备者攻击力提高。"
+  极地重金属:
+    two_piece: "冰属性伤害 +10%。"
+    four_piece: "普通攻击和冲刺攻击伤害提高；队伍触发冻结或碎冰后额外提高。"
+  獠牙重金属:
+    two_piece: "物理伤害 +10%。"
+    four_piece: "队伍触发强击后，装备者对目标造成的伤害短时间提高。"
+  混沌爵士:
+    two_piece: "异常精通 +30。"
+    four_piece: "火、电属性伤害提高；后场强化特殊技或支援攻击伤害提高，换入前场后短暂保留。"
+  原始朋克:
+    two_piece: "护盾量 +15%。"
+    four_piece: "发动招架支援或回避支援后，全队伤害短时间提高。"
+  折枝剑歌:
+    two_piece: "暴击伤害 +16%。"
+    four_piece: "异常掌控达到门槛时暴击伤害提高；队伍触发冻结或碎冰后暴击率提高。"
+  静听嘉音:
+    two_piece: "攻击力 +10%。"
+    four_piece: "队伍触发快速支援时叠加增益，使通过快速支援入场角色造成的伤害提高。"
+  如影相随:
+    two_piece: "追击和冲刺攻击伤害提高。"
+    four_piece: "追击或冲刺攻击命中同属性敌人时叠加攻击力和暴击率增益。"
+  法厄同之歌:
+    two_piece: "异常掌控 +8%。"
+    four_piece: "队伍发动强化特殊技后提高装备者异常精通；由其他角色触发时额外提高以太伤害。"
+  山大王:
+    two_piece: "失衡值 +6%。"
+    four_piece: "击破角色发动强化特殊技或连携技后，提高全队暴击伤害；装备者暴击率达标时额外提高。"
+  拂晓生花:
+    two_piece: "普通攻击伤害 +15%。"
+    four_piece: "普通攻击伤害进一步提高；攻击型角色发动强化特殊技或终结技后再次提高。"
+  月光骑士颂:
+    two_piece: "能量自动回复 +20%。"
+    four_piece: "支援型角色发动强化特殊技或终结技后，全队伤害提高。"
+  流光咏叹:
+    two_piece: "以太伤害 +10%。"
+    four_piece: "普通攻击命中后提高异常精通；目标处于失衡时装备者伤害提高。"
+  沧浪行歌:
+    two_piece: "物理伤害 +10%。"
+    four_piece: "处于 Ether Veil 相关状态时暴击率提高；攻击型角色触发或延长状态时额外提高暴击率和攻击力。"
+  雪兔梦游仙境:
+    two_piece: "生命值 +10%。"
+    four_piece: "防护型角色发动强化特殊技或支援攻击后，全队伤害可叠加提高。"
+  囚徒手记:
+    two_piece: "冰属性伤害 +10%。"
+    four_piece: "触发 Abloom 后提高异常精通；触发冻结后提高全属性异常和紊乱伤害。"
+  拂晓行纪:
+    two_piece: "以太伤害 +10%。"
+    four_piece: "以太属性代理人暴击伤害提高；发动强化特殊技或终结技后攻击力提高。"
+  呼啸沙龙:
+    two_piece: "Wind 伤害 +10%。"
+    four_piece: "发动强化特殊技后提高异常精通并可叠加；提高 Windswept 伤害。"
+board_layout:
+  - [1, 2, 3]
+  - [4, 5, 6]
+positions:
+  - id: 1
+    name: 1号位
+    main_stats: [生命值]
+  - id: 2
+    name: 2号位
+    main_stats: [攻击力]
+  - id: 3
+    name: 3号位
+    main_stats: [防御力]
+  - id: 4
+    name: 4号位
+    main_stats: [暴击率, 暴击伤害, 攻击力百分比, 生命值百分比, 防御力百分比, 异常精通]
+  - id: 5
+    name: 5号位
+    main_stats: [物理伤害, 火属性伤害, 冰属性伤害, 电属性伤害, 以太伤害, 穿透率, 攻击力百分比, 生命值百分比, 防御力百分比]
+  - id: 6
+    name: 6号位
+    main_stats: [攻击力百分比, 生命值百分比, 防御力百分比, 能量自动回复, 冲击力, 异常掌控]
+sub_stats:
+  - 暴击率
+  - 暴击伤害
+  - 攻击力
+  - 攻击力百分比
+  - 生命值
+  - 生命值百分比
+  - 防御力
+  - 防御力百分比
+  - 穿透值
+  - 异常精通
+main_stat_probabilities:
+  "1":
+    生命值: 1.0
+  "2":
+    攻击力: 1.0
+  "3":
+    防御力: 1.0
+  "4":
+    暴击率: 0.1666666667
+    暴击伤害: 0.1666666667
+    攻击力百分比: 0.1666666667
+    生命值百分比: 0.1666666667
+    防御力百分比: 0.1666666667
+    异常精通: 0.1666666667
+  "5":
+    物理伤害: 0.1111111111
+    火属性伤害: 0.1111111111
+    冰属性伤害: 0.1111111111
+    电属性伤害: 0.1111111111
+    以太伤害: 0.1111111111
+    穿透率: 0.1111111111
+    攻击力百分比: 0.1111111111
+    生命值百分比: 0.1111111111
+    防御力百分比: 0.1111111111
+  "6":
+    攻击力百分比: 0.1666666667
+    生命值百分比: 0.1666666667
+    防御力百分比: 0.1666666667
+    能量自动回复: 0.1666666667
+    冲击力: 0.1666666667
+    异常掌控: 0.1666666667
+sub_stat_probabilities:
+  暴击率: 1.0
+  暴击伤害: 1.0
+  攻击力: 1.0
+  攻击力百分比: 1.0
+  生命值: 1.0
+  生命值百分比: 1.0
+  防御力: 1.0
+  防御力百分比: 1.0
+  穿透值: 1.0
+  异常精通: 1.0
+enhancement:
+  max_level: 15
+  step: 3
+  initial_add_level: 3

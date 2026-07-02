@@ -1,0 +1,45 @@
+id: zzz_template_anomaly
+game: zzz
+name: ZZZ 泛用异常模板
+target_set: 自由蓝调
+substat_priority:
+  core: [异常精通]
+  usable: [攻击力百分比, 穿透值]
+preferred_main_stats:
+  "4": [异常精通]
+  "5": [攻击力百分比]
+  "6": [异常掌控]
+default_set_plan: freedom_4_swing_2
+set_plans:
+  - id: freedom_4_swing_2
+    name: 自由蓝调 4 + 摇摆爵士 2
+    requirements:
+      - role: core4
+        set_name: 自由蓝调
+        pieces: 4
+      - role: flex2
+        set_names: [摇摆爵士, 激素朋克, 混沌爵士]
+        pieces: 2
+    notes: 用于验证角色目标配置化；异常角色可按自由蓝调 4 件 + 可选 2 件测试。
+  - id: freedom_2_swing_2_chaos_2
+    name: 自由蓝调 2 + 摇摆爵士 2 + 混沌爵士 2
+    requirements:
+      - set_name: 自由蓝调
+        pieces: 2
+      - set_name: 摇摆爵士
+        pieces: 2
+      - set_name: 混沌爵士
+        pieces: 2
+    notes: 过渡或副词条质量优先时可用。
+  - id: unrestricted
+    name: 不限套装
+    requirements: []
+    notes: 完全按主属性和异常相关副词条评分。
+target_effective_rolls: 5.5
+target_weighted_score: 5.5
+rating_thresholds:
+  usable: 2.0
+  good: 3.8
+  excellent: 5.5
+notes:
+  占位模板仅用于验证 ZZZ 角色目标、套装方案、主属性倾向和副词条优先级都可配置。

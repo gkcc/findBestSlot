@@ -1,0 +1,63 @@
+id: zzz_starlight_billy
+game: zzz
+name: 星徽·比利
+target_set: 云岿如我
+substat_priority:
+  core: [暴击率, 暴击伤害]
+  usable: [生命值百分比]
+preferred_main_stats:
+  "4": [暴击率, 暴击伤害]
+  "5": [物理伤害]
+  "6": [生命值百分比]
+default_set_plan: cloud_4_branch_2
+set_plans:
+  - id: cloud_4_branch_2
+    name: 云岿如我 4 + 折枝剑歌 2
+    requirements:
+      - role: core4
+        set_name: 云岿如我
+        pieces: 4
+      - role: pair2
+        set_name: 折枝剑歌
+        pieces: 2
+    notes: 星徽·比利默认目标；先保证云岿如我 4 件，再补折枝剑歌 2 件的暴击伤害收益。
+  - id: cloud_4_flex_2
+    name: 云岿如我 4 + 可选 2
+    requirements:
+      - role: core4
+        set_name: 云岿如我
+        pieces: 4
+      - role: flex2
+        set_names: [啄木鸟电音, 河豚电音, 激素朋克]
+        pieces: 2
+    notes: 备选过渡方案；如果折枝剑歌 2 件暂时没有好胚子，再用这些泛用 2 件套按副词条质量过渡。
+  - id: cloud_4_woodpecker_2
+    name: 云岿如我 4 + 啄木鸟电音 2
+    requirements:
+      - set_name: 云岿如我
+        pieces: 4
+      - set_name: 啄木鸟电音
+        pieces: 2
+    notes: 泛用备选方案；不作为星徽·比利默认 4+2，仅在折枝剑歌胚子不足或想临时过渡时考虑。
+  - id: cloud_2_woodpecker_2_puffer_2
+    name: 云岿如我 2 + 啄木鸟电音 2 + 河豚电音 2
+    requirements:
+      - set_name: 云岿如我
+        pieces: 2
+      - set_name: 啄木鸟电音
+        pieces: 2
+      - set_name: 河豚电音
+        pieces: 2
+    notes: 过渡或副词条极品优先时可用。
+  - id: unrestricted
+    name: 不限套装
+    requirements: []
+    notes: 完全按主属性和副词条评分，不给套装组合额外压力。
+target_effective_rolls: 6.0
+target_weighted_score: 6.0
+rating_thresholds:
+  usable: 2.0
+  good: 4.0
+  excellent: 6.0
+notes:
+  长期绝对最优通常优先考虑 5号位物理伤害；当前相对提升以最弱盘位为先。

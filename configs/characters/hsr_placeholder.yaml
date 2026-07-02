@@ -1,0 +1,36 @@
+id: hsr_placeholder
+game: hsr
+name: 崩铁占位模板
+target_set: 占位遗器套装
+substat_priority:
+  core: [暴击率, 暴击伤害, 速度]
+  usable: []
+preferred_main_stats:
+  body: [暴击率, 暴击伤害]
+  feet: [速度]
+  sphere: [攻击力百分比]
+  rope: [能量恢复效率]
+default_set_plan: placeholder_4_2
+set_plans:
+  - id: placeholder_4_2
+    name: 占位遗器 4 + 占位位面 2
+    requirements:
+      - role: core4
+        set_name: 占位遗器套装
+        pieces: 4
+      - role: planar2
+        set_name: 占位位面饰品套装
+        pieces: 2
+    notes: 崩铁占位 4+2 方案仅用于验证规则链路，暂不承诺推荐准确。
+  - id: unrestricted
+    name: 不限套装
+    requirements: []
+    notes: 崩铁占位模板暂不约束 4+2 或 2+2。
+target_effective_rolls: 6.0
+target_weighted_score: 6.0
+rating_thresholds:
+  usable: 2.0
+  good: 4.0
+  excellent: 6.0
+notes:
+  该模板仅用于验证崩铁规则可加载展示，第一版不承诺推荐准确。
