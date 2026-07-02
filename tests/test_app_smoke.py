@@ -24,18 +24,57 @@ def _has_best_loadout_table(app: AppTest) -> bool:
     )
 
 
+def _open_workspace(app: AppTest, label: str, timeout: int = 30) -> None:
+    if not app.radio:
+        app.run(timeout=timeout)
+    workspace = next(radio for radio in app.radio if radio.label == "工作区")
+    if workspace.value != label:
+        workspace.set_value(label)
+        app.run(timeout=timeout)
+
+
 def test_app_shows_rules_overview_and_hsr_can_render():
     app = AppTest.from_file("app.py")
     app.run(timeout=30)
     assert not app.exception
+    assert any(
+        radio.label == "工作区"
+        and radio.value == "库存"
+        and radio.options == ["库存", "方案模板", "候选胚子", "验收总览"]
+        for radio in app.radio
+    )
+    assert not getattr(app, "tabs", [])
+    assert any(subheader.value == "库存工作台" for subheader in app.subheader)
+    assert any(button.label == "添加库存件" for button in app.button)
+    assert any(button.label == "计算当前最优搭配" for button in app.button)
     assert any(button.label == "计算调律建议" for button in app.button)
+    assert any(expander.label == "规则概览" for expander in app.expander)
+    assert any(expander.label == "概率模型 YAML" for expander in app.expander)
+    assert not _has_action_ev_table(app)
+
+    add_button = next(button for button in app.button if button.label == "添加库存件")
+    add_button.click()
+    app.run(timeout=30)
+    assert not app.exception
+    assert any(expander.label.startswith("库存 1：") for expander in app.expander)
+    assert not _has_action_ev_table(app)
 
     strategy_button = next(button for button in app.button if button.label == "计算调律建议")
     strategy_button.click()
     app.run(timeout=90)
+    assert not app.exception
+    assert _has_action_ev_table(app)
+
+    game_widget = next(widget for widget in app.selectbox if widget.label == "游戏")
+    hsr_option = next(option for option in game_widget.options if "hsr" in option)
+    game_widget.set_value(hsr_option)
+    app.run(timeout=30)
+    assert not app.exception
+    assert any(radio.label == "工作区" and radio.value == "库存" for radio in app.radio)
+    return
+
     tables = list(app.dataframe) + list(app.table)
 
-    assert not app.exception
     assert any(expander.label == "盘面模板" for expander in app.expander)
     assert any(expander.label == "规则概览" for expander in app.expander)
     assert any(expander.label == "导入/导出" for expander in app.expander)
@@ -537,6 +576,7 @@ def test_inventory_add_and_best_loadout_do_not_auto_run_action_ev():
 def test_current_editor_constrains_levels_and_roll_inputs():
     app = AppTest.from_file("app.py")
     app.run(timeout=30)
+    _open_workspace(app, "方案模板")
 
     assert not app.exception
 
@@ -577,6 +617,7 @@ def test_current_editor_surfaces_hidden_and_clamped_input_warnings():
     app.session_state["current_1_base_initial"] = 3
     app.session_state["current_1_base_roll_0"] = 99
     app.run(timeout=30)
+    _open_workspace(app, "方案模板")
 
     assert not app.exception
     assert any("1号位 副属性 4 当前等级不可见" in caption.value for caption in app.caption)
@@ -655,6 +696,7 @@ def test_target_score_reset_button_restores_character_defaults():
 def test_current_template_clear_refreshes_piece_editor_defaults():
     app = AppTest.from_file("app.py")
     app.run(timeout=30)
+    _open_workspace(app, "方案模板")
 
     clear_button = next(button for button in app.button if button.label == "清空为手动输入")
     clear_button.click()
@@ -703,6 +745,7 @@ def test_current_import_digest_refreshes_piece_editor_defaults():
     }
 
     app.run(timeout=30)
+    _open_workspace(app, "方案模板")
 
     assert not app.exception
     imported_main = next(
@@ -732,6 +775,7 @@ def test_current_template_picker_lists_saved_user_templates(tmp_path, monkeypatc
     )
     app = AppTest.from_file("app.py")
     app.run(timeout=30)
+    _open_workspace(app, "方案模板")
 
     assert not app.exception
     assert any(
@@ -855,6 +899,7 @@ def test_candidate_import_digest_refreshes_manual_editor_defaults():
     )
 
     app.run(timeout=30)
+    _open_workspace(app, "候选胚子")
 
     assert not app.exception
     candidate_position = next(

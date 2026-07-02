@@ -2357,6 +2357,14 @@ def _render_current_editor(game, character) -> tuple[list[GearPiece], list[str]]
     return pieces, warnings
 
 
+def _current_pieces_from_state(game, character) -> list[GearPiece]:
+    state = _ensure_current_state(game, character)
+    return [
+        _state_to_piece(state[position_key(rule.id)], game)
+        for rule in game.positions
+    ]
+
+
 def _candidate_import_state_key(game, character) -> str:
     return f"candidate_import::{game.id}::{character.id}"
 
@@ -3850,11 +3858,45 @@ probability_model = _render_probability_model_parameter_controls(game, probabili
 st.sidebar.caption(f"规则：{game.gear_name} / {len(game.positions)} 个位置")
 _render_rules_overview(game, probability_model)
 
-tab_current, tab_candidate, tab_strategy, tab_acceptance = st.tabs(
-    ["当前装备评分", "候选胚子评估", "调律策略比较", "验收总览"]
+workspace = st.sidebar.radio(
+    "工作区",
+    ["库存", "方案模板", "候选胚子", "验收总览"],
+    index=0,
+    help="默认进入库存；当前装备方案和候选胚子作为辅助页面保留。",
 )
 
-with tab_current:
+pieces = _current_pieces_from_state(game, character)
+editor_warnings: list[str] = []
+analysis = analyse_current_gear(pieces, game, character)
+global_rows = build_strategy_sweep(game, character, probability_model, analysis)
+global_current_best = top_strategy(global_rows, "current_relative_gain_score")
+global_long_term_best = top_strategy(global_rows, "long_term_value_score")
+tuner_best = top_strategy(
+    [row for row in global_rows if row.fixed_main_stat and row.expected_tuners > 0],
+    "current_relative_gain_score",
+)
+core_best = top_strategy(
+    [row for row in global_rows if row.expected_cores > 0],
+    "current_relative_gain_score",
+)
+candidate = _default_candidate_for_game(game, character)
+result = evaluate_candidate(candidate, game, character)
+contextual_recommendation, contextual_reason = candidate_contextual_recommendation(
+    candidate,
+    result,
+    analysis,
+)
+stored_action_result = st.session_state.get(_strategy_action_ev_result_key(game, character))
+action_ev_rows = (
+    list(stored_action_result.get("action_ev_rows") or [])
+    if isinstance(stored_action_result, dict)
+    else []
+)
+resource_marginal_ev = pd.DataFrame(
+    stored_action_result.get("resource_marginal_ev") or []
+) if isinstance(stored_action_result, dict) else pd.DataFrame()
+
+if workspace == "方案模板":
     pieces, editor_warnings = _render_current_editor(game, character)
     st.write("盘面状态摘要")
     st.table(_current_gear_status_frame(game, character, pieces, editor_warnings))
@@ -3964,7 +4006,7 @@ with tab_current:
         priority_df = priority_df.drop(columns=["position"])
         st.dataframe(priority_df, use_container_width=True, hide_index=True)
 
-with tab_candidate:
+if workspace == "候选胚子":
     candidate, candidate_warnings = _render_candidate_editor(game, character)
     result = evaluate_candidate(candidate, game, character)
     candidate_analysis = analyse_current_gear(pieces, game, character)
@@ -4111,7 +4153,7 @@ with tab_candidate:
             st.plotly_chart(fig, use_container_width=True)
             st.dataframe(weighted_display, use_container_width=True, hide_index=True)
 
-with tab_strategy:
+if workspace == "库存":
     analysis = analyse_current_gear(pieces, game, character)
     st.subheader("库存工作台")
     st.caption("先维护库存；计算当前最优搭配和调律建议都需要你明确点击按钮。")
@@ -4478,7 +4520,7 @@ with tab_strategy:
         st.success(current_text)
         st.info(long_text)
 
-with tab_acceptance:
+if workspace == "验收总览":
     st.subheader("第一版验收总览")
     st.caption(
         "汇总当前装备、候选胚子、调律策略三块结果；这里的答案会随当前页面输入即时变化。"
