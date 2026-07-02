@@ -1257,6 +1257,59 @@ def _generation_action_specs(
     return specs
 
 
+def _fixed_main_refinement_action_specs(
+    game: GameRules,
+    character: CharacterPreset,
+    fixed_spec: ActionSpec,
+) -> list[ActionSpec]:
+    if fixed_spec.strategy != "固定位置" or fixed_spec.target_position is None:
+        return []
+    if len(game.main_stats_for(fixed_spec.target_position)) <= 1:
+        return []
+
+    specs: list[ActionSpec] = []
+    for main_stat in _main_stat_action_options(game, character, fixed_spec.target_position):
+        specs.append(
+            ActionSpec(
+                "固定位置 + 固定主属性",
+                fixed_spec.set_label,
+                fixed_spec.set_options,
+                fixed_spec.target_position,
+                fixed_main_stat=main_stat,
+            )
+        )
+    return specs
+
+
+def _fixed_substat_refinement_action_specs(
+    game: GameRules,
+    character: CharacterPreset,
+    fixed_main_spec: ActionSpec,
+) -> list[ActionSpec]:
+    if (
+        fixed_main_spec.strategy != "固定位置 + 固定主属性"
+        or fixed_main_spec.target_position is None
+        or not fixed_main_spec.fixed_main_stat
+    ):
+        return []
+
+    return [
+        ActionSpec(
+            "固定位置 + 固定主属性 + 固定副属性",
+            fixed_main_spec.set_label,
+            fixed_main_spec.set_options,
+            fixed_main_spec.target_position,
+            fixed_main_stat=fixed_main_spec.fixed_main_stat,
+            required_substats=required_substats,
+        )
+        for required_substats in _fixed_substat_action_options(
+            game,
+            character,
+            fixed_main_spec.fixed_main_stat,
+        )
+    ]
+
+
 def _requirement_action_label(set_options: Sequence[str]) -> str:
     return " / ".join(set_options)
 
@@ -2476,10 +2529,18 @@ def position_strategy_efficiency_rows(
 
     rows: list[dict[str, float | str]] = []
     random_efficiency_by_set: dict[str, tuple[float, ...]] = {}
-    specs = [
-        *_generation_action_specs(game, character),
+    base_fixed_efficiency_by_target: dict[tuple[str, str], tuple[float, ...]] = {}
+    fixed_main_efficiency_by_target: dict[tuple[str, str, str], tuple[float, ...]] = {}
+    base_specs = [
+        *_generation_action_specs(
+            game,
+            character,
+            include_fixed_main=False,
+            include_fixed_substats=False,
+        ),
         *_upgrade_action_specs(inventory_rows, game),
     ]
+    specs = list(base_specs)
     current_value = _cached_best_combo_value(inventory_rows, game, character)
     memo: dict[tuple[int, tuple[tuple, ...]], tuple[float, ...]] = {}
     quality_cache: dict[tuple[str, tuple[str, ...]], list[tuple[float, tuple[float, ...], float]]] = {}
@@ -2494,7 +2555,7 @@ def position_strategy_efficiency_rows(
         phase="action_ev",
         completed=0,
         total=total_units,
-        label=f"准备计算 {len(specs)} 个 action",
+        label=f"准备计算 {len(specs)} 个基础 action",
     )
 
     def run_action_value(
@@ -2576,7 +2637,10 @@ def position_strategy_efficiency_rows(
         )
         return value
 
-    for spec_index, spec in enumerate(specs, start=1):
+    def append_row(
+        spec: ActionSpec,
+        spec_index: int,
+    ) -> dict[str, float | str]:
         immediate_action_value = None
         if horizon > 1:
             immediate_action_value = run_action_value(
@@ -2612,36 +2676,116 @@ def position_strategy_efficiency_rows(
             relative = "基准"
         elif spec.strategy == "强化库存胚子":
             relative = "库存动作"
+        elif spec.strategy == "固定位置 + 固定主属性":
+            fixed_key = (spec.set_label, position_key(spec.target_position))
+            fixed_efficiency = base_fixed_efficiency_by_target.get(fixed_key, tuple())
+            relative = (
+                "固定位置已优于随机；优于固定位置，才建议锁主属性"
+                if fixed_efficiency and _vector_greater(efficiency, fixed_efficiency)
+                else "固定位置已优于随机；不如固定位置，不建议锁主属性"
+            )
+            if spec.fixed_main_stat:
+                fixed_main_efficiency_by_target[
+                    (spec.set_label, position_key(spec.target_position), spec.fixed_main_stat)
+                ] = efficiency
+        elif spec.strategy == "固定位置 + 固定主属性 + 固定副属性":
+            fixed_main_key = (
+                spec.set_label,
+                position_key(spec.target_position),
+                str(spec.fixed_main_stat),
+            )
+            fixed_main_efficiency = fixed_main_efficiency_by_target.get(fixed_main_key, tuple())
+            relative = (
+                "锁主属性已优于固定位置；优于锁主属性，才建议锁副属性"
+                if fixed_main_efficiency and _vector_greater(efficiency, fixed_main_efficiency)
+                else "锁主属性已优于固定位置；不如锁主属性，不建议锁副属性"
+            )
         else:
             relative = (
                 "优于随机，才建议固定"
                 if random_efficiency and _vector_greater(efficiency, random_efficiency)
                 else "不如随机，不建议固定"
             )
-        rows.append(
-            {
-                "策略": spec.strategy,
-                "目标套装": spec.set_label,
-                "位置": _action_position_label(spec, game),
-                "主属性": _action_main_label(spec),
-                "固定副属性": _action_substat_label(spec),
-                "horizon": horizon,
-                "immediate_EV": _quality_vector_label(immediate_gain, character),
-                "option_EV": _quality_vector_label(option_gain, character),
-                "horizon_EV": _quality_vector_label(gain, character),
-                "期望提升": _quality_vector_label(gain, character),
-                "质量提升": round(quality_gain, 3),
-                "有效提升": round(effective_gain, 3),
-                "母盘/次": round(mother_cost, 3),
-                "校音器/次": round(tuner_cost, 3),
-                "共鸣核/次": round(core_cost, 3),
-                "质量/母盘": round(quality_efficiency, 4),
-                "有效/母盘": round(effective_efficiency, 4),
-                "排序向量/母盘": _quality_vector_label(efficiency, character),
-                "_sort_vector": efficiency,
-                "相对随机": relative,
-            }
+            if spec.strategy == "固定位置" and relative == "优于随机，才建议固定":
+                base_fixed_efficiency_by_target[
+                    (spec.set_label, position_key(spec.target_position))
+                ] = efficiency
+        row: dict[str, float | str] = {
+            "策略": spec.strategy,
+            "目标套装": spec.set_label,
+            "位置": _action_position_label(spec, game),
+            "主属性": _action_main_label(spec),
+            "固定副属性": _action_substat_label(spec),
+            "horizon": horizon,
+            "immediate_EV": _quality_vector_label(immediate_gain, character),
+            "option_EV": _quality_vector_label(option_gain, character),
+            "horizon_EV": _quality_vector_label(gain, character),
+            "期望提升": _quality_vector_label(gain, character),
+            "质量提升": round(quality_gain, 3),
+            "有效提升": round(effective_gain, 3),
+            "母盘/次": round(mother_cost, 3),
+            "校音器/次": round(tuner_cost, 3),
+            "共鸣核/次": round(core_cost, 3),
+            "质量/母盘": round(quality_efficiency, 4),
+            "有效/母盘": round(effective_efficiency, 4),
+            "排序向量/母盘": _quality_vector_label(efficiency, character),
+            "_sort_vector": efficiency,
+            "相对随机": relative,
+        }
+        rows.append(row)
+        return row
+
+    fixed_main_specs: list[ActionSpec] = []
+    for spec_index, spec in enumerate(base_specs, start=1):
+        row = append_row(spec, spec_index)
+        if spec.strategy == "固定位置" and row["相对随机"] == "优于随机，才建议固定":
+            fixed_main_specs.extend(_fixed_main_refinement_action_specs(game, character, spec))
+
+    fixed_main_specs = _dedupe_action_specs(fixed_main_specs)
+    winning_fixed_main_specs: list[ActionSpec] = []
+    if fixed_main_specs:
+        specs = [*base_specs, *fixed_main_specs]
+        total_units += len(fixed_main_specs) * (2 if horizon > 1 else 1)
+        _emit_progress(
+            progress_callback,
+            "refinement_start",
+            phase="action_ev",
+            completed=completed_units,
+            total=total_units,
+            label=f"固定位置优于随机，继续计算 {len(fixed_main_specs)} 个锁主属性 action",
+            dp_states=dp_states,
+            memo_hits=memo_hits,
         )
+        for spec_index, spec in enumerate(fixed_main_specs, start=len(base_specs) + 1):
+            row = append_row(spec, spec_index)
+            if (
+                spec.strategy == "固定位置 + 固定主属性"
+                and row["相对随机"] == "固定位置已优于随机；优于固定位置，才建议锁主属性"
+            ):
+                winning_fixed_main_specs.append(spec)
+
+    fixed_substat_specs: list[ActionSpec] = []
+    for spec in winning_fixed_main_specs:
+        fixed_substat_specs.extend(_fixed_substat_refinement_action_specs(game, character, spec))
+    fixed_substat_specs = _dedupe_action_specs(fixed_substat_specs)
+    if fixed_substat_specs:
+        specs = [*base_specs, *fixed_main_specs, *fixed_substat_specs]
+        total_units += len(fixed_substat_specs) * (2 if horizon > 1 else 1)
+        _emit_progress(
+            progress_callback,
+            "refinement_start",
+            phase="action_ev",
+            completed=completed_units,
+            total=total_units,
+            label=f"锁主属性优于固定位置，继续计算 {len(fixed_substat_specs)} 个锁副属性 action",
+            dp_states=dp_states,
+            memo_hits=memo_hits,
+        )
+        for spec_index, spec in enumerate(
+            fixed_substat_specs,
+            start=len(base_specs) + len(fixed_main_specs) + 1,
+        ):
+            append_row(spec, spec_index)
 
     _ACTION_EV_ROWS_CACHE[cache_key] = [dict(row) for row in rows]
     _emit_progress(
@@ -2667,6 +2811,20 @@ def _row_sort_vector(row: dict[str, float | str]) -> tuple[float, ...]:
         float(row.get("质量/母盘") or 0.0),
         float(row.get("有效/母盘") or 0.0),
     )
+
+
+def _is_recommendable_action_row(row: dict[str, float | str]) -> bool:
+    strategy = str(row.get("策略") or "")
+    relative = str(row.get("相对随机") or "")
+    if strategy == "随机位置":
+        return True
+    if strategy == "固定位置":
+        return relative == "优于随机，才建议固定"
+    if strategy == "固定位置 + 固定主属性":
+        return relative == "固定位置已优于随机；优于固定位置，才建议锁主属性"
+    if strategy == "固定位置 + 固定主属性 + 固定副属性":
+        return relative == "锁主属性已优于固定位置；优于锁主属性，才建议锁副属性"
+    return False
 
 
 def resource_marginal_ev_rows(
@@ -2924,13 +3082,9 @@ def recommended_action_ev_row(
 ) -> dict[str, float | str] | None:
     if not rows:
         return None
-    fixed_better = [
-        row
-        for row in rows
-        if row.get("策略") == "固定位置"
-        and str(row.get("相对随机")) == "优于随机，才建议固定"
-    ]
-    candidates = fixed_better or [row for row in rows if row.get("策略") == "随机位置"] or rows
+    candidates = [row for row in rows if _is_recommendable_action_row(row)]
+    if not candidates:
+        candidates = [row for row in rows if row.get("策略") == "随机位置"] or rows
     return max(
         candidates,
         key=_row_sort_vector,

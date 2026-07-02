@@ -3,6 +3,7 @@ from itertools import product
 
 import pytest
 
+import gear_optimizer.position_ev as position_ev
 from gear_optimizer.game_rules import load_characters, load_game, load_probability_models
 from gear_optimizer.position_ev import (
     ActionSpec,
@@ -176,6 +177,101 @@ def _tiny_exact_context():
         GearPiece(position=2, set_name="A", main_stat="main2", level=0, substats=[]),
     ]
     return game, character, probability_model, inventory
+
+
+def _tiny_lock_context():
+    game = GameRules(
+        id="tiny_lock",
+        name="Tiny Lock",
+        gear_name="Disk",
+        sets=["A"],
+        positions=[
+            PositionRule(id=1, name="1号位", main_stats=["main_good", "main_bad"]),
+            PositionRule(id=2, name="2号位", main_stats=["main2"]),
+        ],
+        sub_stats=["good", "ok", "bad", "worse"],
+        main_stat_probabilities={
+            "1": {"main_good": 0.5, "main_bad": 0.5},
+            "2": {"main2": 1.0},
+        },
+        sub_stat_probabilities={"good": 0.25, "ok": 0.25, "bad": 0.25, "worse": 0.25},
+        enhancement=EnhancementRule(max_level=0, step=3, initial_add_level=3),
+    )
+    character = CharacterPreset(
+        id="tiny_lock_char",
+        game="tiny_lock",
+        name="Tiny Lock Char",
+        target_set="A",
+        substat_priority=SubstatPriority(core=["good"], usable=["ok"]),
+        preferred_main_stats={"1": ["main_good"], "2": ["main2"]},
+        set_plans=[
+            SetPlan(
+                id="a2",
+                name="A 2",
+                requirements=[SetRequirement(set_name="A", pieces=2)],
+            )
+        ],
+        default_set_plan="a2",
+    )
+    probability_model = ProbabilityModel(
+        id="tiny_lock_prob",
+        game="tiny_lock",
+        name="Tiny lock deterministic",
+        target_set_probability=1.0,
+        initial_substat_count_probabilities={"3": 0.0, "4": 1.0},
+        resource_costs={
+            "mother_disk_random_position_attempt": 1.0,
+            "mother_disk_fixed_position_attempt": 1.0,
+        },
+    )
+    inventory = [
+        GearPiece(
+            position=1,
+            set_name="A",
+            main_stat="main_good",
+            level=0,
+            substats=[SubstatLine(stat="bad", rolls=0)],
+        ),
+        GearPiece(
+            position=2,
+            set_name="A",
+            main_stat="main2",
+            level=0,
+            substats=[SubstatLine(stat="worse", rolls=0)],
+        ),
+    ]
+    analysis = analyse_current_gear(inventory, game, character)
+    return game, character, probability_model, analysis, inventory
+
+
+def _position_rows_with_fake_action_values(monkeypatch, increments: dict[str, float]):
+    game, character, probability_model, analysis, inventory = _tiny_lock_context()
+    current_value = best_loadout_value(
+        inventory,
+        game,
+        character,
+        current_count=len(inventory),
+    )
+    calls = []
+
+    def fake_expected_action_value(
+        _inventory_rows,
+        _game,
+        _character,
+        _probability_model,
+        spec,
+        *_args,
+        **_kwargs,
+    ):
+        calls.append(spec.strategy)
+        delta = increments.get(spec.strategy, 0.0)
+        return (*current_value[:-1], current_value[-1] + delta)
+
+    position_ev._ACTION_EV_ROWS_CACHE.clear()
+    monkeypatch.setattr(position_ev, "_expected_action_value", fake_expected_action_value)
+    rows = position_strategy_efficiency_rows(game, character, probability_model, analysis)
+    position_ev._ACTION_EV_ROWS_CACHE.clear()
+    return rows, calls
 
 
 def _tiny_upgrade_expectation_context():
@@ -567,6 +663,64 @@ def test_exact_horizon_two_value_follows_dynamic_programming_formula():
     assert horizon_two[-1] == 8
 
 
+def test_fixed_main_rows_wait_until_fixed_position_beats_random(monkeypatch):
+    rows, calls = _position_rows_with_fake_action_values(
+        monkeypatch,
+        {
+            "随机位置": 10.0,
+            "固定位置": 1.0,
+            "固定位置 + 固定主属性": 99.0,
+            "固定位置 + 固定主属性 + 固定副属性": 99.0,
+        },
+    )
+
+    assert not any(row["策略"] == "固定位置 + 固定主属性" for row in rows)
+    assert not any(row["策略"] == "固定位置 + 固定主属性 + 固定副属性" for row in rows)
+    assert "固定位置 + 固定主属性" not in calls
+    assert "固定位置 + 固定主属性 + 固定副属性" not in calls
+
+
+def test_fixed_substat_rows_wait_until_fixed_main_beats_fixed_position(monkeypatch):
+    rows, calls = _position_rows_with_fake_action_values(
+        monkeypatch,
+        {
+            "随机位置": 1.0,
+            "固定位置": 3.0,
+            "固定位置 + 固定主属性": 2.0,
+            "固定位置 + 固定主属性 + 固定副属性": 99.0,
+        },
+    )
+
+    assert any(row["策略"] == "固定位置 + 固定主属性" for row in rows)
+    assert not any(row["策略"] == "固定位置 + 固定主属性 + 固定副属性" for row in rows)
+    assert "固定位置 + 固定主属性" in calls
+    assert "固定位置 + 固定主属性 + 固定副属性" not in calls
+
+
+def test_fixed_substat_rows_expand_after_fixed_main_beats_fixed_position(monkeypatch):
+    rows, calls = _position_rows_with_fake_action_values(
+        monkeypatch,
+        {
+            "随机位置": 1.0,
+            "固定位置": 2.0,
+            "固定位置 + 固定主属性": 3.0,
+            "固定位置 + 固定主属性 + 固定副属性": 4.0,
+        },
+    )
+
+    assert any(
+        row["策略"] == "固定位置 + 固定主属性"
+        and row["相对随机"] == "固定位置已优于随机；优于固定位置，才建议锁主属性"
+        for row in rows
+    )
+    assert any(
+        row["策略"] == "固定位置 + 固定主属性 + 固定副属性"
+        and row["相对随机"] == "锁主属性已优于固定位置；优于锁主属性，才建议锁副属性"
+        for row in rows
+    )
+    assert "固定位置 + 固定主属性 + 固定副属性" in calls
+
+
 def test_lookahead_action_space_includes_fixed_main_and_fixed_substats():
     game, character, probability_model, analysis = _billy_context()
 
@@ -693,6 +847,40 @@ def test_recommended_action_ev_row_only_promotes_fixed_when_it_beats_random():
     rows[1]["相对随机"] = "优于随机，才建议固定"
 
     assert recommended_action_ev_row(rows)["策略"] == "固定位置"
+
+    rows.append(
+        {
+            "策略": "固定位置 + 固定主属性",
+            "目标套装": "A",
+            "位置": "6号位",
+            "质量/母盘": 0.05,
+            "有效/母盘": 0.05,
+            "相对随机": "固定位置已优于随机；不如固定位置，不建议锁主属性",
+        }
+    )
+
+    assert recommended_action_ev_row(rows)["策略"] == "固定位置"
+
+    rows[-1]["相对随机"] = "固定位置已优于随机；优于固定位置，才建议锁主属性"
+
+    assert recommended_action_ev_row(rows)["策略"] == "固定位置 + 固定主属性"
+
+    rows.append(
+        {
+            "策略": "固定位置 + 固定主属性 + 固定副属性",
+            "目标套装": "A",
+            "位置": "6号位",
+            "质量/母盘": 0.06,
+            "有效/母盘": 0.06,
+            "相对随机": "锁主属性已优于固定位置；不如锁主属性，不建议锁副属性",
+        }
+    )
+
+    assert recommended_action_ev_row(rows)["策略"] == "固定位置 + 固定主属性"
+
+    rows[-1]["相对随机"] = "锁主属性已优于固定位置；优于锁主属性，才建议锁副属性"
+
+    assert recommended_action_ev_row(rows)["策略"] == "固定位置 + 固定主属性 + 固定副属性"
 
 
 def test_fixed_main_gain_ladder_starts_from_current_weakest_position():

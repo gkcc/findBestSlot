@@ -344,8 +344,15 @@ def _action_ev_guide_text(action_ev_rows: list[dict[str, float | str]]) -> tuple
     row = recommended_action_ev_row(action_ev_rows)
     if row is None:
         return "暂无母盘 action", "缺少概率模型或当前盘面。"
-    action = "固定位置" if row.get("策略") == "固定位置" else "随机位置"
-    target = f"{row['目标套装']} {row['位置']}"
+    action = str(row.get("策略") or "随机位置")
+    target_parts = [str(row["目标套装"]), str(row["位置"])]
+    main_stat = str(row.get("主属性") or "")
+    substats = str(row.get("固定副属性") or "")
+    if main_stat and main_stat != "不固定":
+        target_parts.append(main_stat)
+    if substats and substats != "不固定":
+        target_parts.append(substats)
+    target = " ".join(target_parts)
     reason = (
         f"排序向量/母盘 {row.get('排序向量/母盘', '-')}，有效/母盘 {row['有效/母盘']}；"
         f"{row['相对随机']}。"
