@@ -75,8 +75,8 @@ def test_build_windows_app_can_smoke_check_and_verify_packaged_exe():
     assert "[switch]$SmokeCheck" in build
     assert "[ValidateRange(1, 600)]" in build
     assert "[int]$SmokeTimeoutSeconds = 45" in build
-    assert "function Get-FreeLoopbackPort" in build
-    assert "function Test-PackagedStreamlitServer" in build
+    assert "function Get-FreeLoopbackPort" not in build
+    assert "function Test-PackagedStreamlitServer" not in build
     assert "function Invoke-PackagedExeCheck" in build
     assert "function Write-ReleaseManifest" in build
     assert "function Get-ProjectVersion" in build
@@ -84,20 +84,14 @@ def test_build_windows_app_can_smoke_check_and_verify_packaged_exe():
     assert 'Join-Path $Root "dist\\gacha-gear-optimizer.exe"' in build
     assert 'Join-Path $Root "dist\\gacha-gear-optimizer\\gacha-gear-optimizer.exe"' in build
     assert 'Write-Error "Expected build output was not found: $ExePath"' in build
-    assert "Running packaged app smoke check" in build
-    assert '-Name "Packaged app runtime check"' in build
+    assert "Running packaged native PySide6 app smoke check" in build
+    assert '-Name "Packaged PySide6 runtime check"' in build
     assert '-Arguments @("--check")' in build
-    assert '-Name "Packaged app render smoke check"' in build
+    assert '-Name "Packaged native app import check"' in build
     assert '-Arguments @("--app-check")' in build
-    assert '-ErrorPatterns @("streamlit app\\s+error", "Traceback")' in build
-    assert "--serve-streamlit" in build
-    assert "Waiting up to $TimeoutSeconds seconds" in build
-    assert "$AppDataBase = if ($env:LOCALAPPDATA) { $env:LOCALAPPDATA } else { $env:TEMP }" in build
-    assert "Invoke-WebRequest -Uri $Url" in build
-    assert "Packaged server process state:" in build
-    assert "Packaged server app log:" in build
-    assert "Recent PyInstaller onefile extraction dirs:" in build
-    assert 'Write-Error "Packaged Streamlit server smoke check failed: $Url"' in build
+    assert '-ErrorPatterns @("PySide6 app\\s+error", "Traceback")' in build
+    assert "--serve-streamlit" not in build
+    assert "Invoke-WebRequest -Uri $Url" not in build
     assert 'Join-Path $Root "reports\\release_artifact_manifest.json"' in build
     assert 'Join-Path $Root "reports\\first_version_readiness_checks.json"' in build
     assert "exe_size_bytes" in build
@@ -137,7 +131,7 @@ def test_release_gate_runs_doctor_acceptance_pytest_and_optional_package_smoke()
     assert "--check-json $AcceptanceChecks" in release_gate
     assert 'Join-Path $Root "reports\\source_app_smoke_checks.json"' in release_gate
     assert 'Join-Path $Root "reports\\pytest.xml"' in release_gate
-    assert 'Invoke-GateStep "app smoke"' in release_gate
+    assert 'Invoke-GateStep "native app smoke"' in release_gate
     assert "$DesktopApp = Join-Path $Root \"desktop_app.py\"" in release_gate
     assert "& $Python.Source @PythonArgs $DesktopApp --app-check --app-check-json $AppSmokeChecks" in release_gate
     assert "-m pytest @PytestArgs" in release_gate

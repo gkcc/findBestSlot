@@ -232,8 +232,8 @@ def test_first_version_acceptance_report_answers_all_core_questions():
     assert "长期最优和当前提升是否冲突？" in report
     assert "## 高优先级问题闭环" in report
     assert "| 编号 | 问题 | 闭环状态 | 验收入口 | 证据 |" in report
-    assert "| 1 | localhost 形态能不能做成 App | 已提供桌面壳、Windows exe 打包和窗口关闭自动收尾 |" in report
-    assert "独立本地 profile" in report
+    assert "| 1 | localhost 形态能不能做成 App | 已切到 PySide6 原生桌面入口和 Windows exe 打包 |" in report
+    assert "不再启动本地 Streamlit 服务" in report
     assert "| 12 | 结果页需要调律操作期望管理 | 已增加随机/固定位置收益表、固定主属性和固定副属性省母盘阶梯 |" in report
     assert "## 下一步操作卡" in report
     assert "| 顺序 | 行动 | 入口 | 目标 | 调律范围 | 资源提示 | 原因 |" in report

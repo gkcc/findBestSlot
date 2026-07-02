@@ -38,92 +38,6 @@ if (-not $Python) {
     exit 1
 }
 
-function Get-FreeLoopbackPort {
-    $Listener = [System.Net.Sockets.TcpListener]::new(
-        [System.Net.IPAddress]::Parse("127.0.0.1"),
-        0
-    )
-    try {
-        $Listener.Start()
-        return $Listener.LocalEndpoint.Port
-    } finally {
-        $Listener.Stop()
-    }
-}
-
-function Test-PackagedStreamlitServer {
-    param(
-        [string]$ExePath,
-        [ValidateRange(1, 600)]
-        [int]$TimeoutSeconds = 45
-    )
-
-    $Port = Get-FreeLoopbackPort
-    $Url = "http://127.0.0.1:$Port/"
-    $SmokeOut = Join-Path $Root "reports\packaged-smoke.out.log"
-    $SmokeErr = Join-Path $Root "reports\packaged-smoke.err.log"
-    $AppDataBase = if ($env:LOCALAPPDATA) { $env:LOCALAPPDATA } else { $env:TEMP }
-    $AppLog = Join-Path $AppDataBase "gacha-gear-optimizer\user_data\logs\packaged-server-$Port.log"
-    New-Item -ItemType Directory -Force -Path (Split-Path $SmokeOut) | Out-Null
-    Remove-Item $SmokeOut, $SmokeErr, $AppLog -ErrorAction SilentlyContinue
-
-    Write-Host "Waiting up to $TimeoutSeconds seconds for packaged Streamlit server: $Url"
-    $StartedAt = Get-Date
-    $Process = Start-Process `
-        -FilePath $ExePath `
-        -ArgumentList @("--serve-streamlit", "$Port") `
-        -PassThru `
-        -WindowStyle Hidden `
-        -RedirectStandardOutput $SmokeOut `
-        -RedirectStandardError $SmokeErr
-    try {
-        $Deadline = $StartedAt.AddSeconds($TimeoutSeconds)
-        while ((Get-Date) -lt $Deadline) {
-            if (-not (Get-Process -Id $Process.Id -ErrorAction SilentlyContinue)) {
-                break
-            }
-            try {
-                $Response = Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec 2
-                if (($Response.StatusCode -ge 200) -and ($Response.StatusCode -lt 500)) {
-                    Write-Host "Packaged Streamlit server is reachable: $Url"
-                    return
-                }
-            } catch {
-                Start-Sleep -Milliseconds 500
-            }
-        }
-
-        $ElapsedSeconds = [math]::Round(((Get-Date) - $StartedAt).TotalSeconds, 1)
-        $LiveProcess = Get-Process -Id $Process.Id -ErrorAction SilentlyContinue
-        $ProcessState = if ($LiveProcess) { "running" } else { "exited" }
-        $Process.Refresh()
-        $ExitCode = if ($LiveProcess) { "<still running>" } else { $Process.ExitCode }
-        Write-Host "Packaged server process state: $ProcessState pid=$($Process.Id) exit_code=$ExitCode elapsed_seconds=$ElapsedSeconds"
-
-        Write-Host "Packaged server stdout: $SmokeOut"
-        if (Test-Path $SmokeOut) {
-            Get-Content $SmokeOut -Tail 80 -ErrorAction SilentlyContinue
-        }
-        Write-Host "Packaged server stderr: $SmokeErr"
-        if (Test-Path $SmokeErr) {
-            Get-Content $SmokeErr -Tail 80 -ErrorAction SilentlyContinue
-        }
-        Write-Host "Packaged server app log: $AppLog"
-        if (Test-Path $AppLog) {
-            Get-Content $AppLog -Tail 80 -ErrorAction SilentlyContinue
-        }
-        Write-Host "Recent PyInstaller onefile extraction dirs:"
-        Get-ChildItem $env:TEMP -Directory -Filter "_MEI*" -ErrorAction SilentlyContinue |
-            Sort-Object LastWriteTime -Descending |
-            Select-Object -First 5 FullName, LastWriteTime |
-            Format-Table -AutoSize
-        Write-Error "Packaged Streamlit server smoke check failed: $Url"
-        exit 1
-    } finally {
-        Stop-Process -Id $Process.Id -Force -ErrorAction SilentlyContinue
-    }
-}
-
 function Invoke-PackagedExeCheck {
     param(
         [string]$ExePath,
@@ -304,18 +218,11 @@ $BuildArgs = @(
     "--windowed",
     "--name", "gacha-gear-optimizer",
     "--paths", "$Root\src",
-    "--add-data", "$Root\app.py;.",
     "--add-data", "$Root\src\gear_optimizer;src\gear_optimizer",
     "--add-data", "$Root\configs;configs",
     "--add-data", "$Root\examples;examples",
     "--add-data", "$Root\assets;assets",
-    "--collect-all", "streamlit",
-    "--collect-all", "numpy",
-    "--collect-data", "pandas",
-    "--collect-data", "plotly",
-    "--collect-submodules", "plotly",
-    "--hidden-import", "streamlit.web.bootstrap",
-    "--hidden-import", "webview",
+    "--collect-all", "PySide6",
     "$Root\desktop_app.py"
 )
 
@@ -348,21 +255,20 @@ if (-not (Test-Path $ExePath)) {
 }
 
 if ($SmokeCheck) {
-    Write-Host "Running packaged app smoke check..."
+    Write-Host "Running packaged native PySide6 app smoke check..."
     Invoke-PackagedExeCheck `
         -ExePath $ExePath `
-        -Name "Packaged app runtime check" `
+        -Name "Packaged PySide6 runtime check" `
         -Arguments @("--check") `
         -OutLog (Join-Path $Root "reports\packaged-check.out.log") `
         -ErrLog (Join-Path $Root "reports\packaged-check.err.log")
     Invoke-PackagedExeCheck `
         -ExePath $ExePath `
-        -Name "Packaged app render smoke check" `
+        -Name "Packaged native app import check" `
         -Arguments @("--app-check") `
         -OutLog (Join-Path $Root "reports\packaged-app-check.out.log") `
         -ErrLog (Join-Path $Root "reports\packaged-app-check.err.log") `
-        -ErrorPatterns @("streamlit app\s+error", "Traceback")
-    Test-PackagedStreamlitServer -ExePath $ExePath -TimeoutSeconds $SmokeTimeoutSeconds
+        -ErrorPatterns @("PySide6 app\s+error", "Traceback")
     $SmokeCheckPassed = $true
 } else {
     $SmokeCheckPassed = $null

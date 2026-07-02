@@ -61,7 +61,7 @@ Invoke-GateStep "acceptance" {
     & $Python.Source @PythonArgs -m gear_optimizer.acceptance --output $AcceptanceOutput --check --check-json $AcceptanceChecks
 }
 
-Invoke-GateStep "app smoke" {
+Invoke-GateStep "native app smoke" {
     $DesktopApp = Join-Path $Root "desktop_app.py"
     & $Python.Source @PythonArgs $DesktopApp --app-check --app-check-json $AppSmokeChecks
 }

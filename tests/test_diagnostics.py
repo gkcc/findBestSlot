@@ -19,6 +19,7 @@ def test_resource_check_rows_cover_required_local_assets():
     assert by_item["dependency plotly"]["status"] == "ok"
     assert by_item["app.py"]["status"] == "ok"
     assert by_item["desktop app entry"]["status"] == "ok"
+    assert by_item["native PySide6 UI"]["status"] == "ok"
     assert by_item["game configs"]["status"] == "ok"
     assert by_item["examples"]["status"] == "ok"
     assert by_item["zzz drive disc icons"]["status"] == "ok"
@@ -36,16 +37,14 @@ def test_resource_check_rows_cover_required_local_assets():
     assert "files ok" in by_item["zzz set icon files"]["detail"]
     assert by_item["hsr set icon files"]["status"] == "ok"
     assert by_item["hsr set icon files"]["detail"] == "no set icons configured"
-    assert by_item["desktop window runtime"]["status"] in {"ok", "notice"}
-    assert by_item["browser app fallback"]["status"] in {"ok", "notice"}
+    assert by_item["PySide6 desktop runtime"]["status"] in {"ok", "notice"}
     assert by_item["games"]["detail"].endswith("loaded")
     assert not has_resource_errors(rows)
 
 
 def test_optional_desktop_notices_do_not_fail_doctor():
     rows = [
-        {"item": "desktop window runtime", "status": "notice", "detail": "optional"},
-        {"item": "browser app fallback", "status": "notice", "detail": "fallback"},
+        {"item": "PySide6 desktop runtime", "status": "notice", "detail": "optional"},
     ]
 
     assert not has_resource_errors(rows)

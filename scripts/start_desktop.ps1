@@ -28,13 +28,12 @@ if (-not $Python) {
 if ($LauncherArgs -contains "--check") {
     Write-Host "Checking gacha-gear-optimizer desktop runtime..."
 } else {
-    Write-Host "Starting gacha-gear-optimizer desktop window..."
+    Write-Host "Starting gacha-gear-optimizer PySide6 desktop window..."
 }
-Write-Host 'If pywebview is missing, Edge/Chrome app-window fallback will be used.'
-Write-Host 'Install full desktop support with: pip install -e ".[desktop]"'
+Write-Host 'Install native desktop support with: pip install -e ".[desktop]"'
 Write-Host "Check desktop support: .\scripts\start_desktop.ps1 --check"
 if (-not ($LauncherArgs -contains "--check")) {
-    Write-Host "Stop service: close the desktop/app window. If only the default browser opens, press Ctrl+C here."
+    Write-Host "Close the PySide6 window to exit."
 }
 
 & $Python.Source @PythonArgs -m gear_optimizer.launcher --desktop @LauncherArgs

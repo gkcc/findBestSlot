@@ -13,15 +13,15 @@
 
 ## 本地形态
 
-当前版本默认是 Streamlit 本地 Web UI，所以通过 `localhost:8501` 打开。默认启动参数会绑定到 `127.0.0.1`，只接受本机访问；它不是云端后端，也不会联网、登录或同步账号；Python 进程只是在本机启动一个本地界面服务，浏览器只是承载 UI。
+当前主入口是 PySide6 原生桌面 UI：`gacha-gear-optimizer-desktop` 或 `scripts/start_desktop.cmd` 会直接打开桌面窗口，不再启动本地 Streamlit 服务，也不再用浏览器承载 UI。`gacha-gear-optimizer` 仍保留为 legacy Streamlit Web 入口，方便对照旧页面和继续跑既有 UI 回归。
 
-这不是“纯后端”，而是第一阶段为了快速迭代可视化、配置和概率模型而选择的本地 UI 形态。后续做成桌面 App 时，核心算法和 YAML 配置不需要推倒重来，推荐路线是：
+桌面版仍复用 `src/gear_optimizer` 的核心算法和 YAML 配置；改造只替换交互层和打包链路：
 
-- 短期：使用 `scripts/start_app.cmd` 双击启动，体验接近本地小工具。
-- 中期：使用可选的 `desktop_app.py` / `scripts/start_desktop.cmd`，用 pywebview 打开独立桌面窗口。
-- 打包：当前提供 PyInstaller Windows exe 构建脚本；后续仍可继续向 Tauri / Electron 分发形态演进，核心计算复用 `src/gear_optimizer`。
+- 桌面：`desktop_app.py` / `scripts/start_desktop.cmd` 直接启动 PySide6 原生窗口。
+- Web legacy：`scripts/start_app.cmd` 仍可启动 Streamlit 本地页面。
+- 打包：PyInstaller Windows exe 构建脚本会收集 PySide6、`src`、`configs`、`examples` 和 `assets`。
 
-第一版的桌面壳是可选能力，是为了优先把“盘面评分、胚子期望、调律期望管理”做对。桌面壳会提高分发体验，但不会改变寻优算法本身。
+桌面版不再套网页壳，也不会弹浏览器或本地服务终端。
 
 ## 使用方式
 
@@ -120,7 +120,7 @@ pytest -m streamlit_ui
 .\scripts\release_gate.ps1 -BuildPackage
 ```
 
-release gate 会先跑 doctor、第一版验收、源码 Streamlit 渲染 smoke 和默认 pytest lane，并把源码 smoke 结果写入 `reports\source_app_smoke_checks.json`、pytest JUnit XML 写入 `reports\pytest.xml`。`-BuildPackage` 默认构建已验证的 onedir 形态，并在打包 smoke 通过后继续验证 `reports\release_artifact_manifest.json` 和 exe 是否匹配，最后写出 `reports\first_version_readiness_checks.json` 汇总第一版可交付状态；readiness 默认读取 `reports\pytest.xml`，记录生成时间和参与汇总的证据文件路径，并校验验收 JSON、源码 smoke JSON、pytest report 和发布 exe 不早于各自覆盖的源码、测试、脚本、配置、示例和资源输入。跳过 pytest 的流程会显式跳过 pytest 证据，避免误用旧报告。打包 smoke 的本机服务等待上限默认是 45 秒；需要按机器性能调整时，可以加 `-SmokeTimeoutSeconds 90`。只想复查已有 manifest 时：
+release gate 会先跑 doctor、第一版验收、源码 PySide6 native app smoke 和默认 pytest lane，并把源码 smoke 结果写入 `reports\source_app_smoke_checks.json`、pytest JUnit XML 写入 `reports\pytest.xml`。`-BuildPackage` 默认构建已验证的 onedir 形态，并在打包 smoke 通过后继续验证 `reports\release_artifact_manifest.json` 和 exe 是否匹配，最后写出 `reports\first_version_readiness_checks.json` 汇总第一版可交付状态；readiness 默认读取 `reports\pytest.xml`，记录生成时间和参与汇总的证据文件路径，并校验验收 JSON、源码 smoke JSON、pytest report 和发布 exe 不早于各自覆盖的源码、测试、脚本、配置、示例和资源输入。跳过 pytest 的流程会显式跳过 pytest 证据，避免误用旧报告。只想复查已有 manifest 时：
 
 ```powershell
 .\scripts\release_gate.ps1 -VerifyManifest
@@ -173,7 +173,7 @@ gacha-gear-optimizer-desktop
 scripts/start_desktop.cmd
 ```
 
-桌面窗口内部仍会在本机临时启动 Streamlit，只是入口从浏览器标签页变成独立 App 窗口。优先使用 `pywebview`；如果尚未安装桌面运行时，会退到 Edge/Chrome 的 `--app` 应用窗口模式，并使用独立本地浏览器 profile，让它更像单独的小工具窗口。能拿到 app 窗口进程时，关闭窗口会自动停止本地服务；只有退回普通默认浏览器时，才需要在终端按 `Ctrl+C` 停止服务。桌面内部 Streamlit 启动日志会写入用户数据目录下的 `logs/streamlit-<port>.out.log` 和 `logs/streamlit-<port>.err.log`，启动失败时命令行会打印具体路径。`gacha-gear-optimizer-desktop --check` 会先检查 `pywebview` 和浏览器应用窗口 fallback 是否可用。`gacha-gear-optimizer` 和 `gacha-gear-optimizer-desktop` 是安装后的命令入口，后续可以继续向 PyInstaller/Tauri 打包演进。
+桌面入口是 PySide6 原生窗口。关闭窗口即退出应用；不会启动本地 HTTP 服务，也没有 Edge/Chrome app-window fallback。`gacha-gear-optimizer-desktop --check` 会检查 PySide6 runtime 和原生 UI 模块是否可用。`gacha-gear-optimizer` 和 `gacha-gear-optimizer-desktop` 是安装后的命令入口，前者保留 legacy Web，后者是主桌面入口。
 
 可选生成 Windows exe：
 
@@ -182,7 +182,7 @@ pip install -e ".[packaging]"
 .\scripts\build_windows_app.ps1
 ```
 
-构建脚本默认会先运行 `gacha-gear-optimizer-doctor`、第一版验收报告检查和源码 Streamlit 渲染 smoke，避免资源、验收或页面渲染问题被延后到 exe 启动时才暴露。确认本机环境已经检查过、只想重新打包时，可以加 `-SkipPreflight`。需要直接从打包脚本生成测试证据时，可以加 `-RunPytest`，它会在 PyInstaller 前跑默认 pytest lane 并写出 `reports\pytest.xml`。需要构建完成后立刻验证打包入口时，可以加 `-SmokeCheck`，脚本会对生成的 exe 执行 `--check`、`--app-check`，再启动 `--serve-streamlit` 并确认本机 HTTP 可以访问。`-SmokeCheck` 成功且验收 / 源码 smoke 证据存在时，也会写出 `reports\first_version_readiness_checks.json`；如果同次构建启用了 `-RunPytest`，readiness 也会纳入这份 pytest 证据。如果 `-SkipPreflight` 导致这些证据不存在，脚本会明确提示跳过 readiness。服务 smoke 默认最多等待 45 秒；失败时会输出进程状态、stdout/stderr、应用日志路径和最近的 PyInstaller onefile 临时解包目录，避免长时间空等。
+构建脚本默认会先运行 `gacha-gear-optimizer-doctor`、第一版验收报告检查和源码 PySide6 app import smoke，避免资源、验收或原生 UI 导入问题被延后到 exe 启动时才暴露。确认本机环境已经检查过、只想重新打包时，可以加 `-SkipPreflight`。需要直接从打包脚本生成测试证据时，可以加 `-RunPytest`，它会在 PyInstaller 前跑默认 pytest lane 并写出 `reports\pytest.xml`。需要构建完成后立刻验证打包入口时，可以加 `-SmokeCheck`，脚本会对生成的 exe 执行 `--check` 和 `--app-check`。`-SmokeCheck` 成功且验收 / 源码 smoke 证据存在时，也会写出 `reports\first_version_readiness_checks.json`；如果同次构建启用了 `-RunPytest`，readiness 也会纳入这份 pytest 证据。如果 `-SkipPreflight` 导致这些证据不存在，脚本会明确提示跳过 readiness。
 每次构建完成后会写出并自动验证 `reports/release_artifact_manifest.json`，记录版本、exe 路径、文件大小、SHA256、构建时间、onefile 状态、预检 / smoke 状态、smoke 超时上限和额外 PyInstaller 参数，确保发布记录和实际 exe 匹配。
 需要单独验证 manifest 和 exe 是否匹配时：
 
@@ -204,7 +204,7 @@ dist\gacha-gear-optimizer\gacha-gear-optimizer.exe
 
 第一版发布优先使用默认 onedir 输出；`-OneFile` 适合额外分发验证。onefile 首次启动可能受解包和杀毒扫描影响，建议带 `-SmokeCheck -SmokeTimeoutSeconds 90` 单独验证，不把它作为默认发布门禁。
 
-需要在构建后自动验证 exe 能渲染页面并启动本地 Streamlit 服务时：
+需要在构建后自动验证 exe 的 PySide6 runtime 和原生 UI 导入时：
 
 ```powershell
 .\scripts\build_windows_app.ps1 -SmokeCheck
@@ -216,15 +216,9 @@ dist\gacha-gear-optimizer\gacha-gear-optimizer.exe
 .\scripts\build_windows_app.ps1 -RunPytest -SmokeCheck
 ```
 
-需要调整服务 smoke 等待上限时：
+PyInstaller 版本会把 `src`、`configs`、`examples` 和本地图标资源一起打包，并额外收集 PySide6 runtime。用户保存的套装方案、盘面模板和库存不会写入临时解包目录，打包版默认放在 `%LOCALAPPDATA%\gacha-gear-optimizer\user_data`，如果该目录不可写会退到系统临时目录。源码运行时仍默认写入项目内 `user_data`；需要自定义保存位置时，可以设置 `GEAR_OPTIMIZER_USER_DATA_DIR`。
 
-```powershell
-.\scripts\build_windows_app.ps1 -SmokeCheck -SmokeTimeoutSeconds 90
-```
-
-PyInstaller 版本会把 `app.py`、`configs`、`examples` 和本地图标资源一起打包，并额外收集 Streamlit 和 Plotly 运行所需的数据文件。exe 内部仍使用本机回环服务承载 Streamlit，但入口是桌面应用窗口；用户保存的套装方案和盘面模板不会写入临时解包目录，打包版默认放在 `%LOCALAPPDATA%\gacha-gear-optimizer\user_data`，如果该目录不可写会退到系统临时目录。源码运行时仍默认写入项目内 `user_data`；需要自定义保存位置时，可以设置 `GEAR_OPTIMIZER_USER_DATA_DIR`。
-
-如果安装后启动失败，先运行 `gacha-gear-optimizer-doctor`。它会检查 Python 版本、核心运行依赖、console script 声明、验收 / manifest / readiness 发布辅助模块、当前项目根目录、`app.py`、桌面入口、Windows 启动 / 验收 / 打包 / release gate 脚本、配置 YAML、示例盘面、本地驱动盘图标目录，以及每个已配置套装图标文件是否存在且非空；同时会提示 `pywebview` 桌面运行时和 Edge/Chrome app 窗口 fallback 是否可用。缺少 `pywebview` 只是可选 notice，不会影响普通 Streamlit 启动。需要手动指定项目根目录时，可以设置 `GEAR_OPTIMIZER_PROJECT_ROOT`。
+如果安装后启动失败，先运行 `gacha-gear-optimizer-doctor`。它会检查 Python 版本、核心运行依赖、console script 声明、验收 / manifest / readiness 发布辅助模块、当前项目根目录、`app.py`、桌面入口、PySide6 UI 模块、Windows 启动 / 验收 / 打包 / release gate 脚本、配置 YAML、示例盘面、本地驱动盘图标目录，以及每个已配置套装图标文件是否存在且非空；同时会提示 PySide6 桌面运行时是否可用。缺少 PySide6 是 desktop extra 的 notice；需要运行桌面版时执行 `pip install -e ".[desktop]"`。需要手动指定项目根目录时，可以设置 `GEAR_OPTIMIZER_PROJECT_ROOT`。
 
 ## 当前边界
 

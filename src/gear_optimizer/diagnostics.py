@@ -13,7 +13,7 @@ from gear_optimizer.game_rules import (
     load_games,
     load_probability_models,
 )
-from gear_optimizer.launcher import has_browser_app_fallback, has_desktop_runtime
+from gear_optimizer.launcher import has_desktop_runtime
 from gear_optimizer.presets import list_candidate_examples, list_current_examples
 
 REQUIRED_PYTHON = (3, 11)
@@ -227,6 +227,7 @@ def resource_check_rows() -> list[dict[str, str]]:
         _path_row("project root", PROJECT_ROOT),
         _path_row("app.py", PROJECT_ROOT / "app.py"),
         _path_row("desktop app entry", PROJECT_ROOT / "desktop_app.py"),
+        _path_row("native PySide6 UI", PROJECT_ROOT / "src" / "gear_optimizer" / "pyside6_app.py"),
         _path_row("game configs", PROJECT_ROOT / "configs" / "games"),
         _path_row("character configs", PROJECT_ROOT / "configs" / "characters"),
         _path_row("probability configs", PROJECT_ROOT / "configs" / "probabilities"),
@@ -247,22 +248,14 @@ def resource_check_rows() -> list[dict[str, str]]:
     ]
     rows.extend(_set_icon_rows())
     desktop_runtime_ok = has_desktop_runtime()
-    browser_fallback_ok = has_browser_app_fallback()
     rows.extend(
         [
             {
-                "item": "desktop window runtime",
+                "item": "PySide6 desktop runtime",
                 "status": "ok" if desktop_runtime_ok else "notice",
-                "detail": "pywebview available"
+                "detail": "native PySide6 runtime available"
                 if desktop_runtime_ok
                 else 'optional; install with: pip install -e ".[desktop]"',
-            },
-            {
-                "item": "browser app fallback",
-                "status": "ok" if browser_fallback_ok else "notice",
-                "detail": "Edge/Chrome app-mode window available"
-                if browser_fallback_ok
-                else "desktop launcher will fall back to the default browser",
             },
         ]
     )
