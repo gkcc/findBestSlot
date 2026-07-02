@@ -2,7 +2,7 @@ import pytest
 from streamlit.testing.v1 import AppTest
 
 from gear_optimizer.game_rules import load_characters, load_probability_models
-from gear_optimizer.models import CandidatePiece, GearPiece, SubstatLine
+from gear_optimizer.models import GearPiece, SubstatLine
 from gear_optimizer.user_current_gear import save_user_current_gear
 
 pytestmark = pytest.mark.streamlit_ui
@@ -25,32 +25,37 @@ def _has_best_loadout_table(app: AppTest) -> bool:
 
 
 def _open_workspace(app: AppTest, label: str, timeout: int = 30) -> None:
-    if not app.radio:
+    if not app.subheader:
         app.run(timeout=timeout)
-    workspace = next(radio for radio in app.radio if radio.label == "工作区")
-    if workspace.value != label:
-        workspace.set_value(label)
-        app.run(timeout=timeout)
+    assert not any(radio.label == "工作区" for radio in app.radio)
+    assert label in {"库存", "方案模板"}
 
 
 def test_app_shows_rules_overview_and_hsr_can_render():
     app = AppTest.from_file("app.py")
     app.run(timeout=30)
     assert not app.exception
-    assert any(
-        radio.label == "工作区"
-        and radio.value == "库存"
-        and radio.options == ["库存", "方案模板", "候选胚子", "验收总览"]
-        for radio in app.radio
-    )
+    assert not any(radio.label == "工作区" for radio in app.radio)
     assert not getattr(app, "tabs", [])
     assert any(subheader.value == "库存工作台" for subheader in app.subheader)
+    assert any(markdown.value == "当前装备（身上 6 件）" for markdown in app.markdown)
+    assert any(button.label == "确认当前装备" for button in app.button)
     assert any(button.label == "添加库存件" for button in app.button)
     assert any(button.label == "计算当前最优搭配" for button in app.button)
     assert any(button.label == "计算调律建议" for button in app.button)
     assert any(expander.label == "规则概览" for expander in app.expander)
     assert any(expander.label == "概率模型 YAML" for expander in app.expander)
     assert not _has_action_ev_table(app)
+    assert next(button for button in app.button if button.label == "计算当前最优搭配").disabled
+    assert next(button for button in app.button if button.label == "计算调律建议").disabled
+
+    confirm_button = next(button for button in app.button if button.label == "确认当前装备")
+    confirm_button.click()
+    app.run(timeout=30)
+    assert not app.exception
+    assert not next(button for button in app.button if button.label == "计算当前最优搭配").disabled
+    assert not next(button for button in app.button if button.label == "计算调律建议").disabled
+    assert not any(subheader.value == "攻略结论" for subheader in app.subheader)
 
     add_button = next(button for button in app.button if button.label == "添加库存件")
     add_button.click()
@@ -70,7 +75,7 @@ def test_app_shows_rules_overview_and_hsr_can_render():
     game_widget.set_value(hsr_option)
     app.run(timeout=30)
     assert not app.exception
-    assert any(radio.label == "工作区" and radio.value == "库存" for radio in app.radio)
+    assert not any(radio.label == "工作区" for radio in app.radio)
     return
 
     tables = list(app.dataframe) + list(app.table)
@@ -548,6 +553,16 @@ def test_inventory_add_and_best_loadout_do_not_auto_run_action_ev():
     assert any(button.label == "添加库存件" for button in app.button)
     assert any(button.label == "计算当前最优搭配" for button in app.button)
     assert any(button.label == "计算调律建议" for button in app.button)
+    assert next(button for button in app.button if button.label == "计算当前最优搭配").disabled
+    assert next(button for button in app.button if button.label == "计算调律建议").disabled
+
+    confirm_button = next(button for button in app.button if button.label == "确认当前装备")
+    confirm_button.click()
+    app.run(timeout=30)
+
+    assert not app.exception
+    assert not next(button for button in app.button if button.label == "计算当前最优搭配").disabled
+    assert not next(button for button in app.button if button.label == "计算调律建议").disabled
 
     add_button = next(button for button in app.button if button.label == "添加库存件")
     add_button.click()
@@ -876,46 +891,17 @@ def test_board_density_control_changes_tile_css():
     assert any("--gear-tile-size: 7.4rem" in markdown.value for markdown in app.markdown)
 
 
-def test_candidate_import_digest_refreshes_manual_editor_defaults():
+def test_candidate_workspace_is_removed_from_primary_inventory_flow():
     app = AppTest.from_file("app.py")
-    app.session_state["candidate_zzz_手动输入_position"] = 4
-    app.session_state["candidate_zzz_手动输入_main"] = "暴击率"
-    app.session_state["candidate_zzz_手动输入_level"] = 0
-    app.session_state["candidate_import::zzz::zzz_starlight_billy"] = CandidatePiece(
-        position=5,
-        set_name="云岿如我",
-        main_stat="物理伤害",
-        initial_substat_count=3,
-        level=3,
-        substats=[
-            SubstatLine(stat="暴击率", rolls=0),
-            SubstatLine(stat="暴击伤害", rolls=0),
-            SubstatLine(stat="攻击力百分比", rolls=0),
-            SubstatLine(stat="防御力", rolls=0),
-        ],
-    )
-    app.session_state["candidate_import_digest::zzz::zzz_starlight_billy"] = (
-        "abcdef1234567890"
-    )
-
     app.run(timeout=30)
-    _open_workspace(app, "候选胚子")
 
     assert not app.exception
-    candidate_position = next(
-        widget
-        for widget in app.selectbox
-        if widget.label == "位置"
-        and getattr(widget, "key", "") == "candidate_zzz_手动输入_abcdef123456_position"
+    assert not any(radio.label == "工作区" for radio in app.radio)
+    assert not any(widget.label == "候选示例" for widget in app.selectbox)
+    assert not any(
+        "当前候选胚子" in getattr(checkbox, "label", "")
+        for checkbox in app.checkbox
     )
-    candidate_main = next(
-        widget
-        for widget in app.selectbox
-        if widget.label == "主属性"
-        and getattr(widget, "key", "") == "candidate_zzz_手动输入_abcdef123456_main"
-    )
-    assert candidate_position.value == 5
-    assert candidate_main.value == "物理伤害"
 
 
 def test_character_target_import_refreshes_sidebar_target_controls():

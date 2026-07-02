@@ -1729,8 +1729,8 @@ def _render_inventory_manager(game, character) -> tuple[list[GearPiece], list[st
     valid_pieces: list[GearPiece] = []
 
     st.info(
-        "库存维护不用手写 YAML：当前装备页只管角色身上的 6 件；这里添加背包里没穿的成品或胚子，"
-        "保存后调律策略会自动把它们纳入理论期望。"
+        "库存维护不用手写 YAML：上面录入角色身上的 6 件；这里添加背包里没穿的成品或胚子，"
+        "点击计算后会把它们纳入理论期望。"
     )
     with st.expander("背包库存（点这里添加未装备盘）", expanded=not state):
         st.table(
@@ -1739,7 +1739,7 @@ def _render_inventory_manager(game, character) -> tuple[list[GearPiece], list[st
                     {"步骤": "1", "你要做什么": "点“添加库存件”"},
                     {"步骤": "2", "你要做什么": "选择位置、套装、主属性、等级和副属性"},
                     {"步骤": "3", "你要做什么": "点“保存库存到本机”"},
-                    {"步骤": "4", "你要做什么": "回到攻略结论，库存会自动参与 EV"},
+                    {"步骤": "4", "你要做什么": "确认当前装备后，点击按钮计算最优搭配或调律建议"},
                 ]
             )
         )
@@ -2897,6 +2897,31 @@ def _strategy_action_ev_result_key(game, character) -> str:
     return f"strategy_action_ev::{game.id}::{character.id}"
 
 
+def _current_confirm_digest_key(game, character) -> str:
+    return f"current_confirmed_digest::{game.id}::{character.id}"
+
+
+def _pieces_digest(pieces: list[GearPiece]) -> str:
+    payload = [_model_payload(piece) for piece in pieces]
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _strategy_sweep_summary(game, character, probability_model, analysis):
+    rows = build_strategy_sweep(game, character, probability_model, analysis)
+    current_best = top_strategy(rows, "current_relative_gain_score")
+    long_term_best = top_strategy(rows, "long_term_value_score")
+    tuner_best = top_strategy(
+        [row for row in rows if row.fixed_main_stat and row.expected_tuners > 0],
+        "current_relative_gain_score",
+    )
+    core_best = top_strategy(
+        [row for row in rows if row.expected_cores > 0],
+        "current_relative_gain_score",
+    )
+    return rows, current_best, long_term_best, tuner_best, core_best
+
+
 def _source_label(source: str | None) -> str:
     return {
         "current": "当前装备",
@@ -3858,305 +3883,58 @@ probability_model = _render_probability_model_parameter_controls(game, probabili
 st.sidebar.caption(f"规则：{game.gear_name} / {len(game.positions)} 个位置")
 _render_rules_overview(game, probability_model)
 
-workspace = st.sidebar.radio(
-    "工作区",
-    ["库存", "方案模板", "候选胚子", "验收总览"],
-    index=0,
-    help="默认进入库存；当前装备方案和候选胚子作为辅助页面保留。",
-)
+workspace = "库存"
 
 pieces = _current_pieces_from_state(game, character)
 editor_warnings: list[str] = []
 analysis = analyse_current_gear(pieces, game, character)
-global_rows = build_strategy_sweep(game, character, probability_model, analysis)
-global_current_best = top_strategy(global_rows, "current_relative_gain_score")
-global_long_term_best = top_strategy(global_rows, "long_term_value_score")
-tuner_best = top_strategy(
-    [row for row in global_rows if row.fixed_main_stat and row.expected_tuners > 0],
-    "current_relative_gain_score",
-)
-core_best = top_strategy(
-    [row for row in global_rows if row.expected_cores > 0],
-    "current_relative_gain_score",
-)
-candidate = _default_candidate_for_game(game, character)
-result = evaluate_candidate(candidate, game, character)
-contextual_recommendation, contextual_reason = candidate_contextual_recommendation(
-    candidate,
-    result,
-    analysis,
-)
-stored_action_result = st.session_state.get(_strategy_action_ev_result_key(game, character))
-action_ev_rows = (
-    list(stored_action_result.get("action_ev_rows") or [])
-    if isinstance(stored_action_result, dict)
-    else []
-)
-resource_marginal_ev = pd.DataFrame(
-    stored_action_result.get("resource_marginal_ev") or []
-) if isinstance(stored_action_result, dict) else pd.DataFrame()
+global_rows = []
+global_current_best = None
+global_long_term_best = None
+tuner_best = None
+core_best = None
+action_ev_rows: list[dict] = []
+resource_marginal_ev = pd.DataFrame()
 
-if workspace == "方案模板":
+if workspace == "库存":
+    st.subheader("库存工作台")
+    st.caption("先录入并确认当前身上 6 件，再维护背包库存；计算需要你明确点击按钮。")
+
+    st.write("当前装备（身上 6 件）")
     pieces, editor_warnings = _render_current_editor(game, character)
-    st.write("盘面状态摘要")
-    st.table(_current_gear_status_frame(game, character, pieces, editor_warnings))
-    _render_current_save_controls(game, character, pieces)
-    _render_current_source_controls(game, character, pieces)
     analysis = analyse_current_gear(pieces, game, character)
-    _render_editor_validation_warnings(editor_warnings)
-
-    current_global_rows = build_strategy_sweep(game, character, probability_model, analysis)
-    current_global_best = top_strategy(
-        current_global_rows,
-        "current_relative_gain_score",
-    )
-    current_long_term_best = top_strategy(
-        current_global_rows,
-        "long_term_value_score",
-    )
-    current_tuner_best = top_strategy(
-        [
-            row
-            for row in current_global_rows
-            if row.fixed_main_stat and row.expected_tuners > 0
-        ],
-        "current_relative_gain_score",
-    )
-    current_core_best = top_strategy(
-        [row for row in current_global_rows if row.expected_cores > 0],
-        "current_relative_gain_score",
-    )
-
-    scores_df = _scores_frame(analysis)
-    summary_cols = st.columns(3)
-    summary_cols[0].caption("当前最弱位置")
-    summary_cols[0].markdown(f"### {analysis.weakest_position_name or '-'}")
-    summary_cols[1].caption("套装方案")
-    summary_cols[1].markdown(
-        f"**{analysis.set_plan['name'] if analysis.set_plan else character.target_set}**"
-    )
-    summary_cols[2].caption("有效副词条")
-    summary_cols[2].markdown(f"**{_effective_substat_summary(character)}**")
-
-    st.write("当前结论")
-    st.dataframe(
-        _current_conclusion_frame(
-            analysis,
-            current_global_best,
-            current_long_term_best,
-            current_tuner_best,
-            current_core_best,
-        ),
-        use_container_width=True,
-        hide_index=True,
-    )
-    _render_import_export_controls(
+    status_rows, current_can_confirm = _current_gear_save_check_rows(
         game,
         character,
         pieces,
-        probability_model,
-        analysis,
-        current_global_best,
-        current_long_term_best,
-        current_tuner_best,
-        current_core_best,
-        current_global_rows,
     )
+    st.table(_current_gear_status_frame(game, character, pieces, editor_warnings))
+    _render_editor_validation_warnings(editor_warnings)
+    _render_current_save_controls(game, character, pieces)
+    _render_current_source_controls(game, character, pieces)
 
-    st.info(current_priority_text(analysis))
-    st.dataframe(scores_df, use_container_width=True, hide_index=True)
-
-    fig = px.bar(
-        scores_df,
-        x="位置",
-        y="有效词条次数",
-        color="评级",
-        text="有效词条次数",
-        color_discrete_map={
-            "weak": "#d95f59",
-            "usable": "#d8a31f",
-            "good": "#3f8f6b",
-            "excellent": "#2d6cdf",
-        },
+    current_digest = _pieces_digest(pieces)
+    current_confirm_key = _current_confirm_digest_key(game, character)
+    current_confirmed = (
+        bool(current_can_confirm)
+        and st.session_state.get(current_confirm_key) == current_digest
     )
-    fig.update_layout(height=360, yaxis_title="有效词条次数", xaxis_title="")
-    st.plotly_chart(fig, use_container_width=True)
-
-    priority_df = pd.DataFrame(analysis.relative_priority)
-    priority_df = priority_df.rename(
-        columns={
-            "position_name": "位置",
-            "current_effective_rolls": "有效词条",
-            "current_weighted_score": "质量分",
-            "rating": "评级",
-            "main_stat": "主属性",
-            "main_stat_target": "目标主属性",
-            "main_stat_issue": "主属性状态",
-            "main_stat_preferred": "主属性匹配",
-            "set_plan_preferred": "套装方案匹配",
-            "set_replacement_pressure": "套装替换压力",
-            "set_replacement_badge": "替换标签",
-            "priority_score": "相对提升优先级",
-        }
-    )
-    if not priority_df.empty:
-        priority_df = priority_df.drop(columns=["current_score"], errors="ignore")
-        priority_df["主属性匹配"] = priority_df["主属性匹配"].map({True: "是", False: "否"})
-        priority_df["套装方案匹配"] = priority_df["套装方案匹配"].map({True: "是", False: "否"})
-        priority_df = priority_df.drop(columns=["position"])
-        st.dataframe(priority_df, use_container_width=True, hide_index=True)
-
-if workspace == "候选胚子":
-    candidate, candidate_warnings = _render_candidate_editor(game, character)
-    result = evaluate_candidate(candidate, game, character)
-    candidate_analysis = analyse_current_gear(pieces, game, character)
-    for warning in candidate_warnings + result.warnings:
-        st.warning(warning)
-
-    cols = st.columns(6)
-    cols[0].metric("当前有效词条数", f"{result.current_effective_rolls:g}")
-    cols[1].metric("当前质量分", f"{result.current_weighted_score:g}")
-    cols[2].metric("剩余随机命中", result.remaining_roll_events)
-    cols[3].metric("最终期望", f"{result.final_expected_effective_rolls:g}")
-    cols[4].metric("质量期望", f"{result.final_expected_weighted_score:g}")
-    contextual_recommendation, contextual_reason = candidate_contextual_recommendation(
-        candidate,
-        result,
-        candidate_analysis,
-    )
-    cols[5].metric("建议", contextual_recommendation)
-
-    _render_candidate_import_export_controls(
-        game,
-        character,
-        candidate,
-        result,
-        candidate_analysis,
-    )
-
-    st.write("候选结论")
-    st.table(
-        _candidate_conclusion_frame(
-            game,
-            character,
-            candidate,
-            result,
-            candidate_analysis,
-        ),
-    )
-    st.write("下一跳止损卡")
-    st.dataframe(
-        _candidate_next_step_frame(result),
+    confirm_cols = st.columns([1, 2])
+    if confirm_cols[0].button(
+        "确认当前装备",
+        key=f"confirm_current_{game.id}_{character.id}",
+        disabled=not current_can_confirm,
         use_container_width=True,
-        hide_index=True,
-    )
-    st.write("候选结果概率")
-    st.table(
-        _candidate_outcome_frame(
-            game,
-            character,
-            candidate,
-            result,
-            candidate_analysis,
-        ),
-    )
-
-    if contextual_recommendation == "继续":
-        st.success(contextual_reason)
-    elif contextual_recommendation == "暂停":
-        st.warning(contextual_reason)
-    elif contextual_recommendation == "仅过渡":
-        st.info(contextual_reason)
+    ):
+        st.session_state[current_confirm_key] = current_digest
+        current_confirmed = True
+    if current_confirmed:
+        confirm_cols[1].success("当前装备已确认；可以计算最优搭配和调律建议。")
     else:
-        st.error(contextual_reason)
+        confirm_cols[1].warning("当前装备尚未确认；请录入身上 6 件后点击确认，下面计算按钮暂不可用。")
+        with st.expander("当前装备确认检查", expanded=False):
+            st.table(pd.DataFrame(status_rows))
 
-    st.write("候选验收速览")
-    st.dataframe(
-        _candidate_acceptance_frame(
-            game,
-            character,
-            candidate,
-            result,
-            candidate_analysis,
-        ),
-        use_container_width=True,
-        hide_index=True,
-    )
-
-    if result.event_rows:
-        event_df = pd.DataFrame(
-            [
-                {
-                    "等级": f"+{row['level']}",
-                    "事件": row["event"],
-                    "命中有效概率": row["hit_probability"],
-                    "质量期望增量": row["expected_weighted_gain"],
-                    "说明": row["description"],
-                }
-                for row in result.event_rows
-            ]
-        )
-        event_display_df = event_df.copy()
-        event_display_df["命中有效概率"] = event_display_df["命中有效概率"].map(
-            lambda value: f"{value:.1%}"
-        )
-        event_display_df["质量期望增量"] = event_display_df["质量期望增量"].map(
-            lambda value: f"{value:.2f}"
-        )
-        st.write("强化路径明细")
-        st.caption("路径会区分 +3 补第 4 副属性，以及后续随机命中已有副属性的概率。")
-        st.dataframe(event_display_df, use_container_width=True, hide_index=True)
-
-    distribution_df = pd.DataFrame(
-        [
-            {
-                "最终有效词条次数": point.effective_rolls,
-                "概率": point.probability,
-            }
-            for point in result.distribution
-        ]
-    )
-    weighted_distribution_df = pd.DataFrame(
-        [
-            {
-                "最终质量分": point.weighted_score,
-                "概率": point.probability,
-            }
-            for point in result.weighted_distribution
-        ]
-    )
-    distribution_tabs = st.tabs(["有效次数分布", "质量分布"])
-    with distribution_tabs[0]:
-        if not distribution_df.empty:
-            fig = px.bar(
-                distribution_df,
-                x="最终有效词条次数",
-                y="概率",
-                text=distribution_df["概率"].map(lambda value: f"{value:.1%}"),
-            )
-            fig.update_layout(height=360, yaxis_tickformat=".0%", xaxis_title="最终有效词条次数")
-            st.plotly_chart(fig, use_container_width=True)
-            st.dataframe(distribution_df, use_container_width=True, hide_index=True)
-    with distribution_tabs[1]:
-        if not weighted_distribution_df.empty:
-            weighted_display = weighted_distribution_df.copy()
-            weighted_display["最终质量分"] = weighted_display["最终质量分"].map(
-                lambda value: round(value, 3)
-            )
-            fig = px.bar(
-                weighted_display,
-                x="最终质量分",
-                y="概率",
-                text=weighted_display["概率"].map(lambda value: f"{value:.1%}"),
-            )
-            fig.update_layout(height=360, yaxis_tickformat=".0%", xaxis_title="最终质量分")
-            st.plotly_chart(fig, use_container_width=True)
-            st.dataframe(weighted_display, use_container_width=True, hide_index=True)
-
-if workspace == "库存":
-    analysis = analyse_current_gear(pieces, game, character)
-    st.subheader("库存工作台")
-    st.caption("先维护库存；计算当前最优搭配和调律建议都需要你明确点击按钮。")
     extra_inventory_pieces, inventory_warnings = _render_inventory_manager(game, character)
     if inventory_warnings:
         with st.expander("库存输入校验详情", expanded=False):
@@ -4164,12 +3942,6 @@ if workspace == "库存":
                 st.warning(warning)
 
     with st.expander("计算设置", expanded=True):
-        include_candidate_inventory = st.checkbox(
-            "把当前候选胚子纳入库存 EV",
-            value=False,
-            help="勾选后，策略页会把候选胚子视为库存的一部分；未满级胚子会额外出现“强化库存胚子”action。",
-            key=f"include_candidate_inventory_{game.id}_{character.id}",
-        )
         action_ev_horizon = st.selectbox(
             "Action EV 展望步数",
             [1, 2],
@@ -4187,7 +3959,6 @@ if workspace == "库存":
     strategy_inventory = [
         *pieces,
         *extra_inventory_pieces,
-        *([candidate] if include_candidate_inventory else []),
     ]
     requested_action_ev_horizon = int(action_ev_horizon)
     loadout_digest = _strategy_exact_input_digest(
@@ -4206,7 +3977,10 @@ if workspace == "库存":
     )
 
     st.caption("下面两个按钮只在你明确点击时计算，不会因为添加或编辑库存自动重算。")
-    action_digest = f"{exact_digest}::resource={int(compute_resource_marginal_ev)}"
+    action_digest = (
+        f"{exact_digest}::resource={int(compute_resource_marginal_ev)}"
+        "::ui=inventory-confirm-v2"
+    )
     loadout_result_key = _strategy_loadout_result_key(game, character)
     action_result_key = _strategy_action_ev_result_key(game, character)
 
@@ -4214,17 +3988,18 @@ if workspace == "库存":
     run_loadout = action_cols[0].button(
         "计算当前最优搭配",
         key=f"run_best_loadout_{game.id}_{character.id}",
+        disabled=not current_confirmed,
         use_container_width=True,
     )
     run_action_ev = action_cols[1].button(
         "计算调律建议",
         type="primary",
         key=f"run_action_ev_{game.id}_{character.id}",
+        disabled=not current_confirmed,
         use_container_width=True,
     )
     action_cols[2].caption(
         f"库存池：当前装备 {len(pieces)} 件 + 背包 {len(extra_inventory_pieces)} 件"
-        + (" + 当前候选 1 件" if include_candidate_inventory else "")
     )
 
     if run_loadout:
@@ -4239,7 +4014,7 @@ if workspace == "库存":
         }
 
     loadout_result = st.session_state.get(loadout_result_key)
-    if isinstance(loadout_result, dict) and loadout_result.get("digest") == loadout_digest:
+    if current_confirmed and isinstance(loadout_result, dict) and loadout_result.get("digest") == loadout_digest:
         st.write("当前最优搭配")
         st.dataframe(
             _best_loadout_display_frame(
@@ -4250,89 +4025,106 @@ if workspace == "库存":
             use_container_width=True,
             hide_index=True,
         )
-    elif isinstance(loadout_result, dict):
+    elif current_confirmed and isinstance(loadout_result, dict):
         st.info("库存或方案已变化；上次最优搭配结果已过期，需要重新点击“计算当前最优搭配”。")
 
-    if requested_action_ev_horizon > 1:
-        st.warning(
-            "horizon=2 是精确枚举，不是抽样；只有点击“计算调律建议”才会开始跑。"
-        )
-    global_rows = build_strategy_sweep(game, character, probability_model, analysis)
-    global_current_best = top_strategy(global_rows, "current_relative_gain_score")
-    global_long_term_best = top_strategy(global_rows, "long_term_value_score")
-    tuner_best = top_strategy(
-        [row for row in global_rows if row.fixed_main_stat and row.expected_tuners > 0],
-        "current_relative_gain_score",
-    )
-    core_best = top_strategy(
-        [row for row in global_rows if row.expected_cores > 0],
-        "current_relative_gain_score",
-    )
-
-    action_result = st.session_state.get(action_result_key)
-    action_result_current = (
-        action_result
-        if isinstance(action_result, dict) and action_result.get("digest") == action_digest
-        else None
-    )
-    if run_action_ev:
-        progress_callback = (
-            _exact_progress_callback("Action EV 精确计算")
-            if requested_action_ev_horizon > 1
+    action_result_current = None
+    if not current_confirmed:
+        st.info("请先确认当前装备；确认前不会生成攻略结论，也不会跑调律 EV。")
+    else:
+        if requested_action_ev_horizon > 1:
+            st.warning(
+                "horizon=2 是精确枚举，不是抽样；只有点击“计算调律建议”才会开始跑。"
+            )
+        action_result = st.session_state.get(action_result_key)
+        action_result_current = (
+            action_result
+            if isinstance(action_result, dict) and action_result.get("digest") == action_digest
             else None
         )
-        spinner_text = (
-            "正在精确计算 horizon=2 的 action EV；进度条会显示当前 action 和 DP 状态。"
-            if requested_action_ev_horizon > 1
-            else "正在计算 action EV。"
-        )
-        with st.spinner(spinner_text):
-            action_ev_rows = position_strategy_efficiency_rows(
-                game,
-                character,
-                probability_model,
-                analysis,
-                inventory_pieces=strategy_inventory,
-                horizon=requested_action_ev_horizon,
-                progress_callback=progress_callback,
+        if run_action_ev:
+            progress_callback = (
+                _exact_progress_callback("Action EV 精确计算")
+                if requested_action_ev_horizon > 1
+                else None
             )
-            if compute_resource_marginal_ev:
-                resource_progress_callback = (
-                    _exact_progress_callback("特殊资源 EV 精确计算")
-                    if requested_action_ev_horizon > 1
-                    else None
+            spinner_text = (
+                "正在精确计算 horizon=2 的 action EV；进度条会显示当前 action 和 DP 状态。"
+                if requested_action_ev_horizon > 1
+                else "正在计算 action EV。"
+            )
+            with st.spinner(spinner_text):
+                (
+                    global_rows,
+                    global_current_best,
+                    global_long_term_best,
+                    tuner_best,
+                    core_best,
+                ) = _strategy_sweep_summary(
+                    game,
+                    character,
+                    probability_model,
+                    analysis,
                 )
-                resource_marginal_ev = _resource_marginal_ev_frame(
+                action_ev_rows = position_strategy_efficiency_rows(
                     game,
                     character,
                     probability_model,
                     analysis,
                     inventory_pieces=strategy_inventory,
                     horizon=requested_action_ev_horizon,
-                    progress_callback=resource_progress_callback,
+                    progress_callback=progress_callback,
                 )
-            else:
-                resource_marginal_ev = pd.DataFrame()
-        action_result_current = {
-            "digest": action_digest,
-            "horizon": requested_action_ev_horizon,
-            "action_ev_rows": action_ev_rows,
-            "resource_marginal_ev": resource_marginal_ev.to_dict("records"),
-        }
-        st.session_state[action_result_key] = action_result_current
-        st.success(f"horizon={requested_action_ev_horizon} 调律建议已计算完成。")
-    elif action_result_current:
-        action_ev_rows = list(action_result_current.get("action_ev_rows") or [])
-        resource_marginal_ev = pd.DataFrame(
-            action_result_current.get("resource_marginal_ev") or []
-        )
-    else:
-        action_ev_rows = []
-        resource_marginal_ev = pd.DataFrame()
-        if isinstance(action_result, dict):
-            st.info("库存、候选、方案或 horizon 已变化；上次调律建议已过期，需要重新点击“计算调律建议”。")
+                if compute_resource_marginal_ev:
+                    resource_progress_callback = (
+                        _exact_progress_callback("特殊资源 EV 精确计算")
+                        if requested_action_ev_horizon > 1
+                        else None
+                    )
+                    resource_marginal_ev = _resource_marginal_ev_frame(
+                        game,
+                        character,
+                        probability_model,
+                        analysis,
+                        inventory_pieces=strategy_inventory,
+                        horizon=requested_action_ev_horizon,
+                        progress_callback=resource_progress_callback,
+                    )
+                else:
+                    resource_marginal_ev = pd.DataFrame()
+            action_result_current = {
+                "digest": action_digest,
+                "horizon": requested_action_ev_horizon,
+                "action_ev_rows": action_ev_rows,
+                "resource_marginal_ev": resource_marginal_ev.to_dict("records"),
+                "global_rows": global_rows,
+                "global_current_best": global_current_best,
+                "global_long_term_best": global_long_term_best,
+                "tuner_best": tuner_best,
+                "core_best": core_best,
+            }
+            st.session_state[action_result_key] = action_result_current
+            st.success(f"horizon={requested_action_ev_horizon} 调律建议已计算完成。")
+        elif action_result_current:
+            action_ev_rows = list(action_result_current.get("action_ev_rows") or [])
+            resource_marginal_ev = pd.DataFrame(
+                action_result_current.get("resource_marginal_ev") or []
+            )
+            global_rows = list(action_result_current.get("global_rows") or [])
+            global_current_best = action_result_current.get("global_current_best")
+            global_long_term_best = action_result_current.get("global_long_term_best")
+            tuner_best = action_result_current.get("tuner_best")
+            core_best = action_result_current.get("core_best")
         else:
-            st.info("库存可以继续编辑；需要调律建议时再点击“计算调律建议”。")
+            action_ev_rows = []
+            resource_marginal_ev = pd.DataFrame()
+            if isinstance(action_result, dict):
+                st.info("库存、方案或 horizon 已变化；上次调律建议已过期，需要重新点击“计算调律建议”。")
+            else:
+                st.info("库存可以继续编辑；需要调律建议时再点击“计算调律建议”。")
+
+    if action_result_current is None:
+        st.stop()
     st.subheader("攻略结论")
     st.table(
         _strategy_guide_frame(
@@ -4520,129 +4312,3 @@ if workspace == "库存":
         st.success(current_text)
         st.info(long_text)
 
-if workspace == "验收总览":
-    st.subheader("第一版验收总览")
-    st.caption(
-        "汇总当前装备、候选胚子、调律策略三块结果；这里的答案会随当前页面输入即时变化。"
-    )
-    acceptance_df = _first_version_acceptance_frame(
-        game,
-        character,
-        candidate,
-        result,
-        analysis,
-        global_current_best,
-        global_long_term_best,
-        tuner_best,
-        core_best,
-        action_ev_rows,
-    )
-    st.write("六个核心问题")
-    for row in acceptance_df.to_dict("records"):
-        st.markdown(f"**{row['验收问题']}**  \n{row['当前答案']}")
-    st.dataframe(acceptance_df, use_container_width=True, hide_index=True)
-
-    st.write("攻略结论")
-    st.table(
-        _strategy_guide_frame(
-            action_ev_rows,
-            analysis,
-            global_current_best,
-            global_long_term_best,
-            tuner_best,
-            core_best,
-        )
-    )
-    with st.expander("核算细节：今日行动摘要", expanded=False):
-        st.table(
-            _today_action_summary_frame(
-                game,
-                character,
-                candidate,
-                result,
-                analysis,
-                global_current_best,
-                global_long_term_best,
-                tuner_best,
-                core_best,
-            )
-        )
-
-    with st.expander("核算细节：高优先级问题闭环", expanded=False):
-        st.dataframe(
-            _high_priority_closure_frame(),
-            use_container_width=True,
-            hide_index=True,
-        )
-
-    with st.expander("核算细节：下一步操作卡", expanded=False):
-        st.table(
-            _action_rows_frame(
-                first_version_next_action_rows(
-                    game,
-                    character,
-                    candidate,
-                    result,
-                    analysis,
-                    global_current_best,
-                    global_long_term_best,
-                )
-            )
-        )
-
-    acceptance_cols = st.columns(4)
-    acceptance_cols[0].metric("最弱位置", analysis.weakest_position_name or "-")
-    acceptance_cols[1].metric("候选建议", contextual_recommendation)
-    acceptance_cols[2].metric(
-        "当前补弱",
-        global_current_best.target_position_name if global_current_best else "-",
-    )
-    acceptance_cols[3].metric(
-        "长期目标",
-        global_long_term_best.target_position_name if global_long_term_best else "-",
-    )
-
-    with st.expander("核算细节：当前调律期望管理", expanded=False):
-        st.caption(
-            "按完整概率分布做理论期望，不做抽样模拟；随机/固定都会把新盘加入库存后重求最优组合；同时展示有效词条提升/母盘和质量提升/母盘；固定主属性只展示省母盘和期望校音器，不做资源折算。"
-        )
-        st.write("随机 vs 固定位置收益效率")
-        if action_ev_rows:
-            st.dataframe(
-                pd.DataFrame(_visible_action_ev_rows(action_ev_rows)).astype(str),
-                use_container_width=True,
-                hide_index=True,
-            )
-        else:
-            st.info("尚未计算调律建议；请先在“调律策略比较”里点击“计算调律建议”。")
-        st.write("固定主属性省母盘阶梯")
-        st.dataframe(
-            _fixed_main_gain_ladder_frame(game, character, probability_model, analysis),
-            use_container_width=True,
-            hide_index=True,
-        )
-        st.write("固定副属性省母盘阶梯")
-        st.dataframe(
-            _fixed_substat_gain_ladder_frame(game, character, probability_model, analysis),
-            use_container_width=True,
-            hide_index=True,
-        )
-
-    st.download_button(
-        "下载验收总览 Markdown",
-        data=first_version_acceptance_report_markdown(
-            game,
-            character,
-            candidate,
-            result,
-            analysis,
-            global_current_best,
-            global_long_term_best,
-            tuner_best,
-            core_best,
-            probability_model=probability_model,
-        ),
-        file_name=f"{_safe_filename(game.id)}_{_safe_filename(character.id)}_acceptance.md",
-        mime="text/markdown",
-        key=f"download_acceptance_{game.id}_{character.id}",
-    )
