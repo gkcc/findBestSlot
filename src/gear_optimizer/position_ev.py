@@ -313,6 +313,92 @@ def _candidate_inventory_row(
     }
 
 
+def _future_roll_state_distribution(
+    piece: GearPiece,
+    game: GameRules,
+) -> dict[tuple[tuple[str, int], ...], float]:
+    states: dict[tuple[tuple[str, int], ...], float] = {
+        _canonical_roll_state(
+            game,
+            tuple((line.stat, line.rolls) for line in piece.substats),
+        ): 1.0
+    }
+    events = [
+        level
+        for level in game.enhancement.event_levels
+        if level > piece.level and level <= game.enhancement.max_level
+    ]
+    needs_add = (
+        piece.initial_substat_count == 3
+        and len(piece.substats) < 4
+        and piece.level < game.enhancement.initial_add_level
+    )
+    for index, _level in enumerate(events):
+        next_states: defaultdict[tuple[tuple[str, int], ...], float] = defaultdict(float)
+        is_add_event = needs_add and index == 0
+        for state, probability in states.items():
+            if is_add_event:
+                selected_stats = [stat for stat, _rolls in state]
+                draws = _weighted_draws(
+                    game.available_substats(piece.main_stat, selected_stats),
+                    game.sub_stat_probabilities,
+                )
+                if not draws:
+                    next_states[state] += probability
+                    continue
+                for stat, draw_probability in draws:
+                    next_state = _canonical_roll_state(game, tuple([*state, (stat, 0)]))
+                    next_states[next_state] += probability * draw_probability
+                continue
+            if not state:
+                next_states[state] += probability
+                continue
+            for stat_index, (stat, rolls) in enumerate(state):
+                updated = list(state)
+                updated[stat_index] = (stat, rolls + 1)
+                next_states[_canonical_roll_state(game, tuple(updated))] += probability / len(state)
+        states = dict(next_states)
+    return states
+
+
+def _expected_upgrade_quality(
+    piece: GearPiece,
+    game: GameRules,
+    character: CharacterPreset,
+) -> tuple[float, tuple[float, ...]]:
+    expected_score = 0.0
+    expected_vector = list(_zero_vector(character))
+    for state, probability in _future_roll_state_distribution(piece, game).items():
+        quality_score, quality_vector = _quality_from_roll_state(state, character)
+        expected_score += quality_score * probability
+        for index, value in enumerate(quality_vector):
+            expected_vector[index] += value * probability
+    return round(expected_score, 6), tuple(round(value, 6) for value in expected_vector)
+
+
+def _expected_upgrade_loadout_row(
+    row: dict,
+    game: GameRules,
+    character: CharacterPreset,
+) -> dict:
+    piece = row.get("_piece")
+    if not isinstance(piece, GearPiece) or piece.level >= game.enhancement.max_level:
+        return row
+    expected_score, expected_vector = _expected_upgrade_quality(piece, game, character)
+    projected = dict(row)
+    projected["_current_effective_rolls"] = row.get("effective_rolls", 0.0)
+    projected["_current_quality_score"] = row.get("quality_score", 0.0)
+    projected["_current_quality_vector"] = row.get("quality_vector", ())
+    projected["_expected_upgrade"] = True
+    projected["_expected_level"] = game.enhancement.max_level
+    projected["_allow_unfinished_loadout"] = True
+    projected["effective_rolls"] = expected_score
+    projected["quality_score"] = expected_score
+    projected["quality_vector"] = expected_vector
+    projected.pop("_value_vector", None)
+    return projected
+
+
 def _piece_contribution_key(row: dict) -> tuple[float, ...]:
     return (
         float(bool(row["main_preferred"])),
@@ -372,6 +458,7 @@ def _coerce_inventory_rows(
     game: GameRules,
     character: CharacterPreset,
     current_count: int = 0,
+    include_upgrade_expectation: bool = False,
 ) -> list[dict]:
     rows: list[dict] = []
     for index, item in enumerate(inventory):
@@ -380,9 +467,14 @@ def _coerce_inventory_rows(
             row = _candidate_inventory_row(item, game, character, source=source)
             row["_inventory_id"] = _inventory_piece_id(index)
             row["_piece"] = item
+            if include_upgrade_expectation:
+                row = _expected_upgrade_loadout_row(row, game, character)
             rows.append(row)
         else:
-            rows.append(dict(item))
+            row = dict(item)
+            if include_upgrade_expectation:
+                row = _expected_upgrade_loadout_row(row, game, character)
+            rows.append(row)
     return _normalise_inventory_rows(rows, game, character)
 
 
@@ -391,6 +483,7 @@ def inventory_rows_from_pieces(
     game: GameRules,
     character: CharacterPreset,
     current_count: int = 0,
+    include_upgrade_expectation: bool = False,
 ) -> list[dict]:
     rows = []
     for index, piece in enumerate(pieces):
@@ -398,6 +491,8 @@ def inventory_rows_from_pieces(
         row = _candidate_inventory_row(piece, game, character, source=source)
         row["_inventory_id"] = _inventory_piece_id(index)
         row["_piece"] = piece
+        if include_upgrade_expectation:
+            row = _expected_upgrade_loadout_row(row, game, character)
         rows.append(row)
     return _normalise_inventory_rows(rows, game, character)
 
@@ -704,9 +799,16 @@ def best_loadout_value(
     game: GameRules,
     character: CharacterPreset,
     current_count: int = 0,
+    include_upgrade_expectation: bool = False,
 ) -> tuple[float, ...]:
     return _best_combo_value(
-        _coerce_inventory_rows(inventory, game, character, current_count=current_count),
+        _coerce_inventory_rows(
+            inventory,
+            game,
+            character,
+            current_count=current_count,
+            include_upgrade_expectation=include_upgrade_expectation,
+        ),
         game,
         character,
     )
@@ -717,8 +819,15 @@ def best_loadout_rows(
     game: GameRules,
     character: CharacterPreset,
     current_count: int = 0,
+    include_upgrade_expectation: bool = False,
 ) -> list[dict]:
-    rows = _coerce_inventory_rows(inventory, game, character, current_count=current_count)
+    rows = _coerce_inventory_rows(
+        inventory,
+        game,
+        character,
+        current_count=current_count,
+        include_upgrade_expectation=include_upgrade_expectation,
+    )
     return [dict(row) for row in _best_combo_rows(rows, game, character)]
 
 

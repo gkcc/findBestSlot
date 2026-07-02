@@ -171,13 +171,17 @@ def test_pyproject_declares_native_desktop_scripts_and_dependencies():
     assert not any(dependency.startswith("pywebview") for dependency in optional["packaging"])
 
 
-def test_native_desktop_source_keeps_inventory_as_primary_view_without_tabs():
+def test_native_desktop_source_uses_tabs_with_inventory_first():
     source = (PROJECT_ROOT / "src" / "gear_optimizer" / "pyside6_app.py").read_text(encoding="utf-8")
 
-    assert "QTabWidget" not in source
+    assert "QTabWidget" in source
+    assert 'self.tabs.addTab(inventory_page, "库存")' in source
+    assert 'self.tabs.addTab(current_page, "当前装备")' in source
+    assert 'self.tabs.addTab(result_page, "计算结果")' in source
     assert source.index('inventory_group = QGroupBox("背包库存（未装备盘）")') < source.index(
         'current_group = QGroupBox("当前装备（身上 6 件）")'
     )
+    assert "include_upgrade_expectation=True" in source
 
 
 def test_windows_packaging_scripts_bundle_native_pyside6_resources():

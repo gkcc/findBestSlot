@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QProgressBar,
     QSpinBox,
+    QTabWidget,
     QTableWidget,
     QTableWidgetItem,
     QTextEdit,
@@ -168,6 +169,14 @@ def _format_value(value: Any) -> str:
     if isinstance(value, list):
         return " / ".join(_format_value(item) for item in value)
     return "" if value is None else str(value)
+
+
+def _loadout_level_label(piece: Any, row: dict[str, Any]) -> str:
+    if not isinstance(piece, GearPiece):
+        return "-"
+    if row.get("_expected_upgrade"):
+        return f"+{piece.level} -> +{row.get('_expected_level', '?')} 期望"
+    return f"+{piece.level}"
 
 
 class GearTable(QTableWidget):
@@ -466,6 +475,7 @@ class OptimizerWindow(QMainWindow):
         self.horizon_combo = QComboBox()
         self.progress_bar = QProgressBar()
         self.progress_label = QLabel("当前装备未确认。")
+        self.tabs = QTabWidget()
         self.best_table = QTableWidget()
         self.action_table = QTableWidget()
         self.log = QTextEdit()
@@ -486,6 +496,8 @@ class OptimizerWindow(QMainWindow):
         form.addRow("概率模型", self.probability_combo)
         layout.addWidget(selectors)
 
+        inventory_page = QWidget()
+        inventory_page_layout = QVBoxLayout(inventory_page)
         inventory_group = QGroupBox("背包库存（未装备盘）")
         inventory_layout = QVBoxLayout(inventory_group)
         inventory_layout.addWidget(self.inventory_table)
@@ -495,8 +507,11 @@ class OptimizerWindow(QMainWindow):
         inventory_buttons.addWidget(self.save_inventory_button)
         inventory_buttons.addStretch(1)
         inventory_layout.addLayout(inventory_buttons)
-        layout.addWidget(inventory_group, 3)
+        inventory_page_layout.addWidget(inventory_group)
+        self.tabs.addTab(inventory_page, "库存")
 
+        current_page = QWidget()
+        current_page_layout = QVBoxLayout(current_page)
         current_group = QGroupBox("当前装备（身上 6 件）")
         current_layout = QVBoxLayout(current_group)
         current_layout.addWidget(self.current_table)
@@ -506,8 +521,11 @@ class OptimizerWindow(QMainWindow):
         current_buttons.addWidget(self.load_example_button)
         current_buttons.addStretch(1)
         current_layout.addLayout(current_buttons)
-        layout.addWidget(current_group, 2)
+        current_page_layout.addWidget(current_group)
+        self.tabs.addTab(current_page, "当前装备")
 
+        result_page = QWidget()
+        result_page_layout = QVBoxLayout(result_page)
         action_group = QGroupBox("计算")
         action_layout = QVBoxLayout(action_group)
         settings = QHBoxLayout()
@@ -521,7 +539,7 @@ class OptimizerWindow(QMainWindow):
         action_layout.addLayout(settings)
         action_layout.addWidget(self.progress_label)
         action_layout.addWidget(self.progress_bar)
-        layout.addWidget(action_group)
+        result_page_layout.addWidget(action_group)
 
         result_group = QGroupBox("结果")
         result_layout = QVBoxLayout(result_group)
@@ -531,7 +549,9 @@ class OptimizerWindow(QMainWindow):
         result_layout.addWidget(self.action_table)
         result_layout.addWidget(QLabel("运行日志"))
         result_layout.addWidget(self.log)
-        layout.addWidget(result_group, 3)
+        result_page_layout.addWidget(result_group)
+        self.tabs.addTab(result_page, "计算结果")
+        layout.addWidget(self.tabs, 1)
 
         self.setCentralWidget(root)
 
@@ -722,6 +742,7 @@ class OptimizerWindow(QMainWindow):
             self.selected_game(),
             self.selected_character(),
             current_count=len(current_pieces),
+            include_upgrade_expectation=True,
         )
         display_rows = []
         game = self.selected_game()
@@ -734,13 +755,17 @@ class OptimizerWindow(QMainWindow):
                     "来源": _source_label(row.get("source")),
                     "套装": row["set_name"],
                     "主属性": piece.main_stat if isinstance(piece, GearPiece) else "-",
-                    "等级": f"+{piece.level}" if isinstance(piece, GearPiece) else "-",
-                    "有效词条": row.get("effective_rolls", "-"),
-                    "质量分": row.get("quality_score", "-"),
+                    "等级": _loadout_level_label(piece, row),
+                    "估值口径": "满级强化期望" if row.get("_expected_upgrade") else "当前值",
+                    "当前有效": row.get("_current_effective_rolls", row.get("effective_rolls", "-")),
+                    "期望有效": row.get("effective_rolls", "-"),
+                    "当前质量": row.get("_current_quality_score", row.get("quality_score", "-")),
+                    "期望质量": row.get("quality_score", "-"),
                     "排序向量": row.get("quality_vector", "-"),
                 }
             )
         self._fill_table(self.best_table, display_rows)
+        self.tabs.setCurrentIndex(2)
         self.progress_label.setText("当前最优搭配已计算完成。")
 
     def run_action_ev(self) -> None:
@@ -772,6 +797,7 @@ class OptimizerWindow(QMainWindow):
         self._worker_thread.finished.connect(self._worker.deleteLater)
         self._worker_thread.finished.connect(self._worker_thread.deleteLater)
         self._worker_thread.start()
+        self.tabs.setCurrentIndex(2)
 
     def _on_action_progress(self, payload: dict) -> None:
         total = float(payload.get("total") or 0)

@@ -7,6 +7,7 @@ from gear_optimizer.game_rules import load_characters, load_game, load_probabili
 from gear_optimizer.position_ev import (
     ActionSpec,
     action_gain_for_spec,
+    best_loadout_rows,
     best_loadout_value,
     immediate_piece_gain,
     _initial_weight_states,
@@ -177,6 +178,53 @@ def _tiny_exact_context():
     return game, character, probability_model, inventory
 
 
+def _tiny_upgrade_expectation_context():
+    game = GameRules(
+        id="tiny_upgrade",
+        name="Tiny Upgrade",
+        gear_name="Disk",
+        sets=["A"],
+        positions=[PositionRule(id=1, name="1号位", main_stats=["main"])],
+        sub_stats=["good", "bad"],
+        main_stat_probabilities={"1": {"main": 1.0}},
+        sub_stat_probabilities={"good": 1.0, "bad": 1.0},
+        enhancement=EnhancementRule(max_level=3, step=3, initial_add_level=3),
+    )
+    character = CharacterPreset(
+        id="tiny_upgrade_char",
+        game="tiny_upgrade",
+        name="Tiny Upgrade Char",
+        target_set="A",
+        substat_priority=SubstatPriority(core=["good"], usable=[]),
+        preferred_main_stats={"1": ["main"]},
+        set_plans=[
+            SetPlan(
+                id="a1",
+                name="A 1",
+                requirements=[SetRequirement(set_name="A", pieces=1)],
+            )
+        ],
+        default_set_plan="a1",
+    )
+    current = GearPiece(
+        position=1,
+        set_name="A",
+        main_stat="main",
+        level=3,
+        substats=[SubstatLine(stat="good", rolls=0)],
+        initial_substat_count=4,
+    )
+    embryo = GearPiece(
+        position=1,
+        set_name="A",
+        main_stat="main",
+        level=0,
+        substats=[SubstatLine(stat="good", rolls=0)],
+        initial_substat_count=4,
+    )
+    return game, character, current, embryo
+
+
 def test_initial_unknown_piece_distribution_preserves_probability_mass():
     game, character, _probability_model, _analysis = _billy_context()
 
@@ -283,6 +331,32 @@ def test_unfinished_inventory_candidate_is_upgrade_source_not_best_loadout_piece
         inventory_rows_from_pieces([*inventory, unfinished], game, character),
     )
     assert any(spec.strategy == "强化库存胚子" for spec in specs)
+
+
+def test_best_loadout_can_explicitly_rank_unfinished_inventory_by_upgrade_expectation():
+    game, character, current, embryo = _tiny_upgrade_expectation_context()
+
+    static_rows = best_loadout_rows([current, embryo], game, character, current_count=1)
+    expected_rows = best_loadout_rows(
+        [current, embryo],
+        game,
+        character,
+        current_count=1,
+        include_upgrade_expectation=True,
+    )
+
+    assert static_rows[0]["source"] == "current"
+    assert expected_rows[0]["source"] == "inventory"
+    assert expected_rows[0]["_expected_upgrade"] is True
+    assert expected_rows[0]["_current_quality_score"] == 1.0
+    assert expected_rows[0]["quality_score"] == 2.0
+    assert best_loadout_value(
+        [current, embryo],
+        game,
+        character,
+        current_count=1,
+        include_upgrade_expectation=True,
+    ) > best_loadout_value([current, embryo], game, character, current_count=1)
 
 
 def test_locked_position_cannot_be_replaced_by_inventory_or_upgraded_candidate():
