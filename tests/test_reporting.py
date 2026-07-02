@@ -78,10 +78,10 @@ def test_current_analysis_report_answers_acceptance_questions():
     assert "## 当前调律期望管理" in report
     assert "随机/固定都会把新盘加入库存后重求当前套装约束下的最优组合" in report
     assert "### 随机 vs 固定位置收益效率" in report
-    assert "| 策略 | 目标套装 | 位置 | 主属性 | 固定副属性 | horizon | immediate_EV | option_EV | horizon_EV | 期望提升 | 质量提升 | 有效提升 | 母盘/次 | 校音器/次 | 共鸣核/次 | 质量/母盘 | 有效/母盘 | 排序向量/母盘 | 相对随机 |" in report
+    assert "| 策略 | 目标套装 | 位置 | 主属性 | 固定副属性 | horizon | immediate_EV | option_EV | horizon_EV | 期望提升 | 代表路径 | 预期搭配 | 互补位 | 套装约束 | 质量提升 | 有效提升 | 母盘/次 | 校音器/次 | 共鸣核/次 | 质量/母盘 | 有效/母盘 | 排序向量/母盘 | 相对随机 |" in report
     assert "| 随机位置 | 云岿如我 | 1-6 随机 |" in report
     assert "| 固定位置 | 折枝剑歌 | 6号位 |" in report
-    assert "优于随机，才建议固定" in report
+    assert "未满足套装硬约束，不作为当前 horizon 推荐" in report
     assert "### 固定主属性省母盘阶梯" in report
     assert "| 位置 | 当前补弱顺位 | 推荐主属性 | 当前质量分 | 当前有效词条 | 提升目标 | 目标质量分 | 不锁主属性有效提升 | 固定主属性有效提升 | 不锁主属性概率 | 固定主属性概率 | 不锁主属性母盘 | 固定主属性母盘 | 省母盘 | 期望校音器 |" in report
     assert "| 6号位 | 1 | 生命值百分比 | 1.0 | 1.0 | +1 | 2.0 |" in report

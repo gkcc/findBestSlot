@@ -354,8 +354,77 @@ def test_random_and_fixed_position_gain_resolve_best_combo_actions():
     assert random_row["位置"] == "1-6 随机"
     assert {"云岿如我", "折枝剑歌"}.issubset({row["目标套装"] for row in rows})
     assert "排序向量/母盘" in random_row
-    assert any(row["位置"] == "6号位" and row["相对随机"] == "优于随机，才建议固定" for row in fixed_rows)
     assert any(row["位置"] == "6号位" and row["有效/母盘"] > 0 for row in fixed_rows)
+    branch_slot6 = next(
+        row
+        for row in rows
+        if row["策略"] == "固定位置"
+        and row["目标套装"] == "折枝剑歌"
+        and row["位置"] == "6号位"
+    )
+    assert "云岿如我5 + 折枝剑歌1" in branch_slot6["预期搭配"]
+    assert "6号位折枝剑歌" in branch_slot6["代表路径"]
+    assert branch_slot6["套装约束"] == "未满足云岿如我 4 + 折枝剑歌 2硬约束"
+    assert branch_slot6["相对随机"] == "未满足套装硬约束，不作为当前 horizon 推荐"
+    assert "代表新盘未进入" not in branch_slot6["互补位"]
+
+
+def test_horizon_two_action_rows_show_two_step_representative_path():
+    game, character, probability_model, inventory = _tiny_exact_context()
+    analysis = analyse_current_gear(inventory, game, character)
+
+    rows = position_strategy_efficiency_rows(
+        game,
+        character,
+        probability_model,
+        analysis,
+        horizon=2,
+    )
+    random_row = next(row for row in rows if row["策略"] == "随机位置")
+
+    assert "第1步" in random_row["代表路径"]
+    assert "第2步" in random_row["代表路径"]
+    assert "A2" in random_row["预期搭配"]
+    assert random_row["套装约束"] == "满足A 2"
+
+
+def test_single_action_plan_status_uses_inventory_complement_for_four_plus_two():
+    game, character, probability_model, analysis = _billy_context()
+    current = load_current_example("examples/zzz_billy_current.yaml")
+    inventory = [
+        GearPiece(
+            position=5,
+            set_name="折枝剑歌",
+            main_stat="物理伤害",
+            level=15,
+            substats=[
+                SubstatLine(stat="暴击率", rolls=2),
+                SubstatLine(stat="暴击伤害", rolls=2),
+                SubstatLine(stat="生命值百分比", rolls=2),
+            ],
+            initial_substat_count=4,
+        )
+    ]
+
+    rows = position_strategy_efficiency_rows(
+        game,
+        character,
+        probability_model,
+        analysis,
+        inventory_pieces=[*current, *inventory],
+    )
+    branch_slot6 = next(
+        row
+        for row in rows
+        if row["策略"] == "固定位置"
+        and row["目标套装"] == "折枝剑歌"
+        and row["位置"] == "6号位"
+    )
+
+    assert branch_slot6["套装约束"] == "满足云岿如我 4 + 折枝剑歌 2"
+    assert "云岿如我4 + 折枝剑歌2" in branch_slot6["预期搭配"]
+    assert "5号位折枝剑歌" in branch_slot6["互补位"]
+    assert "6号位折枝剑歌" in branch_slot6["代表路径"]
 
 
 def test_best_loadout_uses_full_inventory_and_migrates_four_plus_two_positions():
@@ -721,10 +790,16 @@ def test_fixed_substat_rows_expand_after_fixed_main_beats_fixed_position(monkeyp
     assert "固定位置 + 固定主属性 + 固定副属性" in calls
 
 
-def test_lookahead_action_space_includes_fixed_main_and_fixed_substats():
-    game, character, probability_model, analysis = _billy_context()
-
-    rows = position_strategy_efficiency_rows(game, character, probability_model, analysis)
+def test_lookahead_action_space_includes_fixed_main_and_fixed_substats(monkeypatch):
+    rows, _calls = _position_rows_with_fake_action_values(
+        monkeypatch,
+        {
+            "随机位置": 1.0,
+            "固定位置": 2.0,
+            "固定位置 + 固定主属性": 3.0,
+            "固定位置 + 固定主属性 + 固定副属性": 4.0,
+        },
+    )
 
     assert any(row["策略"] == "固定位置 + 固定主属性" for row in rows)
     assert any(row["策略"] == "固定位置 + 固定主属性 + 固定副属性" for row in rows)
@@ -732,18 +807,11 @@ def test_lookahead_action_space_includes_fixed_main_and_fixed_substats():
         row
         for row in rows
         if row["策略"] == "固定位置 + 固定主属性"
-        and row["位置"] == "6号位"
-        and row["主属性"] == "生命值百分比"
-        and row["目标套装"] == "云岿如我"
     )
     fixed_substat = next(
         row
         for row in rows
         if row["策略"] == "固定位置 + 固定主属性 + 固定副属性"
-        and row["位置"] == "6号位"
-        and row["主属性"] == "生命值百分比"
-        and row["固定副属性"] == "暴击率"
-        and row["目标套装"] == "云岿如我"
     )
 
     assert fixed_main["校音器/次"] == 1.0
@@ -771,7 +839,8 @@ def test_action_rows_include_upgrading_existing_inventory_candidate():
 
     assert upgrade_rows
     assert upgrade_rows[0]["位置"].startswith("5号位 云岿如我 物理伤害")
-    assert upgrade_rows[0]["相对随机"] == "库存动作"
+    assert upgrade_rows[0]["相对随机"] == "未满足套装硬约束，不作为当前 horizon 推荐"
+    assert upgrade_rows[0]["套装约束"].startswith("未满足")
     assert upgrade_rows[0]["母盘/次"] == 0.0
 
 
@@ -845,6 +914,14 @@ def test_recommended_action_ev_row_only_promotes_fixed_when_it_beats_random():
     assert recommended_action_ev_row(rows)["策略"] == "随机位置"
 
     rows[1]["相对随机"] = "优于随机，才建议固定"
+
+    assert recommended_action_ev_row(rows)["策略"] == "固定位置"
+
+    rows[1]["套装约束"] = "未满足A 2硬约束"
+
+    assert recommended_action_ev_row(rows)["策略"] == "随机位置"
+
+    rows[1]["套装约束"] = "满足A 2"
 
     assert recommended_action_ev_row(rows)["策略"] == "固定位置"
 

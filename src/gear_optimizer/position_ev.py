@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from itertools import combinations
@@ -1020,6 +1020,229 @@ def _aggregated_action_outcomes_for_spec(
     )
     _AGGREGATED_ACTION_OUTCOME_CACHE[key] = outcomes
     return outcomes
+
+
+def _position_sort_index(game: GameRules) -> dict[str, int]:
+    return {position_key(rule.id): index for index, rule in enumerate(game.positions)}
+
+
+def _sorted_combo_rows(combo: Sequence[dict], game: GameRules) -> list[dict]:
+    order = _position_sort_index(game)
+    return sorted(
+        combo,
+        key=lambda row: (order.get(position_key(row["position"]), 999), position_key(row["position"])),
+    )
+
+
+def _combo_set_count_label(combo: Sequence[dict]) -> str:
+    counts = Counter(str(row["set_name"]) for row in combo)
+    if not counts:
+        return "-"
+    return " + ".join(
+        f"{set_name}{count}"
+        for set_name, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    )
+
+
+def _combo_piece_label(row: dict, game: GameRules) -> str:
+    return f"{game.position_name(row['position'])}{row['set_name']}"
+
+
+def _combo_loadout_label(combo: Sequence[dict], game: GameRules) -> str:
+    if not combo:
+        return "-"
+    positions = " / ".join(_combo_piece_label(row, game) for row in _sorted_combo_rows(combo, game))
+    return f"{_combo_set_count_label(combo)}；{positions}"
+
+
+def _set_plan_status_label(combo: Sequence[dict], character: CharacterPreset) -> str:
+    plan = character.active_set_plan()
+    if plan is None or plan.is_unrestricted:
+        return "不限套装"
+    return (
+        f"满足{plan.name}"
+        if _set_plan_satisfied(tuple(combo), character)
+        else f"未满足{plan.name}硬约束"
+    )
+
+
+def _new_rows_between(previous_inventory: list[dict], next_inventory: list[dict]) -> list[dict]:
+    previous_counts = Counter(_inventory_row_signature(row) for row in previous_inventory)
+    new_rows: list[dict] = []
+    for row in next_inventory:
+        signature = _inventory_row_signature(row)
+        if previous_counts[signature] > 0:
+            previous_counts[signature] -= 1
+        else:
+            new_rows.append(row)
+    return new_rows
+
+
+def _rows_present_in_combo(rows: Sequence[dict], combo: Sequence[dict]) -> list[dict]:
+    combo_counts = Counter(_inventory_row_signature(row) for row in combo)
+    present: list[dict] = []
+    for row in rows:
+        signature = _inventory_row_signature(row)
+        if combo_counts[signature] > 0:
+            combo_counts[signature] -= 1
+            present.append(row)
+    return present
+
+
+def _combo_without_rows(combo: Sequence[dict], rows_to_remove: Sequence[dict]) -> list[dict]:
+    remove_counts = Counter(_inventory_row_signature(row) for row in rows_to_remove)
+    remaining: list[dict] = []
+    for row in combo:
+        signature = _inventory_row_signature(row)
+        if remove_counts[signature] > 0:
+            remove_counts[signature] -= 1
+        else:
+            remaining.append(row)
+    return remaining
+
+
+def _select_representative_outcome(
+    inventory: list[dict],
+    game: GameRules,
+    character: CharacterPreset,
+    probability_model: ProbabilityModel,
+    spec: ActionSpec,
+    remaining_horizon: int,
+    memo: dict[tuple[int, tuple[tuple, ...]], tuple[float, ...]],
+    quality_cache: dict[tuple[str, tuple[str, ...]], list[tuple[float, tuple[float, ...], float]]],
+) -> tuple[list[dict], float, tuple[float, ...]] | None:
+    outcomes = _aggregated_action_outcomes_for_spec(
+        inventory,
+        game,
+        character,
+        probability_model,
+        spec,
+        quality_cache=quality_cache,
+    )
+    if not outcomes:
+        return None
+
+    best: tuple[list[dict], float, tuple[float, ...]] | None = None
+    for next_inventory, probability in outcomes:
+        if remaining_horizon > 0:
+            value = lookahead_inventory_value(
+                next_inventory,
+                game,
+                character,
+                probability_model,
+                horizon=remaining_horizon,
+                memo=memo,
+                quality_cache=quality_cache,
+            )
+        else:
+            value = _cached_best_combo_value(next_inventory, game, character)
+        if best is None or value > best[2] or (value == best[2] and probability > best[1]):
+            best = (next_inventory, probability, value)
+    return best
+
+
+def _best_followup_spec(
+    inventory: list[dict],
+    game: GameRules,
+    character: CharacterPreset,
+    probability_model: ProbabilityModel,
+    horizon: int,
+    memo: dict[tuple[int, tuple[tuple, ...]], tuple[float, ...]],
+    quality_cache: dict[tuple[str, tuple[str, ...]], list[tuple[float, tuple[float, ...], float]]],
+) -> ActionSpec | None:
+    current_value = _cached_best_combo_value(inventory, game, character)
+    best_spec: ActionSpec | None = None
+    best_value = current_value
+    for spec in _lookahead_action_specs(game, character, inventory):
+        value = _expected_action_value(
+            inventory,
+            game,
+            character,
+            probability_model,
+            spec,
+            horizon,
+            memo,
+            quality_cache,
+        )
+        if value > best_value:
+            best_value = value
+            best_spec = spec
+    return best_spec
+
+
+def _representative_action_plan_labels(
+    inventory: list[dict],
+    game: GameRules,
+    character: CharacterPreset,
+    probability_model: ProbabilityModel,
+    first_spec: ActionSpec,
+    horizon: int,
+    memo: dict[tuple[int, tuple[tuple, ...]], tuple[float, ...]],
+    quality_cache: dict[tuple[str, tuple[str, ...]], list[tuple[float, tuple[float, ...], float]]],
+) -> tuple[str, str, str, str]:
+    if not _cached_best_combo_value(inventory, game, character):
+        return "-", "-", "-", "-"
+
+    current_inventory = inventory
+    current_spec: ActionSpec | None = first_spec
+    action_rows: list[dict] = []
+    path_parts: list[str] = []
+    steps = max(horizon, 1)
+
+    for step_index in range(1, steps + 1):
+        if current_spec is None:
+            break
+        selected = _select_representative_outcome(
+            current_inventory,
+            game,
+            character,
+            probability_model,
+            current_spec,
+            steps - step_index,
+            memo,
+            quality_cache,
+        )
+        if selected is None:
+            path_parts.append(f"第{step_index}步 {_action_progress_label(current_spec, game)} 无可用命中")
+            break
+
+        next_inventory, probability, _value = selected
+        new_rows = _new_rows_between(current_inventory, next_inventory)
+        action_rows.extend(new_rows)
+        if new_rows:
+            new_label = " / ".join(_combo_piece_label(row, game) for row in _sorted_combo_rows(new_rows, game))
+        else:
+            new_label = "未改变当前库存代表状态"
+        path_parts.append(
+            f"第{step_index}步 {new_label}（代表命中 {probability:.1%}）"
+        )
+        current_inventory = next_inventory
+        if step_index >= steps:
+            break
+        current_spec = _best_followup_spec(
+            current_inventory,
+            game,
+            character,
+            probability_model,
+            steps - step_index,
+            memo,
+            quality_cache,
+        )
+
+    final_combo = _best_combo_rows(current_inventory, game, character)
+    if not final_combo:
+        return "；".join(path_parts) if path_parts else "-", "-", "-", "-"
+
+    selected_action_rows = _rows_present_in_combo(action_rows, final_combo)
+    complement_rows = _combo_without_rows(final_combo, selected_action_rows)
+    path_label = "；".join(path_parts) if path_parts else "-"
+    loadout_label = _combo_loadout_label(final_combo, game)
+    set_plan_status = _set_plan_status_label(final_combo, character)
+    if selected_action_rows:
+        complement_label = _combo_loadout_label(complement_rows, game)
+    else:
+        complement_label = "代表新盘未进入最终搭配；" + _combo_loadout_label(final_combo, game)
+    return path_label, loadout_label, complement_label, set_plan_status
 
 
 def _action_position_items(
@@ -2671,8 +2894,23 @@ def position_strategy_efficiency_rows(
         effective_gain = gain[-2] if gain else 0.0
         quality_efficiency = efficiency[-1] if efficiency else 0.0
         effective_efficiency = efficiency[-2] if efficiency else 0.0
+        representative_path, representative_loadout, complement_loadout, set_plan_status = (
+            _representative_action_plan_labels(
+                inventory_rows,
+                game,
+                character,
+                probability_model,
+                spec,
+                horizon,
+                memo,
+                quality_cache,
+            )
+        )
+        set_plan_blocked = set_plan_status.startswith("未满足")
         random_efficiency = random_efficiency_by_set.get(spec.set_label, tuple())
-        if spec.strategy == "随机位置":
+        if set_plan_blocked:
+            relative = "未满足套装硬约束，不作为当前 horizon 推荐"
+        elif spec.strategy == "随机位置":
             relative = "基准"
         elif spec.strategy == "强化库存胚子":
             relative = "库存动作"
@@ -2721,6 +2959,10 @@ def position_strategy_efficiency_rows(
             "option_EV": _quality_vector_label(option_gain, character),
             "horizon_EV": _quality_vector_label(gain, character),
             "期望提升": _quality_vector_label(gain, character),
+            "代表路径": representative_path,
+            "预期搭配": representative_loadout,
+            "互补位": complement_loadout,
+            "套装约束": set_plan_status,
             "质量提升": round(quality_gain, 3),
             "有效提升": round(effective_gain, 3),
             "母盘/次": round(mother_cost, 3),
@@ -2816,6 +3058,9 @@ def _row_sort_vector(row: dict[str, float | str]) -> tuple[float, ...]:
 def _is_recommendable_action_row(row: dict[str, float | str]) -> bool:
     strategy = str(row.get("策略") or "")
     relative = str(row.get("相对随机") or "")
+    set_plan_status = str(row.get("套装约束") or "")
+    if set_plan_status.startswith("未满足"):
+        return False
     if strategy == "随机位置":
         return True
     if strategy == "固定位置":
@@ -3084,7 +3329,14 @@ def recommended_action_ev_row(
         return None
     candidates = [row for row in rows if _is_recommendable_action_row(row)]
     if not candidates:
-        candidates = [row for row in rows if row.get("策略") == "随机位置"] or rows
+        candidates = [
+            row
+            for row in rows
+            if row.get("策略") == "随机位置"
+            and not str(row.get("套装约束") or "").startswith("未满足")
+        ]
+    if not candidates:
+        return None
     return max(
         candidates,
         key=_row_sort_vector,
@@ -3094,10 +3346,13 @@ def recommended_action_ev_row(
 def action_ev_brief(rows: list[dict[str, float | str]]) -> str:
     best = recommended_action_ev_row(rows)
     if best is None:
+        if rows and all(str(row.get("套装约束") or "").startswith("未满足") for row in rows):
+            return "当前 horizon 没有满足套装硬约束的 action；请提高 horizon 或先补齐套装缺口。"
         return "暂无 action EV 结果。"
+    loadout = str(best.get("预期搭配") or "-")
     return (
         f"{best['策略']}：{best['目标套装']} {best['位置']}，"
         f"排序向量/母盘 {best.get('排序向量/母盘', '-')}，"
         f"有效/母盘 {best['有效/母盘']}；"
-        f"{best['相对随机']}。"
+        f"{best['相对随机']}；{best.get('套装约束', '-')}。预期搭配：{loadout}。"
     )
