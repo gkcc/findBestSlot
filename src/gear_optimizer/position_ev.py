@@ -712,6 +712,16 @@ def best_loadout_value(
     )
 
 
+def best_loadout_rows(
+    inventory: Sequence[GearPiece | dict],
+    game: GameRules,
+    character: CharacterPreset,
+    current_count: int = 0,
+) -> list[dict]:
+    rows = _coerce_inventory_rows(inventory, game, character, current_count=current_count)
+    return [dict(row) for row in _best_combo_rows(rows, game, character)]
+
+
 def _positive_gain(
     new_value: tuple[float, ...],
     current_value: tuple[float, ...],

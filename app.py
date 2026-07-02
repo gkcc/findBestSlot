@@ -71,6 +71,7 @@ from gear_optimizer.presets import (
 )
 from gear_optimizer.position_ev import (
     action_ev_brief,
+    best_loadout_rows,
     fixed_main_gain_ladder_rows,
     fixed_substat_gain_ladder_rows,
     initial_substat_tier_rows,
@@ -1757,7 +1758,6 @@ def _render_inventory_manager(game, character) -> tuple[list[GearPiece], list[st
                     _next_inventory_item_id(game, character),
                 )
             )
-            st.rerun()
         if control_cols[1].button(
             "清空库存",
             key=f"clear_inventory_{game.id}_{character.id}",
@@ -2879,6 +2879,50 @@ def _strategy_exact_input_digest(
     }
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _strategy_loadout_result_key(game, character) -> str:
+    return f"strategy_best_loadout::{game.id}::{character.id}"
+
+
+def _strategy_action_ev_result_key(game, character) -> str:
+    return f"strategy_action_ev::{game.id}::{character.id}"
+
+
+def _source_label(source: str | None) -> str:
+    return {
+        "current": "当前装备",
+        "inventory": "背包库存",
+        "outcome": "新结果",
+    }.get(str(source or "inventory"), "背包库存")
+
+
+def _best_loadout_display_frame(game, character, rows: list[dict]) -> pd.DataFrame:
+    display_rows = []
+    for index, row in enumerate(rows, start=1):
+        piece = row.get("_piece")
+        level = piece.level if isinstance(piece, GearPiece) else row.get("level", "-")
+        main_stat = piece.main_stat if isinstance(piece, GearPiece) else row.get("main_stat", "-")
+        substats = piece.substats if isinstance(piece, GearPiece) else []
+        display_rows.append(
+            {
+                "#": index,
+                "位置": game.position_name(row["position"]),
+                "来源": _source_label(row.get("source")),
+                "套装": row["set_name"],
+                "主属性": main_stat,
+                "等级": f"+{level}" if isinstance(level, int) else level,
+                "状态": "成品"
+                if isinstance(level, int) and level >= game.enhancement.max_level
+                else "胚子",
+                "副属性": _substat_effective_label(substats) if substats else "-",
+                "有效词条": round(float(row.get("effective_rolls", 0.0)), 3),
+                "质量分": round(float(row.get("quality_score", 0.0)), 3),
+                "排序向量": " / ".join(f"{float(value):g}" for value in row.get("quality_vector", ()))
+                or "-",
+            }
+        )
+    return pd.DataFrame(display_rows)
 
 
 def _exact_progress_callback(title: str):
@@ -4069,31 +4113,48 @@ with tab_candidate:
 
 with tab_strategy:
     analysis = analyse_current_gear(pieces, game, character)
-    include_candidate_inventory = st.checkbox(
-        "把当前候选胚子纳入库存 EV",
-        value=False,
-        help="勾选后，策略页会把候选胚子视为库存的一部分；未满级胚子会额外出现“强化库存胚子”action。",
-        key=f"include_candidate_inventory_{game.id}_{character.id}",
-    )
-    action_ev_horizon = st.selectbox(
-        "Action EV 展望步数",
-        [1, 2],
-        index=0,
-        help="horizon=2 会把本次 action 后的下一次最优调律也纳入期权价值；完整 action 空间计算较重。",
-        key=f"action_ev_horizon_{game.id}_{character.id}",
-    )
+    st.subheader("库存工作台")
+    st.caption("先维护库存；计算当前最优搭配和调律建议都需要你明确点击按钮。")
     extra_inventory_pieces, inventory_warnings = _render_inventory_manager(game, character)
     if inventory_warnings:
         with st.expander("库存输入校验详情", expanded=False):
             for warning in dict.fromkeys(inventory_warnings):
                 st.warning(warning)
+
+    with st.expander("计算设置", expanded=True):
+        include_candidate_inventory = st.checkbox(
+            "把当前候选胚子纳入库存 EV",
+            value=False,
+            help="勾选后，策略页会把候选胚子视为库存的一部分；未满级胚子会额外出现“强化库存胚子”action。",
+            key=f"include_candidate_inventory_{game.id}_{character.id}",
+        )
+        action_ev_horizon = st.selectbox(
+            "Action EV 展望步数",
+            [1, 2],
+            index=0,
+            help="horizon=2 会把本次 action 后的下一次最优调律也纳入期权价值；完整 action 空间计算较重。",
+            key=f"action_ev_horizon_{game.id}_{character.id}",
+        )
+        compute_resource_marginal_ev = st.checkbox(
+            "计算特殊资源全局边际 EV 详情",
+            value=False,
+            help="这张明细表较重；攻略结论不依赖它，只有想审计校音器/共鸣核边际差值时再打开。",
+            key=f"compute_resource_marginal_ev_{game.id}_{character.id}",
+        )
+
     strategy_inventory = [
         *pieces,
         *extra_inventory_pieces,
         *([candidate] if include_candidate_inventory else []),
     ]
     requested_action_ev_horizon = int(action_ev_horizon)
-    action_ev_horizon_to_compute = requested_action_ev_horizon
+    loadout_digest = _strategy_exact_input_digest(
+        game,
+        character,
+        probability_model,
+        strategy_inventory,
+        0,
+    )
     exact_digest = _strategy_exact_input_digest(
         game,
         character,
@@ -4101,24 +4162,59 @@ with tab_strategy:
         strategy_inventory,
         requested_action_ev_horizon,
     )
-    exact_run_key = f"action_ev_exact_digest_{game.id}_{character.id}"
+
+    st.caption("下面两个按钮只在你明确点击时计算，不会因为添加或编辑库存自动重算。")
+    action_digest = f"{exact_digest}::resource={int(compute_resource_marginal_ev)}"
+    loadout_result_key = _strategy_loadout_result_key(game, character)
+    action_result_key = _strategy_action_ev_result_key(game, character)
+
+    action_cols = st.columns([1, 1, 2])
+    run_loadout = action_cols[0].button(
+        "计算当前最优搭配",
+        key=f"run_best_loadout_{game.id}_{character.id}",
+        use_container_width=True,
+    )
+    run_action_ev = action_cols[1].button(
+        "计算调律建议",
+        type="primary",
+        key=f"run_action_ev_{game.id}_{character.id}",
+        use_container_width=True,
+    )
+    action_cols[2].caption(
+        f"库存池：当前装备 {len(pieces)} 件 + 背包 {len(extra_inventory_pieces)} 件"
+        + (" + 当前候选 1 件" if include_candidate_inventory else "")
+    )
+
+    if run_loadout:
+        st.session_state[loadout_result_key] = {
+            "digest": loadout_digest,
+            "rows": best_loadout_rows(
+                strategy_inventory,
+                game,
+                character,
+                current_count=len(pieces),
+            ),
+        }
+
+    loadout_result = st.session_state.get(loadout_result_key)
+    if isinstance(loadout_result, dict) and loadout_result.get("digest") == loadout_digest:
+        st.write("当前最优搭配")
+        st.dataframe(
+            _best_loadout_display_frame(
+                game,
+                character,
+                list(loadout_result.get("rows") or []),
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+    elif isinstance(loadout_result, dict):
+        st.info("库存或方案已变化；上次最优搭配结果已过期，需要重新点击“计算当前最优搭配”。")
+
     if requested_action_ev_horizon > 1:
         st.warning(
-            "horizon=2 是精确枚举，不是抽样。为避免你一改控件就反复重算，"
-            "这里需要先点“开始精确计算 horizon=2”。"
+            "horizon=2 是精确枚举，不是抽样；只有点击“计算调律建议”才会开始跑。"
         )
-        if st.button(
-            "开始精确计算 horizon=2",
-            type="primary",
-            key=f"start_exact_action_ev_{game.id}_{character.id}",
-        ):
-            st.session_state[exact_run_key] = exact_digest
-        exact_ready = st.session_state.get(exact_run_key) == exact_digest
-        if not exact_ready:
-            action_ev_horizon_to_compute = 1
-            st.info(
-                "当前先显示 horizon=1 快速结论；点击上面的按钮后，会显示精确进度条并计算 horizon=2。"
-            )
     global_rows = build_strategy_sweep(game, character, probability_model, analysis)
     global_current_best = top_strategy(global_rows, "current_relative_gain_score")
     global_long_term_best = top_strategy(global_rows, "long_term_value_score")
@@ -4131,28 +4227,70 @@ with tab_strategy:
         "current_relative_gain_score",
     )
 
-    if action_ev_horizon_to_compute > 1:
-        progress_callback = _exact_progress_callback("Action EV 精确计算")
-        with st.spinner("正在精确计算 horizon=2 的 action EV；进度条会显示当前 action 和 DP 状态。"):
+    action_result = st.session_state.get(action_result_key)
+    action_result_current = (
+        action_result
+        if isinstance(action_result, dict) and action_result.get("digest") == action_digest
+        else None
+    )
+    if run_action_ev:
+        progress_callback = (
+            _exact_progress_callback("Action EV 精确计算")
+            if requested_action_ev_horizon > 1
+            else None
+        )
+        spinner_text = (
+            "正在精确计算 horizon=2 的 action EV；进度条会显示当前 action 和 DP 状态。"
+            if requested_action_ev_horizon > 1
+            else "正在计算 action EV。"
+        )
+        with st.spinner(spinner_text):
             action_ev_rows = position_strategy_efficiency_rows(
                 game,
                 character,
                 probability_model,
                 analysis,
                 inventory_pieces=strategy_inventory,
-                horizon=action_ev_horizon_to_compute,
+                horizon=requested_action_ev_horizon,
                 progress_callback=progress_callback,
             )
-        st.success("horizon=2 精确 Action EV 已计算完成。")
-    else:
-        action_ev_rows = position_strategy_efficiency_rows(
-            game,
-            character,
-            probability_model,
-            analysis,
-            inventory_pieces=strategy_inventory,
-            horizon=action_ev_horizon_to_compute,
+            if compute_resource_marginal_ev:
+                resource_progress_callback = (
+                    _exact_progress_callback("特殊资源 EV 精确计算")
+                    if requested_action_ev_horizon > 1
+                    else None
+                )
+                resource_marginal_ev = _resource_marginal_ev_frame(
+                    game,
+                    character,
+                    probability_model,
+                    analysis,
+                    inventory_pieces=strategy_inventory,
+                    horizon=requested_action_ev_horizon,
+                    progress_callback=resource_progress_callback,
+                )
+            else:
+                resource_marginal_ev = pd.DataFrame()
+        action_result_current = {
+            "digest": action_digest,
+            "horizon": requested_action_ev_horizon,
+            "action_ev_rows": action_ev_rows,
+            "resource_marginal_ev": resource_marginal_ev.to_dict("records"),
+        }
+        st.session_state[action_result_key] = action_result_current
+        st.success(f"horizon={requested_action_ev_horizon} 调律建议已计算完成。")
+    elif action_result_current:
+        action_ev_rows = list(action_result_current.get("action_ev_rows") or [])
+        resource_marginal_ev = pd.DataFrame(
+            action_result_current.get("resource_marginal_ev") or []
         )
+    else:
+        action_ev_rows = []
+        resource_marginal_ev = pd.DataFrame()
+        if isinstance(action_result, dict):
+            st.info("库存、候选、方案或 horizon 已变化；上次调律建议已过期，需要重新点击“计算调律建议”。")
+        else:
+            st.info("库存可以继续编辑；需要调律建议时再点击“计算调律建议”。")
     st.subheader("攻略结论")
     st.table(
         _strategy_guide_frame(
@@ -4172,11 +4310,14 @@ with tab_strategy:
         st.caption(
             "按完整概率分布做理论期望，不做抽样模拟；随机/固定都会把新盘加入库存后重求当前套装约束下的最优组合；同时展示质量提升/母盘和有效词条提升/母盘，校音器/共鸣核单独计数。"
         )
-        st.dataframe(
-            pd.DataFrame(_visible_action_ev_rows(action_ev_rows)).astype(str),
-            use_container_width=True,
-            hide_index=True,
-        )
+        if action_ev_rows:
+            st.dataframe(
+                pd.DataFrame(_visible_action_ev_rows(action_ev_rows)).astype(str),
+                use_container_width=True,
+                hide_index=True,
+            )
+        else:
+            st.info("尚未计算调律建议；点击“计算调律建议”后这里会显示完整 Action EV 明细。")
     fixed_main_ladder = _fixed_main_gain_ladder_frame(game, character, probability_model, analysis)
     if not fixed_main_ladder.empty:
         with st.expander("核算细节：固定主属性省母盘阶梯", expanded=False):
@@ -4191,35 +4332,6 @@ with tab_strategy:
                 "已经固定位置和主属性后再看是否锁副属性：这里比较锁 1/2 个目标副词条能少刷多少母盘；共鸣核只单独计数，不折算。"
             )
             st.dataframe(fixed_substat_ladder, use_container_width=True, hide_index=True)
-    compute_resource_marginal_ev = st.checkbox(
-        "计算特殊资源全局边际 EV 详情",
-        value=False,
-        help="这张明细表较重；攻略结论不依赖它，只有想审计校音器/共鸣核边际差值时再打开。",
-        key=f"compute_resource_marginal_ev_{game.id}_{character.id}",
-    )
-    resource_marginal_ev = pd.DataFrame()
-    if compute_resource_marginal_ev:
-        if action_ev_horizon_to_compute > 1:
-            resource_progress_callback = _exact_progress_callback("特殊资源 EV 精确计算")
-            with st.spinner("正在计算特殊资源的全局边际 EV；会复用前面能复用的 DP 缓存。"):
-                resource_marginal_ev = _resource_marginal_ev_frame(
-                    game,
-                    character,
-                    probability_model,
-                    analysis,
-                    inventory_pieces=strategy_inventory,
-                    horizon=action_ev_horizon_to_compute,
-                    progress_callback=resource_progress_callback,
-                )
-        else:
-            resource_marginal_ev = _resource_marginal_ev_frame(
-                game,
-                character,
-                probability_model,
-                analysis,
-                inventory_pieces=strategy_inventory,
-                horizon=action_ev_horizon_to_compute,
-            )
     with st.expander("核算细节：特殊资源全局边际 EV", expanded=False):
         st.caption(
             "固定主属性按 EV(固定位置+固定主属性) - EV(固定位置不固定主属性)；固定副属性按 EV(锁副属性) - EV(只锁主属性)。EV 都通过完整库存 best_loadout 计算，校音器/共鸣核只单独计数。"
@@ -4453,11 +4565,14 @@ with tab_acceptance:
             "按完整概率分布做理论期望，不做抽样模拟；随机/固定都会把新盘加入库存后重求最优组合；同时展示有效词条提升/母盘和质量提升/母盘；固定主属性只展示省母盘和期望校音器，不做资源折算。"
         )
         st.write("随机 vs 固定位置收益效率")
-        st.dataframe(
-            _position_strategy_efficiency_frame(game, character, probability_model, analysis),
-            use_container_width=True,
-            hide_index=True,
-        )
+        if action_ev_rows:
+            st.dataframe(
+                pd.DataFrame(_visible_action_ev_rows(action_ev_rows)).astype(str),
+                use_container_width=True,
+                hide_index=True,
+            )
+        else:
+            st.info("尚未计算调律建议；请先在“调律策略比较”里点击“计算调律建议”。")
         st.write("固定主属性省母盘阶梯")
         st.dataframe(
             _fixed_main_gain_ladder_frame(game, character, probability_model, analysis),

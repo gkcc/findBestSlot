@@ -8,9 +8,31 @@ from gear_optimizer.user_current_gear import save_user_current_gear
 pytestmark = pytest.mark.streamlit_ui
 
 
+def _has_action_ev_table(app: AppTest) -> bool:
+    required = {"策略", "目标套装", "位置", "期望提升", "质量/母盘", "有效/母盘", "相对随机"}
+    return any(
+        required.issubset(set(getattr(dataframe.value, "columns", [])))
+        for dataframe in app.dataframe
+    )
+
+
+def _has_best_loadout_table(app: AppTest) -> bool:
+    required = {"来源", "套装", "主属性", "排序向量"}
+    return any(
+        required.issubset(set(getattr(dataframe.value, "columns", [])))
+        for dataframe in app.dataframe
+    )
+
+
 def test_app_shows_rules_overview_and_hsr_can_render():
     app = AppTest.from_file("app.py")
     app.run(timeout=30)
+    assert not app.exception
+    assert any(button.label == "计算调律建议" for button in app.button)
+
+    strategy_button = next(button for button in app.button if button.label == "计算调律建议")
+    strategy_button.click()
+    app.run(timeout=90)
     tables = list(app.dataframe) + list(app.table)
 
     assert not app.exception
@@ -476,6 +498,40 @@ def test_app_shows_rules_overview_and_hsr_can_render():
         for dataframe in app.dataframe
         if "位置" in getattr(dataframe.value, "columns", [])
     )
+
+
+def test_inventory_add_and_best_loadout_do_not_auto_run_action_ev():
+    app = AppTest.from_file("app.py")
+    app.run(timeout=30)
+
+    assert not app.exception
+    assert not _has_action_ev_table(app)
+    assert any(button.label == "添加库存件" for button in app.button)
+    assert any(button.label == "计算当前最优搭配" for button in app.button)
+    assert any(button.label == "计算调律建议" for button in app.button)
+
+    add_button = next(button for button in app.button if button.label == "添加库存件")
+    add_button.click()
+    app.run(timeout=30)
+
+    assert not app.exception
+    assert any(expander.label.startswith("库存 1：") for expander in app.expander)
+    assert not _has_action_ev_table(app)
+
+    loadout_button = next(button for button in app.button if button.label == "计算当前最优搭配")
+    loadout_button.click()
+    app.run(timeout=30)
+
+    assert not app.exception
+    assert _has_best_loadout_table(app)
+    assert not _has_action_ev_table(app)
+
+    strategy_button = next(button for button in app.button if button.label == "计算调律建议")
+    strategy_button.click()
+    app.run(timeout=90)
+
+    assert not app.exception
+    assert _has_action_ev_table(app)
 
 
 def test_current_editor_constrains_levels_and_roll_inputs():
