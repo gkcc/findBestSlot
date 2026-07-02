@@ -82,6 +82,22 @@ GEAR_COLUMNS = [
     "副词条4",
     "roll4",
 ]
+GEAR_COLUMN_WIDTHS = [
+    78,
+    128,
+    116,
+    64,
+    76,
+    56,
+    112,
+    54,
+    112,
+    54,
+    112,
+    54,
+    112,
+    54,
+]
 
 
 def _model_payload(item: Any) -> Any:
@@ -224,8 +240,11 @@ class GearTable(QTableWidget):
         self.verticalHeader().setVisible(True)
         self.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        self.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
-        self.horizontalHeader().setStretchLastSection(True)
+        self.setWordWrap(False)
+        self.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        self.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
+        self.horizontalHeader().setStretchLastSection(False)
+        self._apply_column_widths()
 
     def set_context(
         self,
@@ -313,6 +332,11 @@ class GearTable(QTableWidget):
         self.setVerticalHeaderLabels(
             [f"{self.row_label_prefix} #{row + 1}" for row in range(self.rowCount())]
         )
+
+    def _apply_column_widths(self) -> None:
+        for column, width in enumerate(GEAR_COLUMN_WIDTHS):
+            self.setColumnWidth(column, width)
+        self.verticalHeader().setFixedWidth(68)
 
     def _populate_row(self, row: int, piece: GearPiece) -> None:
         game, _character = self._require_context()
