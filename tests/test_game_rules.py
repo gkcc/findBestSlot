@@ -440,8 +440,8 @@ def test_zzz_character_targets_are_not_limited_to_starlight_billy():
     assert {"zzz_starlight_billy", "zzz_template_anomaly"}.issubset(by_id)
     billy = by_id["zzz_starlight_billy"]
     assert billy.substat_priority is not None
-    assert billy.substat_priority.core == ["暴击率", "暴击伤害"]
-    assert billy.substat_priority.usable == ["生命值百分比"]
+    assert billy.substat_priority.core == ["暴击率", "暴击伤害", "生命值百分比"]
+    assert billy.substat_priority.usable == []
     assert billy.weight_for("暴击率") == 1.0
     assert billy.weight_for("生命值百分比") == 1.0
     assert billy.ordered_effective_substats() == ["暴击率", "暴击伤害", "生命值百分比"]

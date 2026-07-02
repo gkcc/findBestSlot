@@ -122,9 +122,9 @@ def test_quality_vector_uses_configured_priority_order_without_scalar_weights():
         initial_substat_count=4,
     )
 
-    assert character.substat_priority.core == ["暴击率", "暴击伤害"]
-    assert character.substat_priority.usable == ["生命值百分比"]
-    assert substat_quality_vector(piece, character) == (3.0, 2.0, 1.0, 3.0, 3.0)
+    assert character.substat_priority.core == ["暴击率", "暴击伤害", "生命值百分比"]
+    assert character.substat_priority.usable == []
+    assert substat_quality_vector(piece, character) == (6.0, 2.0, 1.0, 3.0, 0.0)
 
 
 def _tiny_exact_context():

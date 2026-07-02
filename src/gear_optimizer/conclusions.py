@@ -407,7 +407,7 @@ def candidate_conclusion_rows(
         {
             "问题": "当前副词条构成",
             "结论": _candidate_substat_summary(candidate, character),
-            "依据": "核心/可用/无效由当前角色副词条优先级决定。",
+            "依据": "核心、可用、无效由当前角色副词条优先级决定；未配置可用词条时只显示核心和无效。",
         },
     ]
 
@@ -550,7 +550,7 @@ def high_priority_closure_rows() -> list[dict[str, str]]:
             "问题": "副词条只按顺序配置",
             "闭环状态": "已改为优先级分组输入",
             "验收入口": "侧栏 -> 副词条优先级",
-            "证据": "用户只选择核心/可用副词条顺序，算法按顺位排序，不要求也不生成副词条小数系数。",
+            "证据": "用户只选择副词条优先级顺序，算法按顺位排序，不要求也不生成副词条小数系数。",
         },
         {
             "编号": "5",
@@ -1269,7 +1269,7 @@ def _candidate_checkpoint_status(result: CandidateEvaluation) -> tuple[str, str]
     expected_weighted_gain = float(first["expected_weighted_gain"])
 
     if result.recommendation == "继续":
-        stop_rule = "命中核心/可用词条就继续；若没有质量收益，转为暂停观察。"
+        stop_rule = "命中配置内有效词条就继续；若没有质量收益，转为暂停观察。"
     elif result.recommendation == "暂停":
         stop_rule = "只有命中高优先级词条才继续；歪到低优先级或无效词条就先停。"
     elif result.recommendation == "仅过渡":

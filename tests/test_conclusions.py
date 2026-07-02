@@ -48,7 +48,7 @@ def test_candidate_conclusion_rows_answer_upgrade_decision():
     assert "主属性命中目标" in by_question["候选补位价值"]["依据"]
     assert by_question["强化观察点"]["结论"] == "+6 看是否命中有效词条"
     assert "命中有效概率 50.0%" in by_question["强化观察点"]["依据"]
-    assert "命中核心/可用词条就继续" in by_question["强化观察点"]["依据"]
+    assert "命中配置内有效词条就继续" in by_question["强化观察点"]["依据"]
     assert by_question["替换当前同位置提升"]["结论"] == "暂不优于当前盘"
     assert by_question["套装目标匹配"]["结论"] == "不补规划缺口"
     assert "套装目标：建议让位" in by_question["套装目标匹配"]["依据"]

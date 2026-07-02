@@ -109,8 +109,8 @@ def test_character_target_yaml_preserves_configurable_targets():
     assert data["target_set"] == "云岿如我"
     assert data["preferred_main_stats"]["4"] == ["暴击率", "暴击伤害"]
     assert "effective_substats" not in data
-    assert data["substat_priority"]["core"] == ["暴击率", "暴击伤害"]
-    assert data["substat_priority"]["usable"] == ["生命值百分比"]
+    assert data["substat_priority"]["core"] == ["暴击率", "暴击伤害", "生命值百分比"]
+    assert data["substat_priority"]["usable"] == []
     assert data["default_set_plan"] == "cloud_4_branch_2"
     assert data["target_effective_rolls"] == 6.0
     assert data["target_weighted_score"] == 6.0

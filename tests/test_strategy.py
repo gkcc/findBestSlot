@@ -177,9 +177,9 @@ def test_strategy_context_rows_explain_active_set_plan_groups():
     )
     assert any(
         row["项目"] == "副词条优先级"
-        and "核心：暴击率 > 暴击伤害" in row["当前值"]
-        and "可用：生命值百分比" in row["当前值"]
-        and "按核心/可用顺位排序" in row["策略影响"]
+        and "核心：暴击率 > 暴击伤害 > 生命值百分比" in row["当前值"]
+        and "可用：" not in row["当前值"]
+        and "按配置顺位排序" in row["策略影响"]
         for row in rows
     )
 
@@ -370,7 +370,7 @@ def test_strategy_default_substats_follow_character_priority_order():
     assert fixed_substat_note(rows[4]) == "生命值百分比（核心）、暴击率（核心）"
 
 
-def test_strategy_fixed_substat_note_keeps_usable_weight_visible():
+def test_strategy_fixed_substat_note_uses_core_priority_from_template():
     game = load_game("zzz")
     character = _billy()
     probability_model = load_probability_models("zzz")[0]
@@ -386,8 +386,8 @@ def test_strategy_fixed_substat_note_keeps_usable_weight_visible():
         fixed_substats=["生命值百分比", "暴击率"],
     )
 
-    assert fixed_substat_note(rows[4]) == "生命值百分比（可用）、暴击率（核心）"
-    assert rows[4].fixed_substat_details[0]["priority"] == "可用"
+    assert fixed_substat_note(rows[4]) == "生命值百分比（核心）、暴击率（核心）"
+    assert rows[4].fixed_substat_details[0]["priority"] == "核心"
     assert rows[4].fixed_substat_details[1]["priority"] == "核心"
 
 

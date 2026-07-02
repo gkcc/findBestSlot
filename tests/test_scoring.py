@@ -145,7 +145,7 @@ def test_substat_details_distinguish_core_usable_and_invalid_stats():
 
     assert detail_by_stat["暴击率"]["priority"] == "核心"
     assert detail_by_stat["暴击伤害"]["priority"] == "核心"
-    assert detail_by_stat["生命值百分比"]["priority"] == "可用"
+    assert detail_by_stat["生命值百分比"]["priority"] == "核心"
     assert detail_by_stat["防御力"]["priority"] == "无效"
     assert detail_by_stat["生命值百分比"]["weighted_score"] == 2
     assert detail_by_stat["生命值百分比"]["priority_rank"] == 3
