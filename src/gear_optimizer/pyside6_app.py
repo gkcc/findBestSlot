@@ -179,18 +179,49 @@ def _loadout_level_label(piece: Any, row: dict[str, Any]) -> str:
     return f"+{piece.level}"
 
 
+def _inventory_index(row: dict[str, Any]) -> int | None:
+    raw = str(row.get("_inventory_id") or "")
+    if not raw.startswith("piece:"):
+        return None
+    try:
+        return int(raw.removeprefix("piece:"))
+    except ValueError:
+        return None
+
+
+def _loadout_source_ref(row: dict[str, Any], current_count: int) -> str:
+    index = _inventory_index(row)
+    if index is None:
+        return _source_label(row.get("source"))
+    if index < current_count:
+        return f"当前 #{index + 1}"
+    return f"库存 #{index - current_count + 1}"
+
+
+def _piece_substat_label(piece: Any) -> str:
+    if not isinstance(piece, GearPiece) or not piece.substats:
+        return "-"
+    return " / ".join(f"{line.stat}+{line.rolls}" for line in piece.substats)
+
+
 class GearTable(QTableWidget):
     changed = Signal()
 
-    def __init__(self, editable_positions: bool, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        editable_positions: bool,
+        row_label_prefix: str,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self.editable_positions = editable_positions
+        self.row_label_prefix = row_label_prefix
         self.game: GameRules | None = None
         self.character: CharacterPreset | None = None
         self._loading = False
         self.setColumnCount(len(GEAR_COLUMNS))
         self.setHorizontalHeaderLabels(GEAR_COLUMNS)
-        self.verticalHeader().setVisible(False)
+        self.verticalHeader().setVisible(True)
         self.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
@@ -210,6 +241,7 @@ class GearTable(QTableWidget):
             self.setRowCount(len(pieces))
             for row, piece in enumerate(pieces):
                 self._populate_row(row, piece)
+            self._refresh_row_labels()
         finally:
             self._loading = False
 
@@ -220,6 +252,7 @@ class GearTable(QTableWidget):
             row = self.rowCount()
             self.insertRow(row)
             self._populate_row(row, piece)
+            self._refresh_row_labels()
         finally:
             self._loading = False
         self.changed.emit()
@@ -229,6 +262,7 @@ class GearTable(QTableWidget):
         if not selected:
             return
         self.removeRow(selected[0].row())
+        self._refresh_row_labels()
         self.changed.emit()
 
     def collect_pieces(self) -> tuple[list[GearPiece], list[str]]:
@@ -274,6 +308,11 @@ class GearTable(QTableWidget):
         if self.game is None or self.character is None:
             raise RuntimeError("gear table context has not been initialised")
         return self.game, self.character
+
+    def _refresh_row_labels(self) -> None:
+        self.setVerticalHeaderLabels(
+            [f"{self.row_label_prefix} #{row + 1}" for row in range(self.rowCount())]
+        )
 
     def _populate_row(self, row: int, piece: GearPiece) -> None:
         game, _character = self._require_context()
@@ -462,8 +501,8 @@ class OptimizerWindow(QMainWindow):
         self.game_combo = QComboBox()
         self.character_combo = QComboBox()
         self.probability_combo = QComboBox()
-        self.current_table = GearTable(editable_positions=False)
-        self.inventory_table = GearTable(editable_positions=True)
+        self.current_table = GearTable(editable_positions=False, row_label_prefix="当前")
+        self.inventory_table = GearTable(editable_positions=True, row_label_prefix="库存")
         self.confirm_button = QPushButton("确认当前装备")
         self.save_current_button = QPushButton("保存当前装备到本机")
         self.load_example_button = QPushButton("载入示例当前装备")
@@ -751,6 +790,7 @@ class OptimizerWindow(QMainWindow):
             display_rows.append(
                 {
                     "#": index,
+                    "来源行": _loadout_source_ref(row, len(current_pieces)),
                     "位置": game.position_name(row["position"]),
                     "来源": _source_label(row.get("source")),
                     "套装": row["set_name"],
@@ -761,6 +801,7 @@ class OptimizerWindow(QMainWindow):
                     "期望有效": row.get("effective_rolls", "-"),
                     "当前质量": row.get("_current_quality_score", row.get("quality_score", "-")),
                     "期望质量": row.get("quality_score", "-"),
+                    "副词条": _piece_substat_label(piece),
                     "排序向量": row.get("quality_vector", "-"),
                 }
             )

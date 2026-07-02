@@ -182,6 +182,9 @@ def test_native_desktop_source_uses_tabs_with_inventory_first():
         'current_group = QGroupBox("当前装备（身上 6 件）")'
     )
     assert "include_upgrade_expectation=True" in source
+    assert 'row_label_prefix="库存"' in source
+    assert '"来源行": _loadout_source_ref(row, len(current_pieces))' in source
+    assert '"副词条": _piece_substat_label(piece)' in source
 
 
 def test_windows_packaging_scripts_bundle_native_pyside6_resources():
