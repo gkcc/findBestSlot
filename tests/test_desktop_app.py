@@ -189,6 +189,8 @@ def test_native_desktop_source_uses_tabs_with_inventory_first():
     assert "setStretchLastSection(False)" in source
     assert "QHeaderView.ResizeMode.Fixed" in source
     assert "QAbstractItemView.ScrollMode.ScrollPerPixel" in source
+    assert "ROLL_SPINBOX_MIN_WIDTH = 72" in source
+    assert "spin.setMinimumWidth(ROLL_SPINBOX_MIN_WIDTH)" in source
 
 
 def test_windows_packaging_scripts_bundle_native_pyside6_resources():

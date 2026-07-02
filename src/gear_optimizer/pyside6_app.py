@@ -90,14 +90,15 @@ GEAR_COLUMN_WIDTHS = [
     76,
     56,
     112,
-    54,
+    78,
     112,
-    54,
+    78,
     112,
-    54,
+    78,
     112,
-    54,
+    78,
 ]
+ROLL_SPINBOX_MIN_WIDTH = 72
 
 
 def _model_payload(item: Any) -> Any:
@@ -382,6 +383,7 @@ class GearTable(QTableWidget):
             self.setCellWidget(row, sub_col, self._substat_combo(piece.main_stat, line.stat))
             spin = QSpinBox()
             spin.setRange(0, 5)
+            spin.setMinimumWidth(ROLL_SPINBOX_MIN_WIDTH)
             spin.setValue(int(line.rolls))
             spin.valueChanged.connect(lambda _value: self._emit_changed())
             self.setCellWidget(row, roll_col, spin)
