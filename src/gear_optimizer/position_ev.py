@@ -17,6 +17,9 @@ _BEST_COMBO_VALUE_CACHE: dict[tuple, tuple[float, ...]] = {}
 _AGGREGATED_ACTION_OUTCOME_CACHE: dict[tuple, list[tuple[list[dict], float]]] = {}
 _VECTOR_EPSILON = 1e-9
 _DISPLAY_EPSILON = 0.0005
+_SOURCE_CURRENT = "current"
+_SOURCE_INVENTORY = "inventory"
+_SOURCE_OUTCOME = "outcome"
 ProgressCallback = Callable[[dict[str, object]], None]
 
 
@@ -284,6 +287,7 @@ def _current_inventory_rows(
                 "quality_score": score.weighted_score,
                 "quality_vector": score_quality_sort_key(score, character),
                 "locked": score.locked,
+                "source": _SOURCE_CURRENT,
             }
         )
     return rows
@@ -293,6 +297,7 @@ def _candidate_inventory_row(
     piece: GearPiece,
     game: GameRules,
     character: CharacterPreset,
+    source: str = _SOURCE_INVENTORY,
 ) -> dict:
     score = score_piece(piece, game, character)
     return {
@@ -304,6 +309,7 @@ def _candidate_inventory_row(
         "quality_vector": substat_quality_vector(piece, character),
         "locked": piece.locked,
         "level": piece.level,
+        "source": source,
     }
 
 
@@ -332,7 +338,7 @@ def _normalise_inventory_rows(
                 continue
 
         position = position_key(row["position"])
-        if row.get("locked"):
+        if row.get("locked") and row.get("source") == _SOURCE_CURRENT:
             current = locked_by_position.get(position)
             if current is None or _piece_contribution_key(row) > _piece_contribution_key(current):
                 locked_by_position[position] = row
@@ -365,11 +371,13 @@ def _coerce_inventory_rows(
     inventory: Sequence[GearPiece | dict],
     game: GameRules,
     character: CharacterPreset,
+    current_count: int = 0,
 ) -> list[dict]:
     rows: list[dict] = []
     for index, item in enumerate(inventory):
         if isinstance(item, GearPiece):
-            row = _candidate_inventory_row(item, game, character)
+            source = _SOURCE_CURRENT if index < current_count else _SOURCE_INVENTORY
+            row = _candidate_inventory_row(item, game, character, source=source)
             row["_inventory_id"] = _inventory_piece_id(index)
             row["_piece"] = item
             rows.append(row)
@@ -382,10 +390,12 @@ def inventory_rows_from_pieces(
     pieces: Sequence[GearPiece],
     game: GameRules,
     character: CharacterPreset,
+    current_count: int = 0,
 ) -> list[dict]:
     rows = []
     for index, piece in enumerate(pieces):
-        row = _candidate_inventory_row(piece, game, character)
+        source = _SOURCE_CURRENT if index < current_count else _SOURCE_INVENTORY
+        row = _candidate_inventory_row(piece, game, character, source=source)
         row["_inventory_id"] = _inventory_piece_id(index)
         row["_piece"] = piece
         rows.append(row)
@@ -461,6 +471,7 @@ def _fresh_candidate_row_distribution(
                 "quality_score": quality_score,
                 "quality_vector": quality_vector,
                 "locked": False,
+                "source": _SOURCE_OUTCOME,
             },
             probability,
         )
@@ -508,7 +519,7 @@ def _loadout_options_by_position(
         if not _is_loadout_candidate(row, game):
             continue
         key = position_key(row["position"])
-        if row.get("locked"):
+        if row.get("locked") and row.get("source") == _SOURCE_CURRENT:
             locked_by_position[key].append(row)
         else:
             by_position[key].append(row)
@@ -692,8 +703,13 @@ def best_loadout_value(
     inventory: Sequence[GearPiece | dict],
     game: GameRules,
     character: CharacterPreset,
+    current_count: int = 0,
 ) -> tuple[float, ...]:
-    return _best_combo_value(_coerce_inventory_rows(inventory, game, character), game, character)
+    return _best_combo_value(
+        _coerce_inventory_rows(inventory, game, character, current_count=current_count),
+        game,
+        character,
+    )
 
 
 def _positive_gain(
@@ -778,6 +794,7 @@ def _inventory_row_signature(row: dict) -> tuple:
         row["set_name"],
         bool(row["main_preferred"]),
         bool(row.get("locked", False)),
+        str(row.get("source") or _SOURCE_INVENTORY),
         bool(row.get("_allow_unfinished_loadout", False)),
         round(float(row["effective_rolls"]), 6),
         round(float(row["quality_score"]), 6),
@@ -870,13 +887,17 @@ def _aggregated_action_outcomes_for_spec(
     cached = _AGGREGATED_ACTION_OUTCOME_CACHE.get(key)
     if cached is not None:
         return cached
-    outcomes = _aggregated_action_outcomes_for_spec(
-        inventory,
+    outcomes = _aggregate_inventory_outcomes(
+        _action_outcome_distribution(
+            inventory,
+            game,
+            character,
+            probability_model,
+            spec,
+            quality_cache=quality_cache,
+        ),
         game,
         character,
-        probability_model,
-        spec,
-        quality_cache=quality_cache,
     )
     _AGGREGATED_ACTION_OUTCOME_CACHE[key] = outcomes
     return outcomes
@@ -1013,7 +1034,12 @@ def _upgrade_candidate_row_distribution(
             locked=piece.locked,
             initial_substat_count=piece.initial_substat_count,
         )
-        upgraded_row = _candidate_inventory_row(upgraded_piece, game, character)
+        upgraded_row = _candidate_inventory_row(
+            upgraded_piece,
+            game,
+            character,
+            source=str(row.get("source") or _SOURCE_INVENTORY),
+        )
         if "_inventory_id" in row:
             upgraded_row["_inventory_id"] = row["_inventory_id"]
         upgraded_row["_piece"] = upgraded_piece
@@ -1285,14 +1311,13 @@ def _lookahead_action_specs(
     character: CharacterPreset,
     inventory: list[dict],
 ) -> list[ActionSpec]:
-    # The current frontier generator only emits requirement/position specs that are already
-    # covered by dominant_generation. Keep the non-exclusive semantics without paying for
-    # best-combo reconstruction on every lookahead state.
-    generation_specs = _dominant_generation_action_specs(game, character)
-    return [
-        *generation_specs,
-        *_upgrade_action_specs(inventory, game),
-    ]
+    return _dedupe_action_specs(
+        [
+            *_dominant_generation_action_specs(game, character),
+            *_set_plan_frontier_action_specs(game, character, inventory),
+            *_upgrade_action_specs(inventory, game),
+        ]
+    )
 
 
 def _action_outcome_distribution(
@@ -1355,17 +1380,13 @@ def _expected_action_value(
         return expected
 
     total_probability = 0.0
-    outcomes = _aggregate_inventory_outcomes(
-        _action_outcome_distribution(
-            inventory,
-            game,
-            character,
-            probability_model,
-            spec,
-            quality_cache=quality_cache,
-        ),
+    outcomes = _aggregated_action_outcomes_for_spec(
+        inventory,
         game,
         character,
+        probability_model,
+        spec,
+        quality_cache=quality_cache,
     )
     outcome_total = len(outcomes)
     _emit_progress(
@@ -1768,6 +1789,7 @@ def _action_ev_cache_key(
                 "position": row["position"],
                 "set_name": row["set_name"],
                 "locked": row.get("locked", False),
+                "source": row.get("source", _SOURCE_INVENTORY),
                 "allow_unfinished_loadout": row.get("_allow_unfinished_loadout", False),
                 "main_preferred": row["main_preferred"],
                 "effective_rolls": row["effective_rolls"],
@@ -2304,7 +2326,12 @@ def position_strategy_efficiency_rows(
     progress_callback: ProgressCallback | None = None,
 ) -> list[dict[str, float | str]]:
     inventory_rows = (
-        inventory_rows_from_pieces(inventory_pieces, game, character)
+        inventory_rows_from_pieces(
+            inventory_pieces,
+            game,
+            character,
+            current_count=len(analysis.scores),
+        )
         if inventory_pieces is not None
         else _current_inventory_rows(analysis, character)
     )
@@ -2533,7 +2560,12 @@ def resource_marginal_ev_rows(
     progress_callback: ProgressCallback | None = None,
 ) -> list[dict[str, float | str]]:
     inventory_rows = (
-        inventory_rows_from_pieces(inventory_pieces, game, character)
+        inventory_rows_from_pieces(
+            inventory_pieces,
+            game,
+            character,
+            current_count=len(analysis.scores),
+        )
         if inventory_pieces is not None
         else _current_inventory_rows(analysis, character)
     )

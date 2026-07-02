@@ -21,7 +21,13 @@ from gear_optimizer.position_ev import (
     lookahead_inventory_value,
     _lookahead_action_specs,
     _set_plan_frontier_action_specs,
+    _dominant_generation_action_specs,
+    _aggregated_action_outcomes_for_spec,
+    _action_outcome_distribution,
+    _aggregate_inventory_outcomes,
+    _AGGREGATED_ACTION_OUTCOME_CACHE,
     _combo_value,
+    _inventory_signature,
     _set_plan_satisfied,
     inventory_rows_from_pieces,
 )
@@ -89,6 +95,13 @@ def _legacy_cartesian_best_value(rows, game, character):
     if not combos:
         combos = list(product(*options))
     return _combo_value(max(combos, key=lambda combo: _combo_value(combo, character)), character)
+
+
+def _outcome_signature(outcomes):
+    return sorted(
+        (_inventory_signature(inventory), round(probability, 12))
+        for inventory, probability in outcomes
+    )
 
 
 def test_quality_vector_uses_configured_priority_order_without_scalar_weights():
@@ -285,9 +298,19 @@ def test_locked_position_cannot_be_replaced_by_inventory_or_upgraded_candidate()
     high_same_position = _piece(game, character, 6, "云岿如我", 20)
     unfinished_same_position = high_same_position.model_copy(update={"level": 0})
 
-    locked_value = best_loadout_value(inventory, game, character)
+    locked_value = best_loadout_value(
+        inventory,
+        game,
+        character,
+        current_count=len(inventory),
+    )
 
-    assert best_loadout_value([*inventory, high_same_position], game, character) == locked_value
+    assert best_loadout_value(
+        [*inventory, high_same_position],
+        game,
+        character,
+        current_count=len(inventory),
+    ) == locked_value
 
     rows = position_strategy_efficiency_rows(
         game,
@@ -299,6 +322,47 @@ def test_locked_position_cannot_be_replaced_by_inventory_or_upgraded_candidate()
     upgrade_rows = [row for row in rows if row["策略"] == "强化库存胚子"]
     assert upgrade_rows
     assert all(row["质量提升"] == 0 for row in upgrade_rows)
+
+
+def test_inventory_locked_piece_does_not_lock_position_unless_source_is_current():
+    game, character, _probability_model, _analysis = _billy_context()
+    current = [
+        _piece(game, character, 1, "折枝剑歌", 2),
+        _piece(game, character, 2, "云岿如我", 4),
+        _piece(game, character, 3, "折枝剑歌", 4),
+        _piece(game, character, 4, "云岿如我", 4),
+        _piece(game, character, 5, "云岿如我", 4),
+        _piece(game, character, 6, "云岿如我", 0),
+    ]
+    locked_inventory_piece = _piece(game, character, 6, "云岿如我", 1).model_copy(
+        update={"locked": True}
+    )
+    high_same_position = _piece(game, character, 6, "云岿如我", 20)
+
+    assert best_loadout_value(
+        [*current, locked_inventory_piece, high_same_position],
+        game,
+        character,
+        current_count=len(current),
+    ) > best_loadout_value(
+        [*current, locked_inventory_piece],
+        game,
+        character,
+        current_count=len(current),
+    )
+
+    locked_current = [*current[:-1], current[-1].model_copy(update={"locked": True})]
+    assert best_loadout_value(
+        [*locked_current, locked_inventory_piece, high_same_position],
+        game,
+        character,
+        current_count=len(locked_current),
+    ) == best_loadout_value(
+        locked_current,
+        game,
+        character,
+        current_count=len(locked_current),
+    )
 
 
 def test_piece_can_have_zero_immediate_gain_but_positive_option_value():
@@ -341,12 +405,14 @@ def test_lookahead_action_space_keeps_frontier_and_dominant_generation_specs():
 
     frontier = _set_plan_frontier_action_specs(game, character, rows)
     frontier_generated = [spec for spec in frontier if spec.strategy != "强化库存胚子"]
+    dominant_generated = _dominant_generation_action_specs(game, character)
     assert {
         position_key(spec.target_position)
         for spec in frontier_generated
         if spec.set_options == ("折枝剑歌",)
     } == {"2", "4", "5", "6"}
     assert not any(spec.set_options == ("云岿如我",) for spec in frontier_generated)
+    assert set(frontier_generated).issubset(set(dominant_generated))
 
     specs = _lookahead_action_specs(game, character, rows)
     generated_specs = [spec for spec in specs if spec.strategy != "强化库存胚子"]
@@ -357,6 +423,62 @@ def test_lookahead_action_space_keeps_frontier_and_dominant_generation_specs():
         and position_key(spec.target_position) == "6"
         for spec in generated_specs
     )
+
+
+def test_aggregated_action_outcomes_cache_matches_manual_distribution(monkeypatch):
+    game, character, probability_model, _analysis = _billy_context()
+    inventory = [
+        _piece(game, character, 1, "折枝剑歌", 2),
+        _piece(game, character, 2, "云岿如我", 4),
+        _piece(game, character, 3, "折枝剑歌", 4),
+        _piece(game, character, 4, "云岿如我", 4),
+        _piece(game, character, 5, "云岿如我", 4),
+        _piece(game, character, 6, "云岿如我", 0),
+    ]
+    rows = inventory_rows_from_pieces(inventory, game, character, current_count=len(inventory))
+    spec = ActionSpec("固定位置", "折枝剑歌", ("折枝剑歌",), 6)
+    quality_cache = {}
+    _AGGREGATED_ACTION_OUTCOME_CACHE.clear()
+
+    manual = _aggregate_inventory_outcomes(
+        _action_outcome_distribution(
+            rows,
+            game,
+            character,
+            probability_model,
+            spec,
+            quality_cache=quality_cache,
+        ),
+        game,
+        character,
+    )
+    cached = _aggregated_action_outcomes_for_spec(
+        rows,
+        game,
+        character,
+        probability_model,
+        spec,
+        quality_cache=quality_cache,
+    )
+
+    assert _outcome_signature(cached) == _outcome_signature(manual)
+
+    def fail_distribution(*_args, **_kwargs):
+        raise AssertionError("cache miss unexpectedly recomputed action outcomes")
+
+    monkeypatch.setattr(
+        "gear_optimizer.position_ev._action_outcome_distribution",
+        fail_distribution,
+    )
+    second = _aggregated_action_outcomes_for_spec(
+        rows,
+        game,
+        character,
+        probability_model,
+        spec,
+        quality_cache=quality_cache,
+    )
+    assert second is cached
 
 
 def test_exact_horizon_two_value_follows_dynamic_programming_formula():
