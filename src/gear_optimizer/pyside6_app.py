@@ -4,10 +4,11 @@ import argparse
 import hashlib
 import json
 import sys
+import time
 import traceback
 from typing import Any
 
-from PySide6.QtCore import QObject, QThread, Qt, Signal, Slot
+from PySide6.QtCore import QObject, QThread, QTimer, Qt, Signal, Slot
 from PySide6.QtWidgets import (
     QApplication,
     QAbstractItemView,
@@ -187,6 +188,27 @@ def _format_value(value: Any) -> str:
     if isinstance(value, list):
         return " / ".join(_format_value(item) for item in value)
     return "" if value is None else str(value)
+
+
+def _format_duration(seconds: float | None) -> str:
+    if seconds is None or seconds < 0:
+        return "--:--"
+    total_seconds = int(seconds + 0.5)
+    minutes, second = divmod(total_seconds, 60)
+    hour, minute = divmod(minutes, 60)
+    if hour:
+        return f"{hour}:{minute:02d}:{second:02d}"
+    return f"{minute:02d}:{second:02d}"
+
+
+def _format_progress_count(value: Any) -> str:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return "-"
+    if number.is_integer():
+        return str(int(number))
+    return f"{number:.1f}"
 
 
 def _loadout_level_label(piece: Any, row: dict[str, Any]) -> str:
@@ -585,6 +607,13 @@ class OptimizerWindow(QMainWindow):
         self.current_confirmed_digest: str | None = None
         self._worker_thread: QThread | None = None
         self._worker: ActionEvWorker | None = None
+        self._action_progress_started_at: float | None = None
+        self._action_progress_percent = 0
+        self._last_action_progress_payload: dict[str, Any] = {}
+        self._last_action_progress_seen_at: float | None = None
+        self._progress_timer = QTimer(self)
+        self._progress_timer.setInterval(1000)
+        self._progress_timer.timeout.connect(self._refresh_action_progress_clock)
 
         self.game_combo = QComboBox()
         self.character_combo = QComboBox()
@@ -601,26 +630,33 @@ class OptimizerWindow(QMainWindow):
         self.action_button = QPushButton("计算调律建议")
         self.horizon_combo = QComboBox()
         self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 100)
         self.progress_bar.setTextVisible(True)
-        self.progress_bar.setMinimumHeight(24)
-        self.progress_bar.setFormat("%p%")
+        self.progress_bar.setMinimumHeight(30)
+        self.progress_bar.setFormat("0%")
         self.progress_bar.setStyleSheet(
             """
             QProgressBar {
-                border: 1px solid #5f6368;
+                border: 1px solid #7d8590;
                 border-radius: 6px;
-                background: #202124;
-                color: #f1f3f4;
+                background: #16181c;
+                color: #ffffff;
                 text-align: center;
                 font-weight: 700;
             }
             QProgressBar::chunk {
                 border-radius: 5px;
-                background-color: #4c8bf5;
+                margin: 2px;
+                background-color: #2f8cff;
             }
             """
         )
         self.progress_label = QLabel("当前装备未确认。")
+        self.progress_detail_label = QLabel("")
+        self.progress_detail_label.setWordWrap(True)
+        self.progress_detail_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
         self.tabs = QTabWidget()
         self.best_table = QTableWidget()
         self.action_table = QTableWidget()
@@ -685,6 +721,7 @@ class OptimizerWindow(QMainWindow):
         settings.addStretch(1)
         action_layout.addLayout(settings)
         action_layout.addWidget(self.progress_label)
+        action_layout.addWidget(self.progress_detail_label)
         action_layout.addWidget(self.progress_bar)
         result_page_layout.addWidget(action_group)
 
@@ -787,8 +824,137 @@ class OptimizerWindow(QMainWindow):
         self.action_table.setColumnCount(0)
         self.action_loadout_table.setRowCount(0)
         self.action_loadout_table.setColumnCount(0)
+        if self._worker is None:
+            self._progress_timer.stop()
+            self._action_progress_started_at = None
+            self._action_progress_percent = 0
+            self._last_action_progress_payload = {}
+            self._last_action_progress_seen_at = None
+            self.progress_bar.setValue(0)
+            self.progress_bar.setFormat("0%")
+            self.progress_label.setText(message or "等待操作。")
+            self.progress_detail_label.setText("")
+
+    def _start_action_progress(self) -> None:
+        now = time.monotonic()
+        self._action_progress_started_at = now
+        self._last_action_progress_seen_at = now
+        self._last_action_progress_payload = {}
+        self._action_progress_percent = 0
+        self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
-        self.progress_label.setText(message or "等待操作。")
+        self.progress_bar.setFormat("0%")
+        self.progress_label.setText("正在计算 Action EV。")
+        self.progress_detail_label.setText("后台线程已启动，等待第一个进度事件。")
+        self._progress_timer.start()
+
+    def _stop_action_progress(self) -> None:
+        self._progress_timer.stop()
+        self._last_action_progress_payload = {}
+        self._last_action_progress_seen_at = None
+
+    def _raw_action_progress_percent(self, payload: dict[str, Any]) -> int:
+        event = str(payload.get("event") or "")
+        if event == "complete":
+            return 100
+        total = float(payload.get("total") or 0)
+        completed = float(payload.get("completed") or 0)
+        if total <= 0:
+            return self._action_progress_percent
+        percent = int(completed / total * 100)
+        return max(0, min(99, percent))
+
+    def _action_progress_inner_text(self, payload: dict[str, Any]) -> str:
+        inner_event = str(payload.get("inner_event") or "")
+        if not inner_event:
+            return ""
+        event_labels = {
+            "outcomes_start": "展开结果",
+            "outcome_done": "结果",
+            "state_start": "DP状态",
+            "state_action_start": "DP动作",
+            "state_action_done": "DP动作完成",
+            "state_done": "DP状态完成",
+            "memo_hit": "缓存命中",
+        }
+        label = event_labels.get(inner_event, inner_event)
+        completed = payload.get("inner_completed")
+        total = payload.get("inner_total")
+        if total not in (None, ""):
+            label = f"{label} {_format_progress_count(completed)}/{_format_progress_count(total)}"
+        depth = payload.get("inner_depth")
+        horizon = payload.get("inner_horizon")
+        suffixes = []
+        if depth not in (None, "", 0):
+            suffixes.append(f"深度 {depth}")
+        if horizon not in (None, ""):
+            suffixes.append(f"h={horizon}")
+        inner_strategy = payload.get("inner_action_strategy")
+        inner_set = payload.get("inner_action_set")
+        if inner_strategy:
+            suffixes.append(str(inner_strategy))
+        if inner_set:
+            suffixes.append(str(inner_set))
+        return f"内部：{label}" + (f"（{'，'.join(suffixes)}）" if suffixes else "")
+
+    def _render_action_progress(self, payload: dict[str, Any]) -> None:
+        now = time.monotonic()
+        raw_percent = self._raw_action_progress_percent(payload)
+        stable_percent = max(self._action_progress_percent, raw_percent)
+        self._action_progress_percent = stable_percent
+        self.progress_bar.setValue(stable_percent)
+        self.progress_bar.setFormat(f"{stable_percent}%")
+
+        label = str(payload.get("label") or payload.get("event") or "计算中")
+        label_parts = [label]
+        spec_index = payload.get("spec_index")
+        spec_total = payload.get("spec_total")
+        if spec_index not in (None, "") and spec_total not in (None, ""):
+            label_parts.append(f"action {spec_index}/{spec_total}")
+        unit_label = payload.get("unit_label")
+        if unit_label:
+            label_parts.append(str(unit_label))
+        self.progress_label.setText(" / ".join(label_parts))
+
+        detail_parts = []
+        total = payload.get("total")
+        if total not in (None, "", 0):
+            detail_parts.append(
+                "整体 "
+                f"{_format_progress_count(payload.get('completed'))}/{_format_progress_count(total)}"
+            )
+        inner_text = self._action_progress_inner_text(payload)
+        if inner_text:
+            detail_parts.append(inner_text)
+        if raw_percent < stable_percent and str(payload.get("event") or "") != "complete":
+            detail_parts.append("计划已扩展，进度条保持不回退")
+        if "dp_steps" in payload:
+            detail_parts.append(f"DP子步骤 {payload['dp_steps']}")
+        if "dp_states" in payload:
+            detail_parts.append(f"DP状态 {payload['dp_states']}")
+        if "memo_hits" in payload:
+            detail_parts.append(f"缓存命中 {payload['memo_hits']}")
+
+        if self._action_progress_started_at is not None:
+            elapsed = now - self._action_progress_started_at
+            detail_parts.append(f"已耗时 {_format_duration(elapsed)}")
+            if 0 < stable_percent < 99:
+                remaining = elapsed * (100 - stable_percent) / stable_percent
+                detail_parts.append(f"预计剩余约 {_format_duration(remaining)}")
+            elif stable_percent >= 99 and str(payload.get("event") or "") != "complete":
+                detail_parts.append("收尾中")
+        if self._last_action_progress_seen_at is not None:
+            stale_seconds = now - self._last_action_progress_seen_at
+            if stale_seconds >= 2:
+                detail_parts.append(f"最近进度 {_format_duration(stale_seconds)} 前")
+        self.progress_detail_label.setText(" | ".join(detail_parts))
+
+    def _refresh_action_progress_clock(self) -> None:
+        if self._worker is None:
+            self._progress_timer.stop()
+            return
+        payload = self._last_action_progress_payload or {"label": "正在等待计算进度"}
+        self._render_action_progress(payload)
 
     def _update_action_buttons(self, busy: bool = False) -> None:
         enabled = self.current_confirmed_digest is not None and not busy
@@ -911,8 +1077,7 @@ class OptimizerWindow(QMainWindow):
         if inventory_pieces is None:
             return
         self._update_action_buttons(busy=True)
-        self.progress_bar.setValue(0)
-        self.progress_label.setText("正在计算 Action EV。")
+        self._start_action_progress()
         self._worker_thread = QThread(self)
         self._worker = ActionEvWorker(
             self.selected_game(),
@@ -935,21 +1100,17 @@ class OptimizerWindow(QMainWindow):
         self.tabs.setCurrentIndex(2)
 
     def _on_action_progress(self, payload: dict) -> None:
-        total = float(payload.get("total") or 0)
-        completed = float(payload.get("completed") or 0)
-        if total > 0:
-            self.progress_bar.setValue(max(0, min(100, int(completed / total * 100))))
-        label = str(payload.get("label") or payload.get("event") or "计算中")
-        extra = []
-        for key in ["dp_states", "memo_hits"]:
-            if key in payload:
-                extra.append(f"{key}={payload[key]}")
-        self.progress_label.setText(label + (f" ({', '.join(extra)})" if extra else ""))
+        self._last_action_progress_payload = dict(payload)
+        self._last_action_progress_seen_at = time.monotonic()
+        self._render_action_progress(self._last_action_progress_payload)
 
     def _on_action_finished(self, rows: list[dict]) -> None:
+        self._stop_action_progress()
         self._worker = None
         self._worker_thread = None
+        self._action_progress_percent = 100
         self.progress_bar.setValue(100)
+        self.progress_bar.setFormat("100%")
         visible_columns = [
             "策略",
             "目标套装",
@@ -990,12 +1151,15 @@ class OptimizerWindow(QMainWindow):
                 f"{recommended.get('主属性', '-')}"
             )
         self.progress_label.setText("调律建议已计算完成。")
+        self.progress_detail_label.setText("整体 100/100 | 已完成")
         self._update_action_buttons()
 
     def _on_action_failed(self, traceback_text: str) -> None:
+        self._stop_action_progress()
         self._worker = None
         self._worker_thread = None
         self.progress_label.setText("调律建议计算失败。")
+        self.progress_detail_label.setText("后台计算已停止，错误详情已写入运行日志。")
         self.log.append(traceback_text)
         QMessageBox.critical(self, "计算失败", traceback_text)
         self._update_action_buttons()

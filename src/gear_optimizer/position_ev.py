@@ -2772,6 +2772,7 @@ def position_strategy_efficiency_rows(
     total_units = len(specs) * (2 if horizon > 1 else 1)
     completed_units = 0.0
     dp_states = 0
+    dp_steps = 0
     memo_hits = 0
 
     _emit_progress(
@@ -2781,6 +2782,7 @@ def position_strategy_efficiency_rows(
         completed=0,
         total=total_units,
         label=f"准备计算 {len(specs)} 个基础 action",
+        dp_steps=dp_steps,
     )
 
     def run_action_value(
@@ -2789,7 +2791,7 @@ def position_strategy_efficiency_rows(
         unit_label: str,
         unit_horizon: int,
     ) -> tuple[float, ...]:
-        nonlocal completed_units, dp_states, memo_hits
+        nonlocal completed_units, dp_states, dp_steps, memo_hits
 
         action_label = _action_progress_label(spec, game)
         _emit_progress(
@@ -2803,16 +2805,19 @@ def position_strategy_efficiency_rows(
             spec_index=spec_index,
             spec_total=len(specs),
             dp_states=dp_states,
+            dp_steps=dp_steps,
             memo_hits=memo_hits,
         )
 
         def unit_progress(event: dict[str, object]) -> None:
-            nonlocal dp_states, memo_hits
+            nonlocal dp_states, dp_steps, memo_hits
             event_name = str(event.get("event", ""))
             depth = int(event.get("depth") or 0)
             if event_name == "state_done":
                 dp_states += 1
-            elif event_name == "memo_hit":
+            if event_name in {"outcome_done", "state_action_done", "memo_hit"}:
+                dp_steps += 1
+            if event_name == "memo_hit":
                 memo_hits += 1
 
             completed = completed_units
@@ -2832,7 +2837,15 @@ def position_strategy_efficiency_rows(
                 spec_index=spec_index,
                 spec_total=len(specs),
                 dp_states=dp_states,
+                dp_steps=dp_steps,
                 memo_hits=memo_hits,
+                inner_event=event_name,
+                inner_depth=depth,
+                inner_horizon=event.get("horizon"),
+                inner_completed=event.get("completed"),
+                inner_total=event.get("total"),
+                inner_action_strategy=event.get("action_strategy"),
+                inner_action_set=event.get("action_set"),
             )
 
         value = _expected_action_value(
@@ -2858,6 +2871,7 @@ def position_strategy_efficiency_rows(
             spec_index=spec_index,
             spec_total=len(specs),
             dp_states=dp_states,
+            dp_steps=dp_steps,
             memo_hits=memo_hits,
         )
         return value
@@ -3005,6 +3019,7 @@ def position_strategy_efficiency_rows(
             total=total_units,
             label=f"固定位置优于随机，继续计算 {len(fixed_main_specs)} 个锁主属性 action",
             dp_states=dp_states,
+            dp_steps=dp_steps,
             memo_hits=memo_hits,
         )
         for spec_index, spec in enumerate(fixed_main_specs, start=len(base_specs) + 1):
@@ -3030,6 +3045,7 @@ def position_strategy_efficiency_rows(
             total=total_units,
             label=f"锁主属性优于固定位置，继续计算 {len(fixed_substat_specs)} 个锁副属性 action",
             dp_states=dp_states,
+            dp_steps=dp_steps,
             memo_hits=memo_hits,
         )
         for spec_index, spec in enumerate(
@@ -3047,6 +3063,7 @@ def position_strategy_efficiency_rows(
         total=total_units,
         label="Action EV 计算完成",
         dp_states=dp_states,
+        dp_steps=dp_steps,
         memo_hits=memo_hits,
     )
     return rows

@@ -193,8 +193,13 @@ def test_native_desktop_source_uses_tabs_with_inventory_first():
     assert "setStretchLastSection(False)" in source
     assert "QHeaderView.ResizeMode.Fixed" in source
     assert "QAbstractItemView.ScrollMode.ScrollPerPixel" in source
-    assert "self.progress_bar.setMinimumHeight(24)" in source
+    assert "self.progress_bar.setMinimumHeight(30)" in source
     assert "QProgressBar::chunk" in source
+    assert "self.progress_detail_label = QLabel" in source
+    assert "_action_progress_percent" in source
+    assert "max(self._action_progress_percent, raw_percent)" in source
+    assert "计划已扩展，进度条保持不回退" in source
+    assert "预计剩余约" in source
     assert "LEVEL_COMBO_MIN_WIDTH = 82" in source
     assert "level_combo.setMinimumWidth(LEVEL_COMBO_MIN_WIDTH)" in source
     assert "ROLL_SPINBOX_MIN_WIDTH = 72" in source
