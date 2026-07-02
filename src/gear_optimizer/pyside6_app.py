@@ -222,6 +222,65 @@ def _piece_substat_label(piece: Any) -> str:
     return " / ".join(f"{line.stat}+{line.rolls}" for line in piece.substats)
 
 
+def _loadout_main_stat_label(row: dict[str, Any]) -> str:
+    piece = row.get("_piece")
+    if isinstance(piece, GearPiece):
+        return piece.main_stat
+    return str(row.get("main_stat") or "-")
+
+
+def _loadout_substat_label(row: dict[str, Any]) -> str:
+    piece = row.get("_piece")
+    if isinstance(piece, GearPiece):
+        return _piece_substat_label(piece)
+    return "代表期望结果"
+
+
+def _loadout_level_from_row(row: dict[str, Any]) -> str:
+    piece = row.get("_piece")
+    if isinstance(piece, GearPiece):
+        return _loadout_level_label(piece, row)
+    level = row.get("level")
+    return f"+{level}" if level is not None else "-"
+
+
+def _position_order(game: GameRules) -> dict[str, int]:
+    return {position_key(rule.id): index for index, rule in enumerate(game.positions)}
+
+
+def _loadout_display_rows(
+    rows: list[dict[str, Any]],
+    game: GameRules,
+    current_count: int,
+) -> list[dict[str, Any]]:
+    order = _position_order(game)
+    display_rows = []
+    sorted_rows = sorted(
+        rows,
+        key=lambda row: (order.get(position_key(row["position"]), 999), position_key(row["position"])),
+    )
+    for index, row in enumerate(sorted_rows, start=1):
+        display_rows.append(
+            {
+                "#": index,
+                "来源行": _loadout_source_ref(row, current_count),
+                "位置": game.position_name(row["position"]),
+                "来源": _source_label(row.get("source")),
+                "套装": row["set_name"],
+                "主属性": _loadout_main_stat_label(row),
+                "等级": _loadout_level_from_row(row),
+                "估值口径": "满级强化期望" if row.get("_expected_upgrade") else "当前值/代表结果",
+                "当前有效": row.get("_current_effective_rolls", row.get("effective_rolls", "-")),
+                "期望有效": row.get("effective_rolls", "-"),
+                "当前质量": row.get("_current_quality_score", row.get("quality_score", "-")),
+                "期望质量": row.get("quality_score", "-"),
+                "副词条": _loadout_substat_label(row),
+                "排序向量": row.get("quality_vector", "-"),
+            }
+        )
+    return display_rows
+
+
 class GearTable(QTableWidget):
     changed = Signal()
 
@@ -542,10 +601,30 @@ class OptimizerWindow(QMainWindow):
         self.action_button = QPushButton("计算调律建议")
         self.horizon_combo = QComboBox()
         self.progress_bar = QProgressBar()
+        self.progress_bar.setTextVisible(True)
+        self.progress_bar.setMinimumHeight(24)
+        self.progress_bar.setFormat("%p%")
+        self.progress_bar.setStyleSheet(
+            """
+            QProgressBar {
+                border: 1px solid #5f6368;
+                border-radius: 6px;
+                background: #202124;
+                color: #f1f3f4;
+                text-align: center;
+                font-weight: 700;
+            }
+            QProgressBar::chunk {
+                border-radius: 5px;
+                background-color: #4c8bf5;
+            }
+            """
+        )
         self.progress_label = QLabel("当前装备未确认。")
         self.tabs = QTabWidget()
         self.best_table = QTableWidget()
         self.action_table = QTableWidget()
+        self.action_loadout_table = QTableWidget()
         self.log = QTextEdit()
         self.log.setReadOnly(True)
 
@@ -615,6 +694,8 @@ class OptimizerWindow(QMainWindow):
         result_layout.addWidget(self.best_table)
         result_layout.addWidget(QLabel("调律建议 Action EV"))
         result_layout.addWidget(self.action_table)
+        result_layout.addWidget(QLabel("推荐调律后代表搭配"))
+        result_layout.addWidget(self.action_loadout_table)
         result_layout.addWidget(QLabel("运行日志"))
         result_layout.addWidget(self.log)
         result_page_layout.addWidget(result_group)
@@ -704,6 +785,8 @@ class OptimizerWindow(QMainWindow):
         self.best_table.setColumnCount(0)
         self.action_table.setRowCount(0)
         self.action_table.setColumnCount(0)
+        self.action_loadout_table.setRowCount(0)
+        self.action_loadout_table.setColumnCount(0)
         self.progress_bar.setValue(0)
         self.progress_label.setText(message or "等待操作。")
 
@@ -812,29 +895,11 @@ class OptimizerWindow(QMainWindow):
             current_count=len(current_pieces),
             include_upgrade_expectation=True,
         )
-        display_rows = []
         game = self.selected_game()
-        for index, row in enumerate(rows, start=1):
-            piece = row.get("_piece")
-            display_rows.append(
-                {
-                    "#": index,
-                    "来源行": _loadout_source_ref(row, len(current_pieces)),
-                    "位置": game.position_name(row["position"]),
-                    "来源": _source_label(row.get("source")),
-                    "套装": row["set_name"],
-                    "主属性": piece.main_stat if isinstance(piece, GearPiece) else "-",
-                    "等级": _loadout_level_label(piece, row),
-                    "估值口径": "满级强化期望" if row.get("_expected_upgrade") else "当前值",
-                    "当前有效": row.get("_current_effective_rolls", row.get("effective_rolls", "-")),
-                    "期望有效": row.get("effective_rolls", "-"),
-                    "当前质量": row.get("_current_quality_score", row.get("quality_score", "-")),
-                    "期望质量": row.get("quality_score", "-"),
-                    "副词条": _piece_substat_label(piece),
-                    "排序向量": row.get("quality_vector", "-"),
-                }
-            )
-        self._fill_table(self.best_table, display_rows)
+        self._fill_table(
+            self.best_table,
+            _loadout_display_rows(rows, game, len(current_pieces)),
+        )
         self.tabs.setCurrentIndex(2)
         self.progress_label.setText("当前最优搭配已计算完成。")
 
@@ -908,6 +973,16 @@ class OptimizerWindow(QMainWindow):
         ]
         self._fill_table(self.action_table, display_rows)
         recommended = recommended_action_ev_row(rows)
+        loadout_rows = []
+        if recommended:
+            raw_loadout_rows = recommended.get("_representative_loadout_rows")
+            if isinstance(raw_loadout_rows, list):
+                loadout_rows = _loadout_display_rows(
+                    raw_loadout_rows,
+                    self.selected_game(),
+                    self.current_table.rowCount(),
+                )
+        self._fill_table(self.action_loadout_table, loadout_rows)
         self.log.append(action_ev_brief(rows))
         if recommended:
             self.log.append(

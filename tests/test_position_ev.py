@@ -425,6 +425,10 @@ def test_single_action_plan_status_uses_inventory_complement_for_four_plus_two()
     assert "云岿如我4 + 折枝剑歌2" in branch_slot6["预期搭配"]
     assert "5号位折枝剑歌" in branch_slot6["互补位"]
     assert "6号位折枝剑歌" in branch_slot6["代表路径"]
+    representative_rows = branch_slot6["_representative_loadout_rows"]
+    assert len(representative_rows) == 6
+    assert any(row["set_name"] == "折枝剑歌" and row["position"] == 5 for row in representative_rows)
+    assert any(row["set_name"] == "折枝剑歌" and row["position"] == 6 for row in representative_rows)
 
 
 def test_best_loadout_uses_full_inventory_and_migrates_four_plus_two_positions():

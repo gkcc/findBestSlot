@@ -178,17 +178,23 @@ def test_native_desktop_source_uses_tabs_with_inventory_first():
     assert 'self.tabs.addTab(inventory_page, "库存")' in source
     assert 'self.tabs.addTab(current_page, "当前装备")' in source
     assert 'self.tabs.addTab(result_page, "计算结果")' in source
+    assert 'self.action_loadout_table = QTableWidget()' in source
+    assert 'QLabel("推荐调律后代表搭配")' in source
+    assert 'self._fill_table(self.action_loadout_table, loadout_rows)' in source
     assert source.index('inventory_group = QGroupBox("背包库存（未装备盘）")') < source.index(
         'current_group = QGroupBox("当前装备（身上 6 件）")'
     )
     assert "include_upgrade_expectation=True" in source
     assert 'row_label_prefix="库存"' in source
-    assert '"来源行": _loadout_source_ref(row, len(current_pieces))' in source
-    assert '"副词条": _piece_substat_label(piece)' in source
+    assert '"来源行": _loadout_source_ref(row, current_count)' in source
+    assert "_loadout_display_rows(rows, game, len(current_pieces))" in source
+    assert '"副词条": _loadout_substat_label(row)' in source
     assert "GEAR_COLUMN_WIDTHS" in source
     assert "setStretchLastSection(False)" in source
     assert "QHeaderView.ResizeMode.Fixed" in source
     assert "QAbstractItemView.ScrollMode.ScrollPerPixel" in source
+    assert "self.progress_bar.setMinimumHeight(24)" in source
+    assert "QProgressBar::chunk" in source
     assert "LEVEL_COMBO_MIN_WIDTH = 82" in source
     assert "level_combo.setMinimumWidth(LEVEL_COMBO_MIN_WIDTH)" in source
     assert "ROLL_SPINBOX_MIN_WIDTH = 72" in source

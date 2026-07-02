@@ -561,6 +561,8 @@ def _fresh_candidate_row_distribution(
             {
                 "position": position,
                 "set_name": set_name,
+                "main_stat": main_stat,
+                "level": game.enhancement.max_level,
                 "main_preferred": main_preferred,
                 "effective_rolls": quality_score,
                 "quality_score": quality_score,
@@ -1179,9 +1181,9 @@ def _representative_action_plan_labels(
     horizon: int,
     memo: dict[tuple[int, tuple[tuple, ...]], tuple[float, ...]],
     quality_cache: dict[tuple[str, tuple[str, ...]], list[tuple[float, tuple[float, ...], float]]],
-) -> tuple[str, str, str, str]:
+) -> tuple[str, str, str, str, list[dict]]:
     if not _cached_best_combo_value(inventory, game, character):
-        return "-", "-", "-", "-"
+        return "-", "-", "-", "-", []
 
     current_inventory = inventory
     current_spec: ActionSpec | None = first_spec
@@ -1231,7 +1233,7 @@ def _representative_action_plan_labels(
 
     final_combo = _best_combo_rows(current_inventory, game, character)
     if not final_combo:
-        return "；".join(path_parts) if path_parts else "-", "-", "-", "-"
+        return "；".join(path_parts) if path_parts else "-", "-", "-", "-", []
 
     selected_action_rows = _rows_present_in_combo(action_rows, final_combo)
     complement_rows = _combo_without_rows(final_combo, selected_action_rows)
@@ -1242,7 +1244,7 @@ def _representative_action_plan_labels(
         complement_label = _combo_loadout_label(complement_rows, game)
     else:
         complement_label = "代表新盘未进入最终搭配；" + _combo_loadout_label(final_combo, game)
-    return path_label, loadout_label, complement_label, set_plan_status
+    return path_label, loadout_label, complement_label, set_plan_status, [dict(row) for row in final_combo]
 
 
 def _action_position_items(
@@ -2894,7 +2896,13 @@ def position_strategy_efficiency_rows(
         effective_gain = gain[-2] if gain else 0.0
         quality_efficiency = efficiency[-1] if efficiency else 0.0
         effective_efficiency = efficiency[-2] if efficiency else 0.0
-        representative_path, representative_loadout, complement_loadout, set_plan_status = (
+        (
+            representative_path,
+            representative_loadout,
+            complement_loadout,
+            set_plan_status,
+            representative_loadout_rows,
+        ) = (
             _representative_action_plan_labels(
                 inventory_rows,
                 game,
@@ -2963,6 +2971,7 @@ def position_strategy_efficiency_rows(
             "预期搭配": representative_loadout,
             "互补位": complement_loadout,
             "套装约束": set_plan_status,
+            "_representative_loadout_rows": representative_loadout_rows,
             "质量提升": round(quality_gain, 3),
             "有效提升": round(effective_gain, 3),
             "母盘/次": round(mother_cost, 3),
