@@ -110,7 +110,7 @@ DP states: 1397
 重构后完整 dominant 口径：
 
 ```text
-62.551s
+63.198s
 DP states: 1397
 最佳：随机位置 / 折枝剑歌 / 1-6随机
 质量提升 0.168，有效提升 0.168，质量/母盘 0.0561
@@ -125,7 +125,7 @@ DP states: 1397
 性能说明：
 
 - 相比旧的 frontier-only 错误口径，完整 action 空间会多算一批后续 action，因此示例 horizon=2 总时间未下降。
-- 在修复 frontier 语义后的未优化版本中，horizon=2 曾测得约 130.320s；加入 tuple cache key、row value cache、outcome 聚合缓存和 DP 快路径后降至约 62.551s。
+- 在修复 frontier 语义后的未优化版本中，horizon=2 曾测得约 130.320s；加入 tuple cache key、row value cache、outcome 聚合缓存和 DP 快路径后降至约 63.198s。
 - 因此，本次性能优化主要抵消了正确性修复带来的额外 action 空间成本；没有对旧错误口径形成净加速。
 
 ## 后续优化建议
