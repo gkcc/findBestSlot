@@ -86,7 +86,7 @@ GEAR_COLUMN_WIDTHS = [
     78,
     128,
     116,
-    64,
+    88,
     76,
     56,
     112,
@@ -98,6 +98,7 @@ GEAR_COLUMN_WIDTHS = [
     112,
     78,
 ]
+LEVEL_COMBO_MIN_WIDTH = 82
 ROLL_SPINBOX_MIN_WIDTH = 72
 
 
@@ -367,7 +368,9 @@ class GearTable(QTableWidget):
         if isinstance(main_combo, QComboBox):
             main_combo.currentIndexChanged.connect(lambda _index, r=row: self._main_changed(r))
         level_values = list(range(0, game.enhancement.max_level + 1, game.enhancement.step))
-        self.setCellWidget(row, COL_LEVEL, self._combo([(f"+{value}", value) for value in level_values], piece.level))
+        level_combo = self._combo([(f"+{value}", value) for value in level_values], piece.level)
+        level_combo.setMinimumWidth(LEVEL_COMBO_MIN_WIDTH)
+        self.setCellWidget(row, COL_LEVEL, level_combo)
         self.setCellWidget(row, COL_INITIAL, self._combo([("3", 3), ("4", 4)], piece.initial_substat_count))
         locked = QCheckBox()
         locked.setChecked(piece.locked)
