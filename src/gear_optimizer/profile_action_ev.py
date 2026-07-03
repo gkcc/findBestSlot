@@ -14,6 +14,7 @@ from gear_optimizer.position_ev import (
     _AGGREGATED_ACTION_OUTCOME_CACHE,
     _BEST_COMBO_VALUE_CACHE,
     _RESOURCE_MARGINAL_EV_ROWS_CACHE,
+    _STATE_TRANSITION_CACHE,
     position_strategy_efficiency_rows,
 )
 from gear_optimizer.presets import load_current_example
@@ -46,6 +47,8 @@ class ActionEvProfiler:
         self.memo_hits = 0
         self.aggregated_outcome_cache_hits = 0
         self.aggregated_outcome_cache_misses = 0
+        self.state_transition_cache_hits = 0
+        self.state_transition_cache_misses = 0
         self._active_actions: dict[tuple[str, str], tuple[float, str, str, str]] = {}
         self.action_durations: list[dict[str, Any]] = []
         self.action_type_seconds: defaultdict[str, float] = defaultdict(float)
@@ -65,6 +68,14 @@ class ActionEvProfiler:
         self.aggregated_outcome_cache_misses = max(
             self.aggregated_outcome_cache_misses,
             int(float(payload.get("aggregated_outcome_cache_misses") or 0)),
+        )
+        self.state_transition_cache_hits = max(
+            self.state_transition_cache_hits,
+            int(float(payload.get("state_transition_cache_hits") or 0)),
+        )
+        self.state_transition_cache_misses = max(
+            self.state_transition_cache_misses,
+            int(float(payload.get("state_transition_cache_misses") or 0)),
         )
         inner_event = str(payload.get("inner_event") or "")
         if inner_event == "outcomes_start" and int(float(payload.get("inner_depth") or 0)) == 0:
@@ -111,6 +122,8 @@ class ActionEvProfiler:
             "memo_hits": self.memo_hits,
             "aggregated_outcome_cache_hits": self.aggregated_outcome_cache_hits,
             "aggregated_outcome_cache_misses": self.aggregated_outcome_cache_misses,
+            "state_transition_cache_hits": self.state_transition_cache_hits,
+            "state_transition_cache_misses": self.state_transition_cache_misses,
             "action_type_seconds": {
                 key: round(value, 4)
                 for key, value in sorted(self.action_type_seconds.items())
@@ -126,6 +139,7 @@ class ActionEvProfiler:
                 "resource_marginal_ev_rows": len(_RESOURCE_MARGINAL_EV_ROWS_CACHE),
                 "best_combo_value": len(_BEST_COMBO_VALUE_CACHE),
                 "aggregated_action_outcome": len(_AGGREGATED_ACTION_OUTCOME_CACHE),
+                "state_transition": len(_STATE_TRANSITION_CACHE),
             },
         }
 
@@ -148,6 +162,7 @@ def _summary_markdown(profile: dict[str, Any]) -> str:
             "# Action EV Profile Summary",
             "",
             f"- generated_at: {profile['generated_at']}",
+            f"- engine: {profile.get('engine', 'inventory_recursive')}",
             f"- horizon: {profile['horizon']}",
             f"- total_seconds: {profile['total_seconds']}",
             f"- action_count: {profile['action_count']}",
@@ -156,6 +171,8 @@ def _summary_markdown(profile: dict[str, Any]) -> str:
             f"- memo_hits: {profile['memo_hits']}",
             f"- aggregated_outcome_cache_hits: {profile['aggregated_outcome_cache_hits']}",
             f"- aggregated_outcome_cache_misses: {profile['aggregated_outcome_cache_misses']}",
+            f"- state_transition_cache_hits: {profile['state_transition_cache_hits']}",
+            f"- state_transition_cache_misses: {profile['state_transition_cache_misses']}",
             "",
             "## Action Type Seconds",
             "",
@@ -185,6 +202,7 @@ def run_profile(
     probability_model_id: str,
     current_path: str | Path,
     horizon: int,
+    use_state_dp: bool = False,
 ) -> dict[str, Any]:
     game = load_game(game_id)
     character = _pick_by_id(load_characters(game_id), character_id, "character")
@@ -204,8 +222,10 @@ def run_profile(
         inventory_pieces=pieces,
         horizon=horizon,
         progress_callback=profiler,
+        use_state_dp=use_state_dp,
     )
     profile = profiler.result(rows, horizon)
+    profile["engine"] = "state_dp" if use_state_dp else "inventory_recursive"
     profile["game_id"] = game_id
     profile["character_id"] = character_id
     profile["probability_model_id"] = probability_model_id
@@ -220,6 +240,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--probability-model", default=DEFAULT_PROBABILITY_MODEL)
     parser.add_argument("--current", default=DEFAULT_CURRENT)
     parser.add_argument("--horizon", type=int, choices=[1, 2], default=1)
+    parser.add_argument("--state-dp", action="store_true", help="Profile the exact EvState transition DP path.")
     parser.add_argument("--output", default="reports/action_ev_profile.json")
     parser.add_argument("--summary", default="reports/action_ev_profile_summary.md")
     return parser.parse_args(argv)
@@ -233,6 +254,7 @@ def main(argv: list[str] | None = None) -> int:
         args.probability_model,
         args.current,
         args.horizon,
+        use_state_dp=args.state_dp,
     )
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)

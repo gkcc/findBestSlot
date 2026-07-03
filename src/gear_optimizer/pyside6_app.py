@@ -1758,6 +1758,8 @@ class OptimizerWindow(QMainWindow):
             "candidate_generation_step_done": "候选组完成",
             "upgrade_generation_start": "强化分布",
             "upgrade_generation_done": "强化分布完成",
+            "state_transition_cache_hit": "状态转移缓存命中",
+            "state_transition_cache_miss": "状态转移展开",
         }
         label = event_labels.get(inner_event, inner_event)
         completed = payload.get("inner_completed")
@@ -1892,6 +1894,10 @@ class OptimizerWindow(QMainWindow):
             detail_parts.append(f"outcome缓存命中 {payload['aggregated_outcome_cache_hits']}")
         if "aggregated_outcome_cache_misses" in payload:
             detail_parts.append(f"outcome缓存展开 {payload['aggregated_outcome_cache_misses']}")
+        if "state_transition_cache_hits" in payload:
+            detail_parts.append(f"状态转移缓存命中 {payload['state_transition_cache_hits']}")
+        if "state_transition_cache_misses" in payload:
+            detail_parts.append(f"状态转移展开 {payload['state_transition_cache_misses']}")
 
         if self._action_progress_started_at is not None:
             elapsed = now - self._action_progress_started_at

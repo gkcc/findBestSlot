@@ -473,3 +473,35 @@ def test_position_strategy_rows_match_with_state_dp_for_horizon_one_and_two():
             assert {column: new_row[column] for column in compare_columns} == {
                 column: old_row[column] for column in compare_columns
             }
+
+
+def test_state_dp_action_rows_emit_transition_progress():
+    game = _two_slot_game()
+    character = _two_slot_character()
+    probability_model = _two_slot_probability(game.id)
+    inventory = [
+        _gear_piece(1, "A", rolls=0),
+        _gear_piece(2, "A", rolls=0),
+    ]
+    analysis = analyse_current_gear(inventory, game, character)
+    events = []
+
+    position_ev._ACTION_EV_ROWS_CACHE.clear()
+    position_ev._STATE_TRANSITION_CACHE.clear()
+    position_strategy_efficiency_rows(
+        game,
+        character,
+        probability_model,
+        analysis,
+        inventory_pieces=inventory,
+        horizon=1,
+        progress_callback=events.append,
+        use_state_dp=True,
+    )
+
+    assert any(
+        event.get("event") == "unit_progress"
+        and event.get("inner_event") == "state_transition_cache_miss"
+        for event in events
+    )
+    assert any("state_transition_cache_misses" in event for event in events)

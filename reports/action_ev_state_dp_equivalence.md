@@ -53,7 +53,28 @@ Results:
 
 The state DP path is implemented and tested but remains behind the explicit `use_state_dp=True` switch for now.
 
-Reason: the existing inventory-recursive path emits richer nested progress events. Before making state DP the UI default, the state DP path should emit equivalent progress diagnostics so long-running `horizon=2` still looks alive and remains easy to cancel/debug.
+State-DP progress events and transition cache diagnostics have been added. The path now emits state/action/outcome progress plus transition cache hit/miss counters.
+
+Reason it is not yet the default: the latest small example profile does not show a material speedup over the inventory-recursive path. The exact state engine is available for profiling and parallelism work, but the production default should change only after profiling shows a clear benefit or after the parallel state engine is selected explicitly.
+
+## Profile Snapshot
+
+Latest local state-DP profile command:
+
+```powershell
+python -m gear_optimizer.profile_action_ev --horizon 1 --state-dp --output reports\action_ev_profile_state_dp.json --summary reports\action_ev_profile_state_dp_summary.md
+```
+
+Result:
+
+- engine: state_dp
+- horizon: 1
+- total_seconds: 2.2917
+- action_count: 14
+- outcome_count: 2886
+- state_transition_cache_misses: 14
+
+On this small example, state DP is not yet materially faster than the inventory-recursive path. It is therefore kept as an explicit engine switch while transition profiling and parallelism work continue.
 
 ## Next Work
 

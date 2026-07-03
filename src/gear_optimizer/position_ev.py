@@ -2045,12 +2045,28 @@ def state_transition_for_action(
     probability_model: ProbabilityModel,
     spec: ActionSpec,
     quality_cache: dict[tuple[str, tuple[str, ...]], list[tuple[float, tuple[float, ...], float]]] | None = None,
+    progress_callback: ProgressCallback | None = None,
+    progress_depth: int = 0,
 ) -> list[tuple[EvState, float]]:
     cache_key = _state_transition_cache_key(state, game, character, probability_model, spec)
     cached = _STATE_TRANSITION_CACHE.get(cache_key)
     if cached is not None:
+        _emit_progress(
+            progress_callback,
+            "state_transition_cache_hit",
+            depth=progress_depth,
+            action_strategy=spec.strategy,
+            action_set=spec.set_label,
+        )
         return cached
 
+    _emit_progress(
+        progress_callback,
+        "state_transition_cache_miss",
+        depth=progress_depth,
+        action_strategy=spec.strategy,
+        action_set=spec.set_label,
+    )
     transitions: dict[tuple, tuple[EvState, float]] = {}
     total_probability = 0.0
     if spec.upgrade_inventory_id:
@@ -2104,6 +2120,8 @@ def expected_state_action_value(
     horizon: int,
     memo: dict[tuple[int, tuple[tuple, ...]], tuple[float, ...]] | None = None,
     quality_cache: dict[tuple[str, tuple[str, ...]], list[tuple[float, tuple[float, ...], float]]] | None = None,
+    progress_callback: ProgressCallback | None = None,
+    progress_depth: int = 0,
 ) -> tuple[float, ...]:
     current_value = state.best_loadout_value(game, character)
     expected = tuple(0.0 for _ in current_value)
@@ -2111,14 +2129,25 @@ def expected_state_action_value(
         return expected
 
     memo = memo if memo is not None else {}
-    for next_state, probability in state_transition_for_action(
+    transitions = state_transition_for_action(
         state,
         game,
         character,
         probability_model,
         spec,
         quality_cache=quality_cache,
-    ):
+        progress_callback=progress_callback,
+        progress_depth=progress_depth,
+    )
+    _emit_progress(
+        progress_callback,
+        "outcomes_start",
+        depth=progress_depth,
+        horizon=horizon,
+        completed=0,
+        total=len(transitions),
+    )
+    for transition_index, (next_state, probability) in enumerate(transitions, start=1):
         next_value = lookahead_state_value(
             next_state,
             game,
@@ -2127,8 +2156,19 @@ def expected_state_action_value(
             horizon=max(horizon - 1, 0),
             memo=memo,
             quality_cache=quality_cache,
+            progress_callback=progress_callback,
+            progress_depth=progress_depth + 1,
         )
         expected = _add_vectors(expected, _scale_vector(next_value, probability))
+        _emit_progress(
+            progress_callback,
+            "outcome_done",
+            depth=progress_depth,
+            horizon=horizon,
+            completed=transition_index,
+            total=len(transitions),
+            probability=probability,
+        )
     return expected
 
 
@@ -2140,6 +2180,8 @@ def lookahead_state_value(
     horizon: int = 1,
     memo: dict[tuple[int, tuple[tuple, ...]], tuple[float, ...]] | None = None,
     quality_cache: dict[tuple[str, tuple[str, ...]], list[tuple[float, tuple[float, ...], float]]] | None = None,
+    progress_callback: ProgressCallback | None = None,
+    progress_depth: int = 0,
 ) -> tuple[float, ...]:
     if horizon <= 0:
         return state.best_loadout_value(game, character)
@@ -2147,11 +2189,36 @@ def lookahead_state_value(
     memo = memo if memo is not None else {}
     key = (horizon, state.signature)
     if key in memo:
+        _emit_progress(
+            progress_callback,
+            "memo_hit",
+            depth=progress_depth,
+            horizon=horizon,
+        )
         return memo[key]
 
     current_value = state.best_loadout_value(game, character)
+    specs = _lookahead_action_specs(game, character, state.to_inventory_rows())
     values = []
-    for spec in _lookahead_action_specs(game, character, state.to_inventory_rows()):
+    _emit_progress(
+        progress_callback,
+        "state_start",
+        depth=progress_depth,
+        horizon=horizon,
+        completed=0,
+        total=len(specs),
+    )
+    for spec_index, spec in enumerate(specs, start=1):
+        _emit_progress(
+            progress_callback,
+            "state_action_start",
+            depth=progress_depth,
+            horizon=horizon,
+            completed=spec_index - 1,
+            total=len(specs),
+            action_strategy=spec.strategy,
+            action_set=spec.set_label,
+        )
         values.append(
             expected_state_action_value(
                 state,
@@ -2162,9 +2229,28 @@ def lookahead_state_value(
                 horizon,
                 memo=memo,
                 quality_cache=quality_cache,
+                progress_callback=progress_callback,
+                progress_depth=progress_depth,
             )
         )
+        _emit_progress(
+            progress_callback,
+            "state_action_done",
+            depth=progress_depth,
+            horizon=horizon,
+            completed=spec_index,
+            total=len(specs),
+            action_strategy=spec.strategy,
+            action_set=spec.set_label,
+        )
     memo[key] = max([current_value, *values], default=current_value)
+    _emit_progress(
+        progress_callback,
+        "state_done",
+        depth=progress_depth,
+        horizon=horizon,
+        total=len(specs),
+    )
     return memo[key]
 
 
@@ -3218,6 +3304,8 @@ def position_strategy_efficiency_rows(
     memo_hits = 0
     aggregated_outcome_cache_hits = 0
     aggregated_outcome_cache_misses = 0
+    state_transition_cache_hits = 0
+    state_transition_cache_misses = 0
 
     _emit_progress(
         progress_callback,
@@ -3229,6 +3317,8 @@ def position_strategy_efficiency_rows(
         dp_steps=dp_steps,
         aggregated_outcome_cache_hits=aggregated_outcome_cache_hits,
         aggregated_outcome_cache_misses=aggregated_outcome_cache_misses,
+        state_transition_cache_hits=state_transition_cache_hits,
+        state_transition_cache_misses=state_transition_cache_misses,
     )
 
     def run_action_value(
@@ -3239,6 +3329,7 @@ def position_strategy_efficiency_rows(
     ) -> tuple[float, ...]:
         nonlocal completed_units, dp_states, dp_steps, memo_hits
         nonlocal aggregated_outcome_cache_hits, aggregated_outcome_cache_misses
+        nonlocal state_transition_cache_hits, state_transition_cache_misses
 
         action_label = _action_progress_label(spec, game)
         _emit_progress(
@@ -3258,11 +3349,14 @@ def position_strategy_efficiency_rows(
             memo_hits=memo_hits,
             aggregated_outcome_cache_hits=aggregated_outcome_cache_hits,
             aggregated_outcome_cache_misses=aggregated_outcome_cache_misses,
+            state_transition_cache_hits=state_transition_cache_hits,
+            state_transition_cache_misses=state_transition_cache_misses,
         )
 
         def unit_progress(event: dict[str, object]) -> None:
             nonlocal dp_states, dp_steps, memo_hits
             nonlocal aggregated_outcome_cache_hits, aggregated_outcome_cache_misses
+            nonlocal state_transition_cache_hits, state_transition_cache_misses
             event_name = str(event.get("event", ""))
             depth = int(event.get("depth") or 0)
             if event_name == "state_done":
@@ -3276,6 +3370,8 @@ def position_strategy_efficiency_rows(
                 "outcome_aggregate_done",
                 "candidate_generation_step_done",
                 "upgrade_generation_done",
+                "state_transition_cache_hit",
+                "state_transition_cache_miss",
             }:
                 dp_steps += 1
             if event_name == "memo_hit":
@@ -3284,6 +3380,10 @@ def position_strategy_efficiency_rows(
                 aggregated_outcome_cache_hits += 1
             elif event_name == "aggregated_outcome_cache_miss":
                 aggregated_outcome_cache_misses += 1
+            if event_name == "state_transition_cache_hit":
+                state_transition_cache_hits += 1
+            elif event_name == "state_transition_cache_miss":
+                state_transition_cache_misses += 1
 
             completed = completed_units
             if event_name == "outcome_done" and depth == 0:
@@ -3308,6 +3408,8 @@ def position_strategy_efficiency_rows(
                 memo_hits=memo_hits,
                 aggregated_outcome_cache_hits=aggregated_outcome_cache_hits,
                 aggregated_outcome_cache_misses=aggregated_outcome_cache_misses,
+                state_transition_cache_hits=state_transition_cache_hits,
+                state_transition_cache_misses=state_transition_cache_misses,
                 inner_event=event_name,
                 inner_depth=depth,
                 inner_horizon=event.get("horizon"),
@@ -3329,6 +3431,7 @@ def position_strategy_efficiency_rows(
                 unit_horizon,
                 memo=state_memo,
                 quality_cache=quality_cache,
+                progress_callback=unit_progress,
             )
         else:
             value = _expected_action_value(
@@ -3360,6 +3463,8 @@ def position_strategy_efficiency_rows(
             memo_hits=memo_hits,
             aggregated_outcome_cache_hits=aggregated_outcome_cache_hits,
             aggregated_outcome_cache_misses=aggregated_outcome_cache_misses,
+            state_transition_cache_hits=state_transition_cache_hits,
+            state_transition_cache_misses=state_transition_cache_misses,
         )
         return value
 
@@ -3510,6 +3615,8 @@ def position_strategy_efficiency_rows(
             memo_hits=memo_hits,
             aggregated_outcome_cache_hits=aggregated_outcome_cache_hits,
             aggregated_outcome_cache_misses=aggregated_outcome_cache_misses,
+            state_transition_cache_hits=state_transition_cache_hits,
+            state_transition_cache_misses=state_transition_cache_misses,
         )
         for spec_index, spec in enumerate(fixed_main_specs, start=len(base_specs) + 1):
             row = append_row(spec, spec_index)
@@ -3538,6 +3645,8 @@ def position_strategy_efficiency_rows(
             memo_hits=memo_hits,
             aggregated_outcome_cache_hits=aggregated_outcome_cache_hits,
             aggregated_outcome_cache_misses=aggregated_outcome_cache_misses,
+            state_transition_cache_hits=state_transition_cache_hits,
+            state_transition_cache_misses=state_transition_cache_misses,
         )
         for spec_index, spec in enumerate(
             fixed_substat_specs,
@@ -3558,6 +3667,8 @@ def position_strategy_efficiency_rows(
         memo_hits=memo_hits,
         aggregated_outcome_cache_hits=aggregated_outcome_cache_hits,
         aggregated_outcome_cache_misses=aggregated_outcome_cache_misses,
+        state_transition_cache_hits=state_transition_cache_hits,
+        state_transition_cache_misses=state_transition_cache_misses,
     )
     return rows
 
