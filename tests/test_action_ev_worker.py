@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 
+from gear_optimizer import position_ev
 from gear_optimizer.action_ev_worker import ProgressJsonlWriter, main as worker_main
 from gear_optimizer.presets import load_current_example
 
@@ -25,6 +26,8 @@ def _write_worker_input(path: Path, game_id: str = "zzz") -> None:
 
 
 def test_action_ev_worker_writes_result_progress_and_summary(tmp_path):
+    position_ev._ACTION_EV_ROWS_CACHE.clear()
+    position_ev._AGGREGATED_ACTION_OUTCOME_CACHE.clear()
     input_path = tmp_path / "input.json"
     output_path = tmp_path / "result.json"
     progress_path = tmp_path / "progress.jsonl"
