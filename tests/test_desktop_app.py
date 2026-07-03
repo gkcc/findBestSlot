@@ -193,10 +193,35 @@ def test_optimizer_window_constructs_key_pyside6_components(monkeypatch, tmp_pat
         window.horizon_combo.setCurrentIndex(1)
         assert "完整概率分布精确计算" in window.horizon_note_label.text()
         assert "可取消" in window.horizon_note_label.text()
+        assert window.progress_bar.objectName() == "ActionProgressBar"
         window._on_action_progress({"event": "unit_progress", "completed": 50, "total": 100})
         assert window.progress_bar.value() == 0
         window._render_action_progress(window._last_action_progress_payload)
         assert window.progress_bar.value() == 50
+        assert "总进度 50%" in window.progress_meter_label.text()
+        window._render_action_progress(
+            {"event": "refinement_start", "completed": 10, "total": 200, "label": "追加精确任务"}
+        )
+        assert window.progress_bar.value() == 50
+        assert "计划已扩展" in window.progress_meter_label.text()
+        window._render_action_progress(
+            {
+                "event": "unit_progress",
+                "completed": 10,
+                "total": 200,
+                "label": "随机位置",
+                "inner_event": "candidate_generation_step_done",
+                "inner_completed": 3,
+                "inner_total": 10,
+                "inner_action_position": "2",
+                "inner_action_main_stat": "暴击率",
+                "dp_steps": 23,
+                "dp_states": 5,
+            }
+        )
+        assert "候选组完成" in window.progress_detail_label.text()
+        assert "内部步数 23" in window.progress_detail_label.text()
+        assert "DP状态 5（诊断）" in window.progress_detail_label.text()
         for method in [
             "confirm_current",
             "run_best_loadout",

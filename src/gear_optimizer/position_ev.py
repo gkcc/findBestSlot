@@ -1015,17 +1015,46 @@ def _aggregated_action_outcomes_for_spec(
             depth=progress_depth,
         )
         return cached
-    outcomes = _aggregate_inventory_outcomes(
-        _action_outcome_distribution(
-            inventory,
-            game,
-            character,
-            probability_model,
-            spec,
-            quality_cache=quality_cache,
-        ),
+    _emit_progress(
+        progress_callback,
+        "outcome_distribution_start",
+        depth=progress_depth,
+        action_strategy=spec.strategy,
+        action_set=spec.set_label,
+    )
+    raw_outcomes = _action_outcome_distribution(
+        inventory,
         game,
         character,
+        probability_model,
+        spec,
+        quality_cache=quality_cache,
+        progress_callback=progress_callback,
+        progress_depth=progress_depth,
+    )
+    _emit_progress(
+        progress_callback,
+        "outcome_distribution_done",
+        depth=progress_depth,
+        total=len(raw_outcomes),
+        action_strategy=spec.strategy,
+        action_set=spec.set_label,
+    )
+    _emit_progress(
+        progress_callback,
+        "outcome_aggregate_start",
+        depth=progress_depth,
+        completed=0,
+        total=len(raw_outcomes),
+    )
+    outcomes = _aggregate_inventory_outcomes(raw_outcomes, game, character)
+    _emit_progress(
+        progress_callback,
+        "outcome_aggregate_done",
+        depth=progress_depth,
+        completed=len(raw_outcomes),
+        total=len(raw_outcomes),
+        result_total=len(outcomes),
     )
     _AGGREGATED_ACTION_OUTCOME_CACHE[key] = outcomes
     _emit_progress(
@@ -1277,13 +1306,16 @@ def _candidate_distribution_for_action(
     fixed_main_stat: str | None = None,
     required_substats: tuple[str, ...] = (),
     quality_cache: dict[tuple[str, tuple[str, ...]], list[tuple[float, tuple[float, ...], float]]] | None = None,
+    progress_callback: ProgressCallback | None = None,
+    progress_depth: int = 0,
 ) -> list[tuple[dict, float]]:
-    distribution: list[tuple[dict, float]] = []
+    work_items: list[tuple[str | int, float, str, float, str, float]] = []
     for position, position_probability in _action_position_items(game, target_position):
+        valid_main_stats = game.main_stats_for(position)
+        main_stats = [fixed_main_stat] if fixed_main_stat else valid_main_stats
         for set_name, set_probability in _set_distribution(probability_model, set_options):
-            main_stats = [fixed_main_stat] if fixed_main_stat else game.main_stats_for(position)
             for main_stat in main_stats:
-                if main_stat not in game.main_stats_for(position):
+                if main_stat not in valid_main_stats:
                     continue
                 main_probability = (
                     1.0
@@ -1292,24 +1324,73 @@ def _candidate_distribution_for_action(
                 )
                 if main_probability <= 0:
                     continue
-                for candidate_row, outcome_probability in _fresh_candidate_row_distribution(
-                    game,
-                    character,
-                    probability_model,
-                    position,
-                    set_name,
-                    main_stat,
-                    required_substats=required_substats,
-                    quality_cache=quality_cache,
-                ):
-                    probability = (
-                        position_probability
-                        * set_probability
-                        * main_probability
-                        * outcome_probability
+                work_items.append(
+                    (
+                        position,
+                        position_probability,
+                        set_name,
+                        set_probability,
+                        main_stat,
+                        main_probability,
                     )
-                    if probability > 0:
-                        distribution.append((candidate_row, probability))
+                )
+
+    _emit_progress(
+        progress_callback,
+        "candidate_generation_start",
+        depth=progress_depth,
+        completed=0,
+        total=len(work_items),
+    )
+    distribution: list[tuple[dict, float]] = []
+    for work_index, (
+        position,
+        position_probability,
+        set_name,
+        set_probability,
+        main_stat,
+        main_probability,
+    ) in enumerate(work_items, start=1):
+        _emit_progress(
+            progress_callback,
+            "candidate_generation_step_start",
+            depth=progress_depth,
+            completed=work_index - 1,
+            total=len(work_items),
+            action_position=position,
+            action_set=set_name,
+            action_main_stat=main_stat,
+        )
+        before_count = len(distribution)
+        for candidate_row, outcome_probability in _fresh_candidate_row_distribution(
+            game,
+            character,
+            probability_model,
+            position,
+            set_name,
+            main_stat,
+            required_substats=required_substats,
+            quality_cache=quality_cache,
+        ):
+            probability = (
+                position_probability
+                * set_probability
+                * main_probability
+                * outcome_probability
+            )
+            if probability > 0:
+                distribution.append((candidate_row, probability))
+        _emit_progress(
+            progress_callback,
+            "candidate_generation_step_done",
+            depth=progress_depth,
+            completed=work_index,
+            total=len(work_items),
+            action_position=position,
+            action_set=set_name,
+            action_main_stat=main_stat,
+            generated=len(distribution) - before_count,
+        )
     return distribution
 
 
@@ -1736,6 +1817,8 @@ def _action_outcome_distribution(
     probability_model: ProbabilityModel,
     spec: ActionSpec,
     quality_cache: dict[tuple[str, tuple[str, ...]], list[tuple[float, tuple[float, ...], float]]] | None = None,
+    progress_callback: ProgressCallback | None = None,
+    progress_depth: int = 0,
 ) -> list[tuple[list[dict], float]]:
     if spec.upgrade_inventory_id:
         target = next(
@@ -1744,16 +1827,36 @@ def _action_outcome_distribution(
         )
         if target is None:
             return []
+        _emit_progress(
+            progress_callback,
+            "upgrade_generation_start",
+            depth=progress_depth,
+            completed=0,
+            total=1,
+            action_strategy=spec.strategy,
+            action_set=spec.set_label,
+        )
+        upgraded_rows = _upgrade_candidate_row_distribution(
+            target,
+            game,
+            character,
+        )
+        _emit_progress(
+            progress_callback,
+            "upgrade_generation_done",
+            depth=progress_depth,
+            completed=1,
+            total=1,
+            action_strategy=spec.strategy,
+            action_set=spec.set_label,
+            generated=len(upgraded_rows),
+        )
         return [
             (
                 _replace_inventory_row(inventory, spec.upgrade_inventory_id, upgraded_row),
                 probability,
             )
-            for upgraded_row, probability in _upgrade_candidate_row_distribution(
-                target,
-                game,
-                character,
-            )
+            for upgraded_row, probability in upgraded_rows
         ]
 
     return [
@@ -1767,6 +1870,8 @@ def _action_outcome_distribution(
             fixed_main_stat=spec.fixed_main_stat,
             required_substats=spec.required_substats,
             quality_cache=quality_cache,
+            progress_callback=progress_callback,
+            progress_depth=progress_depth,
         )
     ]
 
@@ -2839,7 +2944,16 @@ def position_strategy_efficiency_rows(
             depth = int(event.get("depth") or 0)
             if event_name == "state_done":
                 dp_states += 1
-            if event_name in {"outcome_done", "state_action_done", "memo_hit"}:
+            if event_name in {
+                "outcome_done",
+                "state_action_start",
+                "state_action_done",
+                "memo_hit",
+                "outcome_distribution_done",
+                "outcome_aggregate_done",
+                "candidate_generation_step_done",
+                "upgrade_generation_done",
+            }:
                 dp_steps += 1
             if event_name == "memo_hit":
                 memo_hits += 1
@@ -2878,6 +2992,8 @@ def position_strategy_efficiency_rows(
                 inner_total=event.get("total"),
                 inner_action_strategy=event.get("action_strategy"),
                 inner_action_set=event.get("action_set"),
+                inner_action_position=event.get("action_position"),
+                inner_action_main_stat=event.get("action_main_stat"),
             )
 
         value = _expected_action_value(

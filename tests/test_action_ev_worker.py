@@ -48,6 +48,8 @@ def test_action_ev_worker_writes_result_progress_and_summary(tmp_path):
                 str(error_path),
                 "--summary",
                 str(summary_path),
+                "--progress-interval-ms",
+                "0",
             ]
         )
         == 0
@@ -67,6 +69,10 @@ def test_action_ev_worker_writes_result_progress_and_summary(tmp_path):
     assert summary["rows"] == len(result["rows"])
     assert any(event["event"] == "worker_start" for event in progress_events)
     assert any(event["event"] == "worker_done" for event in progress_events)
+    assert any(
+        event.get("inner_event") == "candidate_generation_step_done"
+        for event in progress_events
+    )
     assert any("aggregated_outcome_cache_misses" in event for event in progress_events)
     assert not error_path.exists()
 
