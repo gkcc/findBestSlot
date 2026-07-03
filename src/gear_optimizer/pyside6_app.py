@@ -60,6 +60,7 @@ from gear_optimizer.position_ev import (
 from gear_optimizer.presets import list_current_examples, load_current_example
 from gear_optimizer.scoring import analyse_current_gear
 from gear_optimizer.scoring import score_piece
+from gear_optimizer.ui_assets import set_effect_tooltip, set_icon, set_icon_pixmap
 from gear_optimizer.user_current_gear import load_user_current_gears, save_user_current_gear
 from gear_optimizer.user_inventory import load_user_inventory, save_user_inventory, user_inventory_store_path
 
@@ -715,9 +716,13 @@ class PieceCard(QFrame):
 
         layout = QVBoxLayout(self)
         header = QHBoxLayout()
+        self.icon_label = QLabel("")
+        self.icon_label.setFixedSize(34, 34)
+        self.icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.position_label = QLabel("-")
         self.position_label.setStyleSheet("font-weight: 800; font-size: 16px;")
         self.locked_badge = _badge("未锁", muted=True)
+        header.addWidget(self.icon_label)
         header.addWidget(self.position_label)
         header.addStretch(1)
         header.addWidget(self.locked_badge)
@@ -741,6 +746,14 @@ class PieceCard(QFrame):
         character: CharacterPreset,
     ) -> None:
         effective, quality = _piece_metric_labels(piece, game, character)
+        pixmap = set_icon_pixmap(game, piece.set_name, 32)
+        if pixmap is not None:
+            self.icon_label.setPixmap(pixmap)
+            self.icon_label.setText("")
+        else:
+            self.icon_label.clear()
+            self.icon_label.setText("盘")
+        self.icon_label.setToolTip(set_effect_tooltip(game, piece.set_name))
         self.position_label.setText(game.position_name(piece.position))
         self.locked_badge.setText("锁定" if piece.locked else "未锁")
         self.locked_badge.setObjectName("Badge" if piece.locked else "MutedBadge")
@@ -927,6 +940,9 @@ class OptimizerWindow(QMainWindow):
         )
         self.tabs = QTabWidget()
         self.result_tabs = QTabWidget()
+        self.result_recommend_icon = QLabel("")
+        self.result_recommend_icon.setFixedSize(38, 38)
+        self.result_recommend_icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.result_recommend_title = QLabel("暂无推荐")
         self.result_recommend_title.setStyleSheet("font-weight: 800; font-size: 17px;")
         self.result_recommend_detail = QLabel("计算调律建议后会在这里显示推荐 action 和主要收益。")
@@ -1056,7 +1072,10 @@ class OptimizerWindow(QMainWindow):
         recommend_card = QFrame()
         recommend_card.setObjectName("RecommendCard")
         recommend_layout = QVBoxLayout(recommend_card)
-        recommend_layout.addWidget(self.result_recommend_title)
+        recommend_header = QHBoxLayout()
+        recommend_header.addWidget(self.result_recommend_icon)
+        recommend_header.addWidget(self.result_recommend_title, 1)
+        recommend_layout.addLayout(recommend_header)
         recommend_layout.addWidget(self.result_recommend_detail)
         result_page_layout.addWidget(recommend_card)
 
@@ -1383,6 +1402,11 @@ class OptimizerWindow(QMainWindow):
                 item = QTableWidgetItem(value)
                 if column_index == 0:
                     item.setData(Qt.ItemDataRole.UserRole, source_row)
+                if columns[column_index] == "套装":
+                    icon = set_icon(game, piece.set_name, 24)
+                    if icon is not None:
+                        item.setIcon(icon)
+                    item.setToolTip(set_effect_tooltip(game, piece.set_name))
                 if columns[column_index] in SUMMARY_NUMERIC_COLUMNS:
                     item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
                 item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
@@ -1419,6 +1443,21 @@ class OptimizerWindow(QMainWindow):
     def _set_log_visible(self, visible: bool) -> None:
         self.log.setVisible(visible)
         self.log_toggle_button.setText("隐藏运行日志" if visible else "显示运行日志")
+
+    def _set_result_recommend_icon(self, set_name: str | None) -> None:
+        if not set_name:
+            self.result_recommend_icon.clear()
+            self.result_recommend_icon.setText("")
+            self.result_recommend_icon.setToolTip("")
+            return
+        pixmap = set_icon_pixmap(self.selected_game(), set_name, 36)
+        if pixmap is None:
+            self.result_recommend_icon.clear()
+            self.result_recommend_icon.setText("盘")
+        else:
+            self.result_recommend_icon.setPixmap(pixmap)
+            self.result_recommend_icon.setText("")
+        self.result_recommend_icon.setToolTip(set_effect_tooltip(self.selected_game(), set_name))
 
     def _update_horizon_note(self) -> None:
         horizon = int(self.horizon_combo.currentData() or 1)
@@ -1461,9 +1500,11 @@ class OptimizerWindow(QMainWindow):
                 self._last_main_metric_summary = "-"
                 self.result_recommend_title.setText("结果已过期")
                 self.result_recommend_detail.setText(message or "输入已变化，请重新计算。")
+                self._set_result_recommend_icon(None)
             else:
                 self.result_recommend_title.setText("暂无推荐")
                 self.result_recommend_detail.setText("计算调律建议后会在这里显示推荐 action 和主要收益。")
+                self._set_result_recommend_icon(None)
             self._refresh_overview()
 
     def _start_action_progress(self) -> None:
@@ -1909,6 +1950,8 @@ class OptimizerWindow(QMainWindow):
         self._last_main_metric_summary = f"代表搭配 {len(rows)} 件；库存合计 {len(current_pieces) + len(inventory_pieces)} 件。"
         self.result_recommend_title.setText("当前最优搭配已更新")
         self.result_recommend_detail.setText(self._last_main_metric_summary)
+        first_set = str(rows[0].get("set_name") or "") if rows else ""
+        self._set_result_recommend_icon(first_set or None)
         self.tabs.setCurrentIndex(3)
         self.result_tabs.setCurrentIndex(1)
         self.progress_label.setText("当前最优搭配已计算完成。")
@@ -2012,11 +2055,13 @@ class OptimizerWindow(QMainWindow):
             self.result_recommend_detail.setText(
                 f"{self._last_recommended_action_summary}\n{self._last_main_metric_summary}"
             )
+            self._set_result_recommend_icon(str(recommended.get("目标套装") or ""))
         else:
             self._last_recommended_action_summary = "没有找到满足当前硬约束的推荐 action。"
             self._last_main_metric_summary = "-"
             self.result_recommend_title.setText("暂无可推荐 action")
             self.result_recommend_detail.setText(self._last_recommended_action_summary)
+            self._set_result_recommend_icon(None)
         self._has_calculated_once = True
         self._results_stale = False
         self.progress_label.setText("调律建议已计算完成。")

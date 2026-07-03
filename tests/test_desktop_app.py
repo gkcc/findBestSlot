@@ -177,6 +177,7 @@ def test_optimizer_window_constructs_key_pyside6_components(monkeypatch, tmp_pat
         assert window.overview_confirm_label.text() in {"未确认", "已确认"}
         assert len(window.current_cards) == 6
         assert all(isinstance(card, PieceCard) for card in window.current_cards)
+        assert window.current_cards[0].icon_label.toolTip()
         assert window.inventory_summary_table.columnCount() == 8
         assert window.inventory_summary_table.horizontalHeaderItem(0).text() == "位置"
         assert window.result_tabs.tabText(0) == "Action EV 明细"
