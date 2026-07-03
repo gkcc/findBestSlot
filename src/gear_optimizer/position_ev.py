@@ -8,6 +8,7 @@ import json
 from math import inf, isfinite
 
 from gear_optimizer.models import CharacterPreset, CurrentGearAnalysis, GameRules, GearPiece, ProbabilityModel, position_key
+from gear_optimizer.piece_distribution import fresh_piece_quality_distribution
 from gear_optimizer.probability import normalise_weights
 from gear_optimizer.scoring import score_piece, score_quality_sort_key, substat_quality_vector
 
@@ -533,23 +534,15 @@ def _fresh_candidate_row_distribution(
     cache_key = (main_stat, required_substats)
     cached = quality_cache.get(cache_key) if quality_cache is not None else None
     if cached is None:
-        distribution: defaultdict[tuple[float, tuple[float, ...]], float] = defaultdict(float)
-        for count_text, count_probability in probability_model.initial_substat_count_probabilities.items():
-            initial_count = int(count_text)
-            initial_states = _initial_roll_states(
+        cached = [
+            (outcome.quality_score, outcome.quality_vector, outcome.probability)
+            for outcome in fresh_piece_quality_distribution(
                 game,
+                character,
+                probability_model,
                 main_stat,
-                initial_count,
                 required_substats,
             )
-            final_states = _advance_roll_states(game, main_stat, initial_states, initial_count)
-            for state, probability in final_states.items():
-                quality_score, quality_vector = _quality_from_roll_state(state, character)
-                distribution[(quality_score, quality_vector)] += count_probability * probability
-        cached = [
-            (quality_score, quality_vector, probability)
-            for (quality_score, quality_vector), probability in distribution.items()
-            if probability > 1e-12
         ]
         if quality_cache is not None:
             quality_cache[cache_key] = cached
