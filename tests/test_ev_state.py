@@ -19,10 +19,12 @@ from gear_optimizer.position_ev import (
     EvState,
     best_loadout_rows,
     best_loadout_value,
+    configured_action_ev_workers,
     expected_state_action_value,
     inventory_rows_from_pieces,
     lookahead_inventory_value,
     lookahead_inventory_value_state_dp,
+    parallel_expected_state_action_values,
     position_strategy_efficiency_rows,
 )
 
@@ -505,3 +507,80 @@ def test_state_dp_action_rows_emit_transition_progress():
         for event in events
     )
     assert any("state_transition_cache_misses" in event for event in events)
+
+
+def test_parallel_state_action_values_match_single_worker(monkeypatch):
+    game = _two_slot_game()
+    character = _two_slot_character()
+    probability_model = _two_slot_probability(game.id)
+    inventory = [
+        _gear_piece(1, "A", rolls=0),
+        _gear_piece(2, "A", rolls=0),
+    ]
+    rows = inventory_rows_from_pieces(inventory, game, character, current_count=2)
+    state = EvState.from_rows(rows, game, character)
+    specs = [
+        ActionSpec("随机位置", "A", ("A",), None),
+        ActionSpec("固定位置", "A", ("A",), 1),
+    ]
+
+    single = parallel_expected_state_action_values(
+        state,
+        game,
+        character,
+        probability_model,
+        specs,
+        horizon=1,
+        workers=1,
+    )
+    parallel = parallel_expected_state_action_values(
+        state,
+        game,
+        character,
+        probability_model,
+        specs,
+        horizon=1,
+        workers=2,
+    )
+
+    assert [result.error for result in single] == [None, None]
+    assert [result.error for result in parallel] == [None, None]
+    for left, right in zip(single, parallel):
+        assert left.spec == right.spec
+        _assert_vector_close(left.value, right.value)
+
+    monkeypatch.setenv("GEAR_OPTIMIZER_WORKERS", "2")
+    assert configured_action_ev_workers() == 2
+
+
+def test_parallel_state_action_worker_error_does_not_return_value():
+    game = _two_slot_game()
+    character = _two_slot_character()
+    probability_model = _two_slot_probability(game.id)
+    rows = inventory_rows_from_pieces(
+        [_gear_piece(1, "A", rolls=0), _gear_piece(2, "A", rolls=0)],
+        game,
+        character,
+        current_count=2,
+    )
+    state = EvState.from_rows(rows, game, character)
+    bad_spec = ActionSpec(
+        "固定位置",
+        "A",
+        ("A",),
+        target_position=999,
+    )
+
+    [result] = parallel_expected_state_action_values(
+        state,
+        game,
+        character,
+        probability_model,
+        [bad_spec],
+        horizon=1,
+        workers=2,
+    )
+
+    assert result.spec == bad_spec
+    assert result.value == ()
+    assert result.error

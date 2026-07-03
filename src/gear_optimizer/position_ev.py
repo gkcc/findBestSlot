@@ -2,10 +2,13 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 from collections.abc import Callable, Sequence
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 from itertools import combinations
 import json
 from math import inf, isfinite
+import os
+import time
 
 from gear_optimizer.models import CharacterPreset, CurrentGearAnalysis, GameRules, GearPiece, ProbabilityModel, position_key
 from gear_optimizer.piece_distribution import fresh_piece_quality_distribution
@@ -35,6 +38,14 @@ class ActionSpec:
     required_substats: tuple[str, ...] = ()
     upgrade_inventory_id: str | None = None
     upgrade_label: str | None = None
+
+
+@dataclass(frozen=True)
+class ParallelActionValueResult:
+    spec: ActionSpec
+    value: tuple[float, ...] = ()
+    seconds: float = 0.0
+    error: str | None = None
 
 
 def _emit_progress(
@@ -2277,6 +2288,91 @@ def lookahead_inventory_value_state_dp(
         horizon=horizon,
         memo=memo,
     )
+
+
+def configured_action_ev_workers() -> int:
+    raw_value = os.environ.get("GEAR_OPTIMIZER_WORKERS")
+    if raw_value:
+        try:
+            return max(1, int(raw_value))
+        except ValueError:
+            return 1
+    return max(1, (os.cpu_count() or 2) - 1)
+
+
+def _expected_state_action_value_worker(payload: tuple) -> ParallelActionValueResult:
+    (
+        rows,
+        game,
+        character,
+        probability_model,
+        spec,
+        horizon,
+    ) = payload
+    started = time.perf_counter()
+    try:
+        state = EvState.from_rows(rows, game, character)
+        value = expected_state_action_value(
+            state,
+            game,
+            character,
+            probability_model,
+            spec,
+            horizon,
+            memo={},
+            quality_cache={},
+        )
+        return ParallelActionValueResult(
+            spec=spec,
+            value=value,
+            seconds=round(time.perf_counter() - started, 6),
+        )
+    except BaseException as exc:
+        return ParallelActionValueResult(
+            spec=spec,
+            seconds=round(time.perf_counter() - started, 6),
+            error=f"{type(exc).__name__}: {exc}",
+        )
+
+
+def parallel_expected_state_action_values(
+    state: EvState,
+    game: GameRules,
+    character: CharacterPreset,
+    probability_model: ProbabilityModel,
+    specs: Sequence[ActionSpec],
+    horizon: int,
+    workers: int | None = None,
+) -> list[ParallelActionValueResult]:
+    worker_count = configured_action_ev_workers() if workers is None else max(1, workers)
+    rows = state.to_inventory_rows()
+    if worker_count <= 1 or len(specs) <= 1:
+        return [
+            _expected_state_action_value_worker(
+                (rows, game, character, probability_model, spec, horizon)
+            )
+            for spec in specs
+        ]
+
+    results_by_index: dict[int, ParallelActionValueResult] = {}
+    with ProcessPoolExecutor(max_workers=worker_count) as executor:
+        future_to_index = {
+            executor.submit(
+                _expected_state_action_value_worker,
+                (rows, game, character, probability_model, spec, horizon),
+            ): index
+            for index, spec in enumerate(specs)
+        }
+        for future in as_completed(future_to_index):
+            index = future_to_index[future]
+            try:
+                results_by_index[index] = future.result()
+            except BaseException as exc:
+                results_by_index[index] = ParallelActionValueResult(
+                    spec=specs[index],
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+    return [results_by_index[index] for index in range(len(specs))]
 
 
 def _expected_action_value(
