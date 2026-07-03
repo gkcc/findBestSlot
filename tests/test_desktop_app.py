@@ -179,16 +179,42 @@ def test_optimizer_window_constructs_key_pyside6_components(monkeypatch, tmp_pat
         assert all(isinstance(card, PieceCard) for card in window.current_cards)
         assert window.current_cards[0].icon_label.toolTip()
         assert window._current_action_ev_engine() == "inventory_recursive"
-        assert window.inventory_summary_table.columnCount() == 8
-        assert window.inventory_summary_table.horizontalHeaderItem(0).text() == "位置"
-        assert window.inventory_summary_table.horizontalHeaderItem(7).text() == "备注/操作"
+        assert window.inventory_summary_table.isHidden()
+        assert window.inventory_card_scroll.widget() is window.inventory_card_host
+        assert "库存" in window.inventory_card_status_label.text()
         assert window.target_set_filter.text() == "只看目标套装"
         assert window.weak_position_filter.text() == "只看当前弱位"
         assert window.unfinished_filter.text() == "只看未满级胚子"
         assert window.replaceable_filter.text() == "只看可替换当前"
+        game = window.selected_game()
+        character = window.selected_character()
+        current_before = window._hidden_table_pieces(window.current_table)
+        inventory_piece = current_before[0].model_copy(
+            update={
+                "level": 0,
+                "locked": False,
+                "substats": [],
+            }
+        )
+        window.inventory_table.set_context(game, character, [inventory_piece])
+        window._inventory_changed()
+        assert len(window.inventory_cards) == 1
+        assert "库存 #1" in window.inventory_detail_label.text()
+        assert "有效" in window.inventory_detail_label.text()
+        assert "质量" not in window.inventory_detail_label.text()
+        assert window.inventory_cards[0].position_label.text()
+        assert "质量" not in window.inventory_cards[0].metric_badge.text()
+        window.equip_inventory_piece(0)
+        current_after = window._hidden_table_pieces(window.current_table)
+        inventory_after = window._hidden_table_pieces(window.inventory_table)
+        assert current_after[0].level == 0
+        assert inventory_after[0].position == current_before[0].position
+        assert inventory_after[0].level == current_before[0].level
+        assert window.current_confirmed_digest is None
         assert window.result_tabs.tabText(0) == "Action EV 明细"
-        assert window.result_tabs.tabText(1) == "代表搭配"
-        assert window.result_tabs.tabText(2) == "运行日志"
+        assert window.result_tabs.tabText(1) == "H=2 方案"
+        assert window.result_tabs.tabText(2) == "代表搭配"
+        assert window.result_tabs.tabText(3) == "运行日志"
         assert not window.log.isVisible()
         assert not window.show_all_actions_button.isEnabled()
         assert not window.cancel_action_button.isEnabled()
@@ -232,10 +258,16 @@ def test_optimizer_window_constructs_key_pyside6_components(monkeypatch, tmp_pat
             "固定副属性": "不固定",
             "horizon": 2,
             "期望提升": "质量 +1",
+            "方案类型": "代表路径",
+            "第一步 action": "固定位置 / 云岿如我 / 1号位",
+            "第二步策略摘要": "固定位置 / 云岿如我 / 2号位",
             "代表路径": "-",
             "预期搭配": "-",
+            "代表分支搭配": "-",
             "互补位": "-",
             "套装约束": "满足4+2",
+            "条件分支": [],
+            "代表路径说明": "代表路径仅用于审计；真实 H=2 EV 已对所有 outcome 加权。",
             "质量/母盘": 0.25,
             "有效/母盘": 0.15,
             "排序向量/母盘": "internal-ish",
@@ -251,6 +283,9 @@ def test_optimizer_window_constructs_key_pyside6_components(monkeypatch, tmp_pat
             for index in range(window.action_table.columnCount())
         ]
         assert "比较口径" in headers
+        assert "代表分支搭配" in headers
+        assert "质量/母盘" not in headers
+        assert "预期搭配" not in headers
         assert "相对随机" not in headers
         assert "排序向量/母盘" not in headers
         assert "_sort_vector" not in headers
@@ -261,12 +296,67 @@ def test_optimizer_window_constructs_key_pyside6_components(monkeypatch, tmp_pat
         assert "收起" in window.show_all_actions_button.text()
         card_text = window._recommended_action_card_text(sample_action_row)
         assert "推荐动作：固定位置" in card_text
+        assert "方案类型：代表路径" in card_text
+        assert "第二步策略摘要：固定位置 / 云岿如我 / 2号位" in card_text
+        assert "质量/母盘" not in card_text
         assert "计算口径：精确" in card_text
         assert "计算引擎：inventory_recursive" in card_text
         assert "执行方式" in card_text
         assert "比较口径：优于随机，才建议固定" in card_text
         assert "固定位置是基础 action" in card_text
-        assert "后续步骤在每个命中状态下递归选择最优" in card_text
+        assert "H=2 方案页展示审计用代表路径或条件分支" in card_text
+        first_position = window.selected_game().positions[0].id
+        window._render_action_plan(
+            {
+                **sample_action_row,
+                "_representative_loadout_rows": [
+                    {
+                        "position": first_position,
+                        "set_name": "云岿如我",
+                        "source": "outcome",
+                        "main_stat": "生命值",
+                        "effective_rolls": 1.0,
+                        "quality_score": 2.0,
+                        "quality_vector": (2.0,),
+                    }
+                ],
+            }
+        )
+        assert "方案类型：代表路径" in window.action_plan_summary_label.text()
+        assert window.action_plan_branch_table.rowCount() == 0
+        assert window.action_plan_loadout_table.rowCount() == 1
+        window._render_action_plan(
+            {
+                **sample_action_row,
+                "策略": "随机位置",
+                "位置": "1-6 随机",
+                "方案类型": "条件策略",
+                "第二步策略摘要": "按命中位置分 6 个条件分支；第二步来自 exact lookahead",
+                "代表分支搭配": "混合结果，不存在唯一典型搭配",
+                "条件分支": [
+                    {
+                        "条件": "第1步命中 1号位",
+                        "条件概率": 1 / 6,
+                        "代表新盘": "1号位云岿如我（代表命中 100.0%）",
+                        "第二步 action": "固定位置 / 云岿如我 / 2号位",
+                        "第二步原因": "来自该 outcome state 的 exact horizon=1 lookahead",
+                        "代表最终搭配": "A6",
+                        "套装约束": "满足A 6",
+                    }
+                ],
+                "_representative_loadout_rows": [
+                    {
+                        "position": first_position,
+                        "set_name": "云岿如我",
+                        "source": "outcome",
+                        "main_stat": "生命值",
+                    }
+                ],
+            }
+        )
+        assert "混合结果，不存在唯一典型搭配" in window.action_plan_summary_label.text()
+        assert window.action_plan_branch_table.rowCount() == 1
+        assert window.action_plan_loadout_table.rowCount() == 0
         upgrade_text = window._recommended_action_card_text(
             {**sample_action_row, "策略": "强化库存胚子", "相对随机": "库存动作"}
         )
@@ -318,6 +408,125 @@ def test_cleanup_successful_action_run_dirs_keeps_failures_and_recent_successes(
     assert all(path.exists() for path in success_dirs[2:])
     assert failed_dir.exists()
     assert cancelled_dir.exists()
+
+
+def test_piece_editor_uses_card_controls_and_can_check_best_loadout(monkeypatch, tmp_path):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.setenv("GEAR_OPTIMIZER_USER_DATA_DIR", str(tmp_path / "user_data"))
+    pytest.importorskip("PySide6")
+
+    from PySide6.QtWidgets import QApplication
+    from gear_optimizer.pyside6_app import GearPieceEditDialog, OptimizerWindow, _default_piece
+
+    app = QApplication.instance() or QApplication([])
+    window = OptimizerWindow(width=1200, height=760)
+    try:
+        game = window.selected_game()
+        character = window.selected_character()
+        piece = _default_piece(game, character, game.positions[0].id).model_copy(update={"locked": False})
+        dialog = GearPieceEditDialog(
+            game,
+            character,
+            piece,
+            editable_position=True,
+            title="测试编辑装备",
+            parent=window,
+            optimal_check_callback=lambda candidate: f"checked {candidate.set_name}",
+        )
+        try:
+            assert not hasattr(dialog, "table")
+            assert dialog.set_card_scroll.widget() is dialog.set_card_host
+            assert dialog.main_stat_card_host is not None
+            assert len(dialog.substat_cards) == 4
+            assert dialog.check_button.isEnabled()
+            dialog._select_set(game.sets[-1])
+            assert dialog._selected_set == game.sets[-1]
+            dialog._move_substat_card(0, 1)
+            assert dialog.substat_cards[0].index == 0
+            dialog._run_optimal_check()
+            assert "checked" in dialog.check_result_label.text()
+        finally:
+            dialog.close()
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_add_inventory_opens_editor_before_adding(monkeypatch, tmp_path):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.setenv("GEAR_OPTIMIZER_USER_DATA_DIR", str(tmp_path / "user_data"))
+    pytest.importorskip("PySide6")
+
+    from PySide6.QtWidgets import QApplication, QDialog
+    import gear_optimizer.pyside6_app as pyside6_app
+    from gear_optimizer.pyside6_app import OptimizerWindow, _default_piece
+
+    app = QApplication.instance() or QApplication([])
+    window = OptimizerWindow(width=1200, height=760)
+    try:
+        game = window.selected_game()
+        character = window.selected_character()
+        created_piece = _default_piece(game, character, game.positions[-1].id).model_copy(update={"locked": False})
+        calls = []
+
+        class FakeDialog:
+            def __init__(self, *_args, **_kwargs):
+                calls.append(_kwargs.get("title"))
+                self.piece = created_piece
+
+            def exec(self):
+                return QDialog.DialogCode.Accepted
+
+        monkeypatch.setattr(pyside6_app, "GearPieceEditDialog", FakeDialog)
+
+        window.add_inventory()
+
+        pieces = window._hidden_table_pieces(window.inventory_table)
+        assert calls == ["新增库存件"]
+        assert len(pieces) == 1
+        assert pieces[0].position == created_piece.position
+        assert "已添加一件库存" in window.progress_label.text()
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_horizon_one_gain_summary_marks_no_positive_gain(monkeypatch, tmp_path):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.setenv("GEAR_OPTIMIZER_USER_DATA_DIR", str(tmp_path / "user_data"))
+    pytest.importorskip("PySide6")
+
+    from PySide6.QtWidgets import QApplication
+    from gear_optimizer.pyside6_app import OptimizerWindow
+
+    app = QApplication.instance() or QApplication([])
+    window = OptimizerWindow(width=1200, height=760)
+    try:
+        no_gain_rows = [
+            {
+                "horizon": 1,
+                "套装约束": "满足",
+                "有效提升": 0,
+                "质量提升": 0,
+                "_sort_vector": (0.0, 0.0),
+            }
+        ]
+        gain_rows = [
+            {
+                "horizon": 1,
+                "套装约束": "满足",
+                "有效提升": 0.2,
+                "质量提升": 0.2,
+                "有效/母盘": 0.2,
+                "_sort_vector": (0.2, 0.2),
+            }
+        ]
+
+        assert "均无正期望提升" in window._action_gain_summary_text(no_gain_rows)
+        assert "1/1 个可用策略" in window._action_gain_summary_text(gain_rows)
+    finally:
+        window.close()
+        app.processEvents()
 
 
 def test_windows_packaging_scripts_bundle_native_pyside6_resources():

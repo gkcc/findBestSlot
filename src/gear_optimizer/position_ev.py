@@ -9,6 +9,7 @@ import json
 from math import inf, isfinite
 import os
 import time
+from typing import Any
 
 from gear_optimizer.models import CharacterPreset, CurrentGearAnalysis, GameRules, GearPiece, ProbabilityModel, position_key
 from gear_optimizer.piece_distribution import fresh_piece_quality_distribution
@@ -31,6 +32,8 @@ _DISPLAY_EPSILON = 0.0005
 _SOURCE_CURRENT = "current"
 _SOURCE_INVENTORY = "inventory"
 _SOURCE_OUTCOME = "outcome"
+_MIXED_RANDOM_LOADOUT_LABEL = "混合结果，不存在唯一典型搭配"
+_REPRESENTATIVE_PATH_NOTE = "代表路径仅用于审计；真实 H=2 EV 已对所有 outcome 加权。"
 ProgressCallback = Callable[[dict[str, object]], None]
 
 
@@ -1407,15 +1410,18 @@ def _representative_action_plan_labels(
         return "-", "-", "-", "-", []
     if first_spec.strategy == "随机位置":
         positions = " / ".join(game.position_name(rule.id) for rule in game.positions)
-        path = (
-            f"随机位置是 {positions} 的概率混合；"
-            f"horizon={max(horizon, 1)} 只推荐第一步，后续按实际命中状态递归最优"
-        )
+        if horizon > 1:
+            path = (
+                f"随机位置是 {positions} 的概率混合；"
+                f"horizon={max(horizon, 1)} 按实际命中位置进入条件策略，第二步在 outcome state 下递归最优"
+            )
+        else:
+            path = f"随机位置是 {positions} 的概率混合；horizon=1 只评估单步 outcome"
         return (
             path,
-            "混合期望，不存在唯一典型搭配",
-            "请查看同目标套装 1-6 固定位置行作为拆解",
-            "混合动作：固定位置行分别验算套装硬约束",
+            _MIXED_RANDOM_LOADOUT_LABEL,
+            "请查看 H=2 方案条件分支；固定位置行可辅助审计",
+            "混合动作：每个条件分支分别验算套装硬约束",
             [],
         )
 
@@ -1479,6 +1485,268 @@ def _representative_action_plan_labels(
     else:
         complement_label = "代表新盘未进入最终搭配；" + _combo_loadout_label(final_combo, game)
     return path_label, loadout_label, complement_label, set_plan_status, [dict(row) for row in final_combo]
+
+
+def _action_plan_label(spec: ActionSpec, game: GameRules) -> str:
+    return _action_progress_label(spec, game)
+
+
+def _fixed_position_branch_spec(first_spec: ActionSpec, position: str | int) -> ActionSpec:
+    if first_spec.required_substats:
+        strategy = "固定位置 + 固定主属性 + 固定副属性"
+    elif first_spec.fixed_main_stat:
+        strategy = "固定位置 + 固定主属性"
+    else:
+        strategy = "固定位置"
+    set_options = first_spec.set_options or (first_spec.set_label,)
+    return ActionSpec(
+        strategy,
+        first_spec.set_label,
+        tuple(set_options),
+        position,
+        fixed_main_stat=first_spec.fixed_main_stat,
+        required_substats=first_spec.required_substats,
+    )
+
+
+def _representative_new_piece_label(
+    previous_inventory: list[dict],
+    next_inventory: list[dict],
+    game: GameRules,
+    probability: float,
+) -> str:
+    new_rows = _new_rows_between(previous_inventory, next_inventory)
+    if not new_rows:
+        return f"未改变当前库存代表状态（代表命中 {probability:.1%}）"
+    label = " / ".join(_combo_piece_label(row, game) for row in _sorted_combo_rows(new_rows, game))
+    return f"{label}（代表命中 {probability:.1%}）"
+
+
+def _best_followup_decision(
+    inventory: list[dict],
+    game: GameRules,
+    character: CharacterPreset,
+    probability_model: ProbabilityModel,
+    horizon: int,
+    memo: dict[tuple[int, tuple[tuple, ...]], tuple[float, ...]],
+    quality_cache: dict[tuple[str, tuple[str, ...]], list[tuple[float, tuple[float, ...], float]]],
+) -> tuple[ActionSpec | None, str, str]:
+    if horizon <= 0:
+        return None, "-", "没有剩余步数"
+    followup_spec = _best_followup_spec(
+        inventory,
+        game,
+        character,
+        probability_model,
+        horizon,
+        memo,
+        quality_cache,
+    )
+    if followup_spec is None:
+        return None, "-", f"该 outcome state 下 exact horizon={horizon} lookahead 未找到正提升 action"
+    return (
+        followup_spec,
+        _action_plan_label(followup_spec, game),
+        f"来自该 outcome state 的 exact horizon={horizon} lookahead",
+    )
+
+
+def _representative_final_loadout_after_followup(
+    inventory: list[dict],
+    game: GameRules,
+    character: CharacterPreset,
+    probability_model: ProbabilityModel,
+    followup_spec: ActionSpec | None,
+    followup_horizon: int,
+    memo: dict[tuple[int, tuple[tuple, ...]], tuple[float, ...]],
+    quality_cache: dict[tuple[str, tuple[str, ...]], list[tuple[float, tuple[float, ...], float]]],
+) -> tuple[str, str]:
+    final_inventory = inventory
+    if followup_spec is not None:
+        selected = _select_representative_outcome(
+            inventory,
+            game,
+            character,
+            probability_model,
+            followup_spec,
+            max(followup_horizon - 1, 0),
+            memo,
+            quality_cache,
+        )
+        if selected is not None:
+            final_inventory = selected[0]
+    final_combo = _best_combo_rows(final_inventory, game, character)
+    return _combo_loadout_label(final_combo, game), _set_plan_status_label(final_combo, character)
+
+
+def _representative_branch_summary(
+    inventory: list[dict],
+    game: GameRules,
+    character: CharacterPreset,
+    probability_model: ProbabilityModel,
+    first_spec: ActionSpec,
+    horizon: int,
+    memo: dict[tuple[int, tuple[tuple, ...]], tuple[float, ...]],
+    quality_cache: dict[tuple[str, tuple[str, ...]], list[tuple[float, tuple[float, ...], float]]],
+) -> dict[str, Any]:
+    selected = _select_representative_outcome(
+        inventory,
+        game,
+        character,
+        probability_model,
+        first_spec,
+        max(horizon - 1, 0),
+        memo,
+        quality_cache,
+    )
+    if selected is None:
+        second_step = "-"
+    else:
+        next_inventory, _probability, _value = selected
+        _followup_spec, followup_label, reason = _best_followup_decision(
+            next_inventory,
+            game,
+            character,
+            probability_model,
+            max(horizon - 1, 0),
+            memo,
+            quality_cache,
+        )
+        second_step = followup_label if followup_label != "-" else f"-（{reason}）"
+    return {
+        "方案类型": "代表路径",
+        "第二步策略摘要": second_step,
+        "条件分支": [],
+        "代表路径说明": _REPRESENTATIVE_PATH_NOTE,
+    }
+
+
+def _random_position_condition_branches(
+    inventory: list[dict],
+    game: GameRules,
+    character: CharacterPreset,
+    probability_model: ProbabilityModel,
+    first_spec: ActionSpec,
+    horizon: int,
+    memo: dict[tuple[int, tuple[tuple, ...]], tuple[float, ...]],
+    quality_cache: dict[tuple[str, tuple[str, ...]], list[tuple[float, tuple[float, ...], float]]],
+) -> list[dict[str, Any]]:
+    if not game.positions:
+        return []
+    condition_probability = 1.0 / len(game.positions)
+    branches: list[dict[str, Any]] = []
+    for rule in game.positions:
+        branch_spec = _fixed_position_branch_spec(first_spec, rule.id)
+        selected = _select_representative_outcome(
+            inventory,
+            game,
+            character,
+            probability_model,
+            branch_spec,
+            max(horizon - 1, 0),
+            memo,
+            quality_cache,
+        )
+        condition = f"第1步命中 {game.position_name(rule.id)}"
+        if selected is None:
+            combo = _best_combo_rows(inventory, game, character)
+            branches.append(
+                {
+                    "条件": condition,
+                    "条件概率": condition_probability,
+                    "代表新盘": "无可用代表 outcome",
+                    "第二步 action": "-",
+                    "第二步原因": "第一步无可用代表 outcome，无法生成条件后续 action",
+                    "代表最终搭配": _combo_loadout_label(combo, game),
+                    "套装约束": _set_plan_status_label(combo, character),
+                }
+            )
+            continue
+
+        next_inventory, probability, _value = selected
+        followup_spec, followup_label, reason = _best_followup_decision(
+            next_inventory,
+            game,
+            character,
+            probability_model,
+            max(horizon - 1, 0),
+            memo,
+            quality_cache,
+        )
+        final_loadout, set_plan_status = _representative_final_loadout_after_followup(
+            next_inventory,
+            game,
+            character,
+            probability_model,
+            followup_spec,
+            max(horizon - 1, 0),
+            memo,
+            quality_cache,
+        )
+        branches.append(
+            {
+                "条件": condition,
+                "条件概率": condition_probability,
+                "代表新盘": _representative_new_piece_label(inventory, next_inventory, game, probability),
+                "第二步 action": followup_label,
+                "第二步原因": reason,
+                "代表最终搭配": final_loadout,
+                "套装约束": set_plan_status,
+            }
+        )
+    return branches
+
+
+def _action_plan_explain_fields(
+    inventory: list[dict],
+    game: GameRules,
+    character: CharacterPreset,
+    probability_model: ProbabilityModel,
+    spec: ActionSpec,
+    horizon: int,
+    memo: dict[tuple[int, tuple[tuple, ...]], tuple[float, ...]],
+    quality_cache: dict[tuple[str, tuple[str, ...]], list[tuple[float, tuple[float, ...], float]]],
+) -> dict[str, Any]:
+    first_action = _action_plan_label(spec, game)
+    if horizon <= 1:
+        return {
+            "方案类型": "单步",
+            "第一步 action": first_action,
+            "第二步策略摘要": "-",
+            "条件分支": [],
+            "代表路径说明": "-",
+        }
+    if spec.strategy == "随机位置":
+        branches = _random_position_condition_branches(
+            inventory,
+            game,
+            character,
+            probability_model,
+            spec,
+            horizon,
+            memo,
+            quality_cache,
+        )
+        return {
+            "方案类型": "条件策略",
+            "第一步 action": first_action,
+            "第二步策略摘要": f"按命中位置分 {len(branches)} 个条件分支；第二步来自 exact lookahead",
+            "条件分支": branches,
+            "代表路径说明": "随机位置是混合结果，不存在唯一代表最终搭配；请查看条件分支。",
+        }
+
+    fields = _representative_branch_summary(
+        inventory,
+        game,
+        character,
+        probability_model,
+        spec,
+        horizon,
+        memo,
+        quality_cache,
+    )
+    fields["第一步 action"] = first_action
+    return fields
 
 
 def _action_position_items(
@@ -3686,6 +3954,16 @@ def position_strategy_efficiency_rows(
                 quality_cache,
             )
         )
+        explain_fields = _action_plan_explain_fields(
+            inventory_rows,
+            game,
+            character,
+            probability_model,
+            spec,
+            horizon,
+            memo,
+            quality_cache,
+        )
         set_plan_blocked = set_plan_status.startswith("未满足")
         random_efficiency = random_efficiency_by_set.get(spec.set_label, tuple())
         if set_plan_blocked:
@@ -3739,10 +4017,16 @@ def position_strategy_efficiency_rows(
             "option_EV": _quality_vector_label(option_gain, character),
             "horizon_EV": _quality_vector_label(gain, character),
             "期望提升": _quality_vector_label(gain, character),
+            "方案类型": explain_fields["方案类型"],
+            "第一步 action": explain_fields["第一步 action"],
+            "第二步策略摘要": explain_fields["第二步策略摘要"],
             "代表路径": representative_path,
             "预期搭配": representative_loadout,
+            "代表分支搭配": representative_loadout,
             "互补位": complement_loadout,
             "套装约束": set_plan_status,
+            "条件分支": explain_fields["条件分支"],
+            "代表路径说明": explain_fields["代表路径说明"],
             "_representative_loadout_rows": representative_loadout_rows,
             "质量提升": round(quality_gain, 3),
             "有效提升": round(effective_gain, 3),
@@ -4151,11 +4435,11 @@ def action_ev_brief(rows: list[dict[str, float | str]]) -> str:
         if rows and all(str(row.get("套装约束") or "").startswith("未满足") for row in rows):
             return "当前 horizon 没有满足套装硬约束的 action；请提高 horizon 或先补齐套装缺口。"
         return "暂无 action EV 结果。"
-    loadout = str(best.get("预期搭配") or "-")
+    loadout = str(best.get("代表分支搭配") or best.get("预期搭配") or "-")
     comparison = str(best.get("比较口径") or best.get("相对随机") or "-")
     return (
         f"{best['策略']}：{best['目标套装']} {best['位置']}，"
         f"排序向量/母盘 {best.get('排序向量/母盘', '-')}，"
         f"有效/母盘 {best['有效/母盘']}；"
-        f"{comparison}；{best.get('套装约束', '-')}。预期搭配：{loadout}。"
+        f"{comparison}；{best.get('套装约束', '-')}。代表分支搭配：{loadout}。"
     )

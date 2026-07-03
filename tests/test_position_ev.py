@@ -180,6 +180,62 @@ def _tiny_exact_context():
     return game, character, probability_model, inventory
 
 
+def _tiny_six_exact_context():
+    positions = [
+        PositionRule(id=index, name=f"{index}号位", main_stats=[f"main{index}"])
+        for index in range(1, 7)
+    ]
+    game = GameRules(
+        id="tiny_six",
+        name="Tiny Six",
+        gear_name="Disk",
+        sets=["A"],
+        positions=positions,
+        sub_stats=["a", "b", "c", "d"],
+        main_stat_probabilities={
+            str(index): {f"main{index}": 1.0}
+            for index in range(1, 7)
+        },
+        sub_stat_probabilities={"a": 1.0, "b": 1.0, "c": 1.0, "d": 1.0},
+        enhancement=EnhancementRule(max_level=0, step=3, initial_add_level=3),
+    )
+    character = CharacterPreset(
+        id="tiny_six_char",
+        game="tiny_six",
+        name="Tiny Six Char",
+        target_set="A",
+        substat_priority=SubstatPriority(core=["a", "b", "c", "d"], usable=[]),
+        preferred_main_stats={
+            str(index): [f"main{index}"]
+            for index in range(1, 7)
+        },
+        set_plans=[
+            SetPlan(
+                id="a6",
+                name="A 6",
+                requirements=[SetRequirement(set_name="A", pieces=6)],
+            )
+        ],
+        default_set_plan="a6",
+    )
+    probability_model = ProbabilityModel(
+        id="tiny_six_prob",
+        game="tiny_six",
+        name="Tiny six deterministic",
+        target_set_probability=1.0,
+        initial_substat_count_probabilities={"3": 0.0, "4": 1.0},
+        resource_costs={
+            "mother_disk_random_position_attempt": 1.0,
+            "mother_disk_fixed_position_attempt": 1.0,
+        },
+    )
+    inventory = [
+        GearPiece(position=index, set_name="A", main_stat=f"main{index}", level=0, substats=[])
+        for index in range(1, 7)
+    ]
+    return game, character, probability_model, inventory
+
+
 def _tiny_lock_context():
     game = GameRules(
         id="tiny_lock",
@@ -371,7 +427,7 @@ def test_random_and_fixed_position_gain_resolve_best_combo_actions():
 
 
 def test_horizon_two_random_action_row_is_marked_as_mixed_not_representative():
-    game, character, probability_model, inventory = _tiny_exact_context()
+    game, character, probability_model, inventory = _tiny_six_exact_context()
     analysis = analyse_current_gear(inventory, game, character)
 
     rows = position_strategy_efficiency_rows(
@@ -384,15 +440,95 @@ def test_horizon_two_random_action_row_is_marked_as_mixed_not_representative():
     random_row = next(row for row in rows if row["策略"] == "随机位置")
 
     assert "概率混合" in random_row["代表路径"]
-    assert "只推荐第一步" in random_row["代表路径"]
-    assert random_row["预期搭配"] == "混合期望，不存在唯一典型搭配"
-    assert random_row["互补位"] == "请查看同目标套装 1-6 固定位置行作为拆解"
+    assert "条件策略" in random_row["代表路径"]
+    assert random_row["方案类型"] == "条件策略"
+    assert random_row["预期搭配"] == "混合结果，不存在唯一典型搭配"
+    assert random_row["代表分支搭配"] == "混合结果，不存在唯一典型搭配"
+    assert random_row["互补位"] == "请查看 H=2 方案条件分支；固定位置行可辅助审计"
     assert random_row["_representative_loadout_rows"] == []
-    assert random_row["套装约束"] == "混合动作：固定位置行分别验算套装硬约束"
+    assert random_row["套装约束"] == "混合动作：每个条件分支分别验算套装硬约束"
     assert random_row["比较口径"] == "随机混合：1-6 固定位置按概率加权；不是单一代表搭配"
+    branches = random_row["条件分支"]
+    assert len(branches) == 6
+    assert {branch["条件"] for branch in branches} == {f"第1步命中 {index}号位" for index in range(1, 7)}
+    assert all(branch["条件概率"] == pytest.approx(1 / 6) for branch in branches)
+    for branch in branches:
+        assert {
+            "条件",
+            "条件概率",
+            "代表新盘",
+            "第二步 action",
+            "第二步原因",
+            "代表最终搭配",
+            "套装约束",
+        }.issubset(branch)
+        assert "exact horizon=1 lookahead" in branch["第二步原因"] or "未找到正提升" in branch["第二步原因"]
 
     fixed_row = next(row for row in rows if row["策略"] == "固定位置")
+    assert fixed_row["方案类型"] == "代表路径"
+    assert fixed_row["代表路径说明"] == "代表路径仅用于审计；真实 H=2 EV 已对所有 outcome 加权。"
+    assert fixed_row["_representative_loadout_rows"]
     assert "第1步" in fixed_row["代表路径"]
+
+
+def test_horizon_one_action_rows_are_single_step_explanations():
+    game, character, probability_model, inventory = _tiny_exact_context()
+    analysis = analyse_current_gear(inventory, game, character)
+
+    rows = position_strategy_efficiency_rows(
+        game,
+        character,
+        probability_model,
+        analysis,
+        horizon=1,
+    )
+
+    assert rows
+    assert {row["方案类型"] for row in rows} == {"单步"}
+    assert all(row["第二步策略摘要"] == "-" for row in rows)
+    assert all(row["条件分支"] == [] for row in rows)
+
+
+def test_random_horizon_two_condition_followup_uses_exact_helper(monkeypatch):
+    game, character, probability_model, inventory = _tiny_six_exact_context()
+    inventory_rows = inventory_rows_from_pieces(
+        inventory,
+        game,
+        character,
+        current_count=len(inventory),
+    )
+    sentinel = ActionSpec("固定位置", "A", ("A",), 6)
+    calls = []
+
+    def fake_best_followup_spec(
+        _inventory,
+        _game,
+        _character,
+        _probability_model,
+        horizon,
+        _memo,
+        _quality_cache,
+    ):
+        calls.append(horizon)
+        return sentinel
+
+    monkeypatch.setattr(position_ev, "_best_followup_spec", fake_best_followup_spec)
+
+    branches = position_ev._random_position_condition_branches(
+        inventory_rows,
+        game,
+        character,
+        probability_model,
+        ActionSpec("随机位置", "A", ("A",), None),
+        2,
+        {},
+        {},
+    )
+
+    assert calls == [1] * 6
+    assert len(branches) == 6
+    assert all(branch["第二步 action"] == "固定位置 / A / 6号位" for branch in branches)
+    assert all("exact horizon=1 lookahead" in branch["第二步原因"] for branch in branches)
 
 
 def test_single_action_plan_status_uses_inventory_complement_for_four_plus_two():
@@ -1039,6 +1175,45 @@ def test_recommended_action_ev_row_only_promotes_fixed_when_it_beats_random():
     rows[-1]["相对随机"] = "锁主属性已优于固定位置；优于锁主属性，才建议锁副属性"
 
     assert recommended_action_ev_row(rows)["策略"] == "固定位置 + 固定主属性 + 固定副属性"
+
+
+def test_action_plan_explain_fields_do_not_affect_recommendation_sorting():
+    rows = [
+        {
+            "策略": "随机位置",
+            "目标套装": "A",
+            "位置": "1-6 随机",
+            "质量/母盘": 0.01,
+            "有效/母盘": 0.01,
+            "_sort_vector": (0.01, 0.01),
+            "相对随机": "基准",
+            "套装约束": "满足A 6",
+            "方案类型": "条件策略",
+            "第二步策略摘要": "旧摘要",
+            "条件分支": [],
+        },
+        {
+            "策略": "固定位置",
+            "目标套装": "A",
+            "位置": "6号位",
+            "质量/母盘": 0.02,
+            "有效/母盘": 0.02,
+            "_sort_vector": (0.02, 0.02),
+            "相对随机": "优于随机，才建议固定",
+            "套装约束": "满足A 6",
+            "方案类型": "代表路径",
+            "第二步策略摘要": "旧摘要",
+            "条件分支": [],
+        },
+    ]
+
+    assert recommended_action_ev_row(rows) is rows[1]
+
+    rows[0]["方案类型"] = "看起来很强"
+    rows[0]["第二步策略摘要"] = "不应影响排序"
+    rows[0]["条件分支"] = [{"第二步 action": "伪造高收益"}]
+
+    assert recommended_action_ev_row(rows) is rows[1]
 
 
 def test_fixed_main_gain_ladder_starts_from_current_weakest_position():
