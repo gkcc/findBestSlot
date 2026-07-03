@@ -498,6 +498,137 @@ def inventory_rows_from_pieces(
     return _normalise_inventory_rows(rows, game, character)
 
 
+@dataclass
+class EvState:
+    rows: tuple[dict, ...]
+    signature: tuple[tuple, ...]
+    locked_positions: tuple[str, ...]
+    upgrade_source_ids: tuple[str, ...]
+
+    @classmethod
+    def from_inventory(
+        cls,
+        inventory: Sequence[GearPiece | dict],
+        game: GameRules,
+        character: CharacterPreset,
+        current_count: int = 0,
+        include_upgrade_expectation: bool = False,
+    ) -> "EvState":
+        return cls.from_rows(
+            _coerce_inventory_rows(
+                inventory,
+                game,
+                character,
+                current_count=current_count,
+                include_upgrade_expectation=include_upgrade_expectation,
+            ),
+            game,
+            character,
+        )
+
+    @classmethod
+    def from_rows(
+        cls,
+        rows: Sequence[dict],
+        game: GameRules,
+        character: CharacterPreset,
+    ) -> "EvState":
+        normalised = tuple(_normalise_inventory_rows([dict(row) for row in rows], game, character))
+        locked_positions = tuple(
+            sorted(
+                {
+                    position_key(row["position"])
+                    for row in normalised
+                    if row.get("locked") and row.get("source") == _SOURCE_CURRENT
+                }
+            )
+        )
+        upgrade_source_ids = tuple(
+            sorted(
+                str(row.get("_inventory_id"))
+                for row in normalised
+                if _is_upgrade_source(row, game) and row.get("_inventory_id")
+            )
+        )
+        return cls(
+            rows=normalised,
+            signature=_inventory_signature(list(normalised)),
+            locked_positions=locked_positions,
+            upgrade_source_ids=upgrade_source_ids,
+        )
+
+    def to_inventory_rows(self) -> list[dict]:
+        return [dict(row) for row in self.rows]
+
+    def best_loadout_value(
+        self,
+        game: GameRules,
+        character: CharacterPreset,
+    ) -> tuple[float, ...]:
+        return _best_combo_value(self.to_inventory_rows(), game, character)
+
+    def best_loadout_rows(
+        self,
+        game: GameRules,
+        character: CharacterPreset,
+    ) -> tuple[dict, ...]:
+        return _best_combo_rows(self.to_inventory_rows(), game, character)
+
+    def best_by_position_set(self, game: GameRules) -> dict[tuple[str, str], dict]:
+        best: dict[tuple[str, str], dict] = {}
+        for row in self.rows:
+            if not _is_loadout_candidate(row, game):
+                continue
+            position = position_key(row["position"])
+            if position in self.locked_positions and not (
+                row.get("locked") and row.get("source") == _SOURCE_CURRENT
+            ):
+                continue
+            key = (position, str(row["set_name"]))
+            current = best.get(key)
+            if current is None or _piece_contribution_key(row) > _piece_contribution_key(current):
+                best[key] = row
+        return best
+
+    def with_candidate_row(
+        self,
+        candidate_row: dict,
+        game: GameRules,
+        character: CharacterPreset,
+    ) -> "EvState":
+        candidate = dict(candidate_row)
+        candidate.setdefault("source", _SOURCE_OUTCOME)
+        position = position_key(candidate["position"])
+        if position in self.locked_positions:
+            return self
+
+        key = (position, str(candidate["set_name"]))
+        current = self.best_by_position_set(game).get(key)
+        if current is not None and _piece_contribution_key(current) >= _piece_contribution_key(candidate):
+            return self
+        return EvState.from_rows([*self.rows, candidate], game, character)
+
+    def with_replaced_upgrade_source(
+        self,
+        inventory_id: str,
+        next_row: dict,
+        game: GameRules,
+        character: CharacterPreset,
+    ) -> "EvState":
+        replaced = False
+        rows: list[dict] = []
+        for row in self.rows:
+            if row.get("_inventory_id") == inventory_id and not replaced:
+                rows.append(dict(next_row))
+                replaced = True
+            else:
+                rows.append(dict(row))
+        if not replaced:
+            rows.append(dict(next_row))
+        next_state = EvState.from_rows(rows, game, character)
+        return self if next_state.signature == self.signature else next_state
+
+
 def _quality_from_roll_state(
     state: tuple[tuple[str, int], ...],
     character: CharacterPreset,
