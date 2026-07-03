@@ -183,10 +183,19 @@ def test_optimizer_window_constructs_key_pyside6_components(monkeypatch, tmp_pat
         assert window.result_tabs.tabText(1) == "代表搭配"
         assert window.result_tabs.tabText(2) == "运行日志"
         assert not window.log.isVisible()
+        assert not window.cancel_action_button.isEnabled()
+        window.horizon_combo.setCurrentIndex(1)
+        assert "完整概率分布精确计算" in window.horizon_note_label.text()
+        assert "可取消" in window.horizon_note_label.text()
+        window._on_action_progress({"event": "unit_progress", "completed": 50, "total": 100})
+        assert window.progress_bar.value() == 0
+        window._render_action_progress(window._last_action_progress_payload)
+        assert window.progress_bar.value() == 50
         for method in [
             "confirm_current",
             "run_best_loadout",
             "run_action_ev",
+            "cancel_action_ev",
             "edit_current_piece",
             "edit_inventory_piece",
         ]:

@@ -997,6 +997,8 @@ def _aggregated_action_outcomes_for_spec(
     probability_model: ProbabilityModel,
     spec: ActionSpec,
     quality_cache: dict[tuple[str, tuple[str, ...]], list[tuple[float, tuple[float, ...], float]]] | None = None,
+    progress_callback: ProgressCallback | None = None,
+    progress_depth: int = 0,
 ) -> list[tuple[list[dict], float]]:
     key = (
         game.id,
@@ -1007,6 +1009,11 @@ def _aggregated_action_outcomes_for_spec(
     )
     cached = _AGGREGATED_ACTION_OUTCOME_CACHE.get(key)
     if cached is not None:
+        _emit_progress(
+            progress_callback,
+            "aggregated_outcome_cache_hit",
+            depth=progress_depth,
+        )
         return cached
     outcomes = _aggregate_inventory_outcomes(
         _action_outcome_distribution(
@@ -1021,6 +1028,11 @@ def _aggregated_action_outcomes_for_spec(
         character,
     )
     _AGGREGATED_ACTION_OUTCOME_CACHE[key] = outcomes
+    _emit_progress(
+        progress_callback,
+        "aggregated_outcome_cache_miss",
+        depth=progress_depth,
+    )
     return outcomes
 
 
@@ -1784,6 +1796,8 @@ def _expected_action_value(
         probability_model,
         spec,
         quality_cache=quality_cache,
+        progress_callback=progress_callback,
+        progress_depth=progress_depth,
     )
     outcome_total = len(outcomes)
     _emit_progress(
@@ -2774,6 +2788,8 @@ def position_strategy_efficiency_rows(
     dp_states = 0
     dp_steps = 0
     memo_hits = 0
+    aggregated_outcome_cache_hits = 0
+    aggregated_outcome_cache_misses = 0
 
     _emit_progress(
         progress_callback,
@@ -2783,6 +2799,8 @@ def position_strategy_efficiency_rows(
         total=total_units,
         label=f"准备计算 {len(specs)} 个基础 action",
         dp_steps=dp_steps,
+        aggregated_outcome_cache_hits=aggregated_outcome_cache_hits,
+        aggregated_outcome_cache_misses=aggregated_outcome_cache_misses,
     )
 
     def run_action_value(
@@ -2792,6 +2810,7 @@ def position_strategy_efficiency_rows(
         unit_horizon: int,
     ) -> tuple[float, ...]:
         nonlocal completed_units, dp_states, dp_steps, memo_hits
+        nonlocal aggregated_outcome_cache_hits, aggregated_outcome_cache_misses
 
         action_label = _action_progress_label(spec, game)
         _emit_progress(
@@ -2807,10 +2826,13 @@ def position_strategy_efficiency_rows(
             dp_states=dp_states,
             dp_steps=dp_steps,
             memo_hits=memo_hits,
+            aggregated_outcome_cache_hits=aggregated_outcome_cache_hits,
+            aggregated_outcome_cache_misses=aggregated_outcome_cache_misses,
         )
 
         def unit_progress(event: dict[str, object]) -> None:
             nonlocal dp_states, dp_steps, memo_hits
+            nonlocal aggregated_outcome_cache_hits, aggregated_outcome_cache_misses
             event_name = str(event.get("event", ""))
             depth = int(event.get("depth") or 0)
             if event_name == "state_done":
@@ -2819,6 +2841,10 @@ def position_strategy_efficiency_rows(
                 dp_steps += 1
             if event_name == "memo_hit":
                 memo_hits += 1
+            if event_name == "aggregated_outcome_cache_hit":
+                aggregated_outcome_cache_hits += 1
+            elif event_name == "aggregated_outcome_cache_miss":
+                aggregated_outcome_cache_misses += 1
 
             completed = completed_units
             if event_name == "outcome_done" and depth == 0:
@@ -2839,6 +2865,8 @@ def position_strategy_efficiency_rows(
                 dp_states=dp_states,
                 dp_steps=dp_steps,
                 memo_hits=memo_hits,
+                aggregated_outcome_cache_hits=aggregated_outcome_cache_hits,
+                aggregated_outcome_cache_misses=aggregated_outcome_cache_misses,
                 inner_event=event_name,
                 inner_depth=depth,
                 inner_horizon=event.get("horizon"),
@@ -2873,6 +2901,8 @@ def position_strategy_efficiency_rows(
             dp_states=dp_states,
             dp_steps=dp_steps,
             memo_hits=memo_hits,
+            aggregated_outcome_cache_hits=aggregated_outcome_cache_hits,
+            aggregated_outcome_cache_misses=aggregated_outcome_cache_misses,
         )
         return value
 
@@ -3021,6 +3051,8 @@ def position_strategy_efficiency_rows(
             dp_states=dp_states,
             dp_steps=dp_steps,
             memo_hits=memo_hits,
+            aggregated_outcome_cache_hits=aggregated_outcome_cache_hits,
+            aggregated_outcome_cache_misses=aggregated_outcome_cache_misses,
         )
         for spec_index, spec in enumerate(fixed_main_specs, start=len(base_specs) + 1):
             row = append_row(spec, spec_index)
@@ -3047,6 +3079,8 @@ def position_strategy_efficiency_rows(
             dp_states=dp_states,
             dp_steps=dp_steps,
             memo_hits=memo_hits,
+            aggregated_outcome_cache_hits=aggregated_outcome_cache_hits,
+            aggregated_outcome_cache_misses=aggregated_outcome_cache_misses,
         )
         for spec_index, spec in enumerate(
             fixed_substat_specs,
@@ -3065,6 +3099,8 @@ def position_strategy_efficiency_rows(
         dp_states=dp_states,
         dp_steps=dp_steps,
         memo_hits=memo_hits,
+        aggregated_outcome_cache_hits=aggregated_outcome_cache_hits,
+        aggregated_outcome_cache_misses=aggregated_outcome_cache_misses,
     )
     return rows
 

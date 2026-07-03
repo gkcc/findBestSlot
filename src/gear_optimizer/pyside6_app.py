@@ -3,12 +3,16 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
+from pathlib import Path
 import sys
+import tempfile
 import time
 import traceback
 from typing import Any
+import uuid
 
-from PySide6.QtCore import QObject, QThread, QTimer, Qt, Signal, Slot
+from PySide6.QtCore import QObject, QProcess, QProcessEnvironment, QThread, QTimer, Qt, Signal, Slot
 from PySide6.QtWidgets import (
     QApplication,
     QAbstractItemView,
@@ -39,6 +43,7 @@ from PySide6.QtWidgets import (
 )
 
 from gear_optimizer.game_rules import (
+    PROJECT_ROOT,
     load_characters,
     load_games,
     load_probability_models,
@@ -854,12 +859,21 @@ class OptimizerWindow(QMainWindow):
         self._last_main_metric_summary = "-"
         self._worker_thread: QThread | None = None
         self._worker: ActionEvWorker | None = None
+        self._action_process: QProcess | None = None
+        self._action_process_cancel_requested = False
+        self._action_run_dir: str | None = None
+        self._action_input_path: str | None = None
+        self._action_output_path: str | None = None
+        self._action_progress_path: str | None = None
+        self._action_error_path: str | None = None
+        self._action_summary_path: str | None = None
+        self._action_progress_offset = 0
         self._action_progress_started_at: float | None = None
         self._action_progress_percent = 0
         self._last_action_progress_payload: dict[str, Any] = {}
         self._last_action_progress_seen_at: float | None = None
         self._progress_timer = QTimer(self)
-        self._progress_timer.setInterval(1000)
+        self._progress_timer.setInterval(400)
         self._progress_timer.timeout.connect(self._refresh_action_progress_clock)
 
         self.game_combo = QComboBox()
@@ -895,7 +909,11 @@ class OptimizerWindow(QMainWindow):
         self.inventory_detail_label.setWordWrap(True)
         self.best_button = QPushButton("计算当前最优搭配")
         self.action_button = QPushButton("计算调律建议")
+        self.cancel_action_button = QPushButton("取消计算")
+        self.cancel_action_button.setEnabled(False)
         self.horizon_combo = QComboBox()
+        self.horizon_note_label = QLabel("horizon=1 为完整概率分布精确计算。")
+        self.horizon_note_label.setWordWrap(True)
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setTextVisible(True)
@@ -924,6 +942,7 @@ class OptimizerWindow(QMainWindow):
 
         self._build_ui()
         self._connect_signals()
+        self._update_horizon_note()
         self._load_games()
 
     def _build_ui(self) -> None:
@@ -1025,8 +1044,10 @@ class OptimizerWindow(QMainWindow):
         settings.addWidget(self.horizon_combo)
         settings.addWidget(self.best_button)
         settings.addWidget(self.action_button)
+        settings.addWidget(self.cancel_action_button)
         settings.addStretch(1)
         action_layout.addLayout(settings)
+        action_layout.addWidget(self.horizon_note_label)
         action_layout.addWidget(self.progress_label)
         action_layout.addWidget(self.progress_detail_label)
         action_layout.addWidget(self.progress_bar)
@@ -1086,6 +1107,8 @@ class OptimizerWindow(QMainWindow):
         self.save_inventory_button.clicked.connect(self.save_inventory)
         self.best_button.clicked.connect(self.run_best_loadout)
         self.action_button.clicked.connect(self.run_action_ev)
+        self.cancel_action_button.clicked.connect(self.cancel_action_ev)
+        self.horizon_combo.currentIndexChanged.connect(lambda _index: self._update_horizon_note())
 
     def _load_games(self) -> None:
         self.game_combo.blockSignals(True)
@@ -1397,11 +1420,23 @@ class OptimizerWindow(QMainWindow):
         self.log.setVisible(visible)
         self.log_toggle_button.setText("隐藏运行日志" if visible else "显示运行日志")
 
+    def _update_horizon_note(self) -> None:
+        horizon = int(self.horizon_combo.currentData() or 1)
+        if horizon == 2:
+            self.horizon_note_label.setText(
+                "horizon=2 为完整概率分布精确计算，可能耗时较长；计算期间可取消。"
+            )
+        else:
+            self.horizon_note_label.setText("horizon=1 为完整概率分布精确计算。")
+
     def _current_changed(self) -> None:
         self.current_confirmed_digest = None
         self._clear_results("当前装备已变化，请重新确认。")
         self._update_action_buttons()
         self._refresh_current_cards()
+
+    def _action_busy(self) -> bool:
+        return self._worker is not None or self._action_process is not None
 
     def _clear_results(self, message: str = "") -> None:
         self._results_stale = True
@@ -1411,7 +1446,7 @@ class OptimizerWindow(QMainWindow):
         self.action_table.setColumnCount(0)
         self.action_loadout_table.setRowCount(0)
         self.action_loadout_table.setColumnCount(0)
-        if self._worker is None:
+        if not self._action_busy():
             self._progress_timer.stop()
             self._action_progress_started_at = None
             self._action_progress_percent = 0
@@ -1530,6 +1565,10 @@ class OptimizerWindow(QMainWindow):
             detail_parts.append(f"DP状态 {payload['dp_states']}")
         if "memo_hits" in payload:
             detail_parts.append(f"缓存命中 {payload['memo_hits']}")
+        if "aggregated_outcome_cache_hits" in payload:
+            detail_parts.append(f"outcome缓存命中 {payload['aggregated_outcome_cache_hits']}")
+        if "aggregated_outcome_cache_misses" in payload:
+            detail_parts.append(f"outcome缓存展开 {payload['aggregated_outcome_cache_misses']}")
 
         if self._action_progress_started_at is not None:
             elapsed = now - self._action_progress_started_at
@@ -1541,21 +1580,26 @@ class OptimizerWindow(QMainWindow):
                 detail_parts.append("收尾中")
         if self._last_action_progress_seen_at is not None:
             stale_seconds = now - self._last_action_progress_seen_at
-            if stale_seconds >= 2:
+            if stale_seconds >= 30:
+                detail_parts.append("仍在精确计算，可取消；这不代表程序卡死。")
+            elif stale_seconds >= 2:
                 detail_parts.append(f"最近进度 {_format_duration(stale_seconds)} 前")
         self.progress_detail_label.setText(" | ".join(detail_parts))
 
     def _refresh_action_progress_clock(self) -> None:
-        if self._worker is None:
+        self._poll_action_process_progress()
+        if not self._action_busy():
             self._progress_timer.stop()
             return
         payload = self._last_action_progress_payload or {"label": "正在等待计算进度"}
         self._render_action_progress(payload)
 
     def _update_action_buttons(self, busy: bool = False) -> None:
+        busy = busy or self._action_busy()
         enabled = self.current_confirmed_digest is not None and not busy
         self.best_button.setEnabled(enabled)
         self.action_button.setEnabled(enabled)
+        self.cancel_action_button.setEnabled(self._action_process is not None)
         self.confirm_button.setEnabled(not busy)
         self.add_inventory_button.setEnabled(not busy)
         self.delete_inventory_button.setEnabled(not busy)
@@ -1652,6 +1696,194 @@ class OptimizerWindow(QMainWindow):
             return False
         return True
 
+    def _restore_worker_value(self, value: Any) -> Any:
+        if isinstance(value, dict):
+            if "__gear_piece__" in value:
+                return GearPiece.model_validate(value["__gear_piece__"])
+            return {key: self._restore_worker_value(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [self._restore_worker_value(item) for item in value]
+        return value
+
+    def _worker_rows_from_output(self) -> list[dict[str, Any]]:
+        if not self._action_output_path:
+            return []
+        payload = json.loads(Path(self._action_output_path).read_text(encoding="utf-8-sig"))
+        rows = payload.get("rows", [])
+        if not isinstance(rows, list):
+            raise ValueError("worker output rows must be a list")
+        return [self._restore_worker_value(row) for row in rows]
+
+    def _worker_error_text(self) -> str:
+        if not self._action_error_path or not Path(self._action_error_path).exists():
+            return "Action EV worker failed without writing an error file."
+        payload = json.loads(Path(self._action_error_path).read_text(encoding="utf-8-sig"))
+        traceback_text = str(payload.get("traceback") or "")
+        message = str(payload.get("message") or "Action EV worker failed.")
+        return traceback_text or message
+
+    def _poll_action_process_progress(self) -> None:
+        if not self._action_progress_path:
+            return
+        path = Path(self._action_progress_path)
+        if not path.exists():
+            return
+        with path.open("r", encoding="utf-8") as handle:
+            handle.seek(self._action_progress_offset)
+            for line in handle:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    payload = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(payload, dict):
+                    self._last_action_progress_payload = payload
+                    self._last_action_progress_seen_at = time.monotonic()
+            self._action_progress_offset = handle.tell()
+
+    def _action_process_environment(self) -> QProcessEnvironment:
+        env = QProcessEnvironment.systemEnvironment()
+        existing = env.value("PYTHONPATH", "")
+        src_path = str(PROJECT_ROOT / "src")
+        env.insert("PYTHONPATH", src_path if not existing else f"{src_path}{os.pathsep}{existing}")
+        env.insert("PYTHONIOENCODING", "utf-8")
+        return env
+
+    def _start_action_ev_process(
+        self,
+        current_pieces: list[GearPiece],
+        inventory_pieces: list[GearPiece],
+        horizon: int,
+    ) -> None:
+        run_id = uuid.uuid4().hex
+        run_dir = Path(tempfile.mkdtemp(prefix=f"gear-action-ev-{run_id[:8]}-"))
+        input_path = run_dir / "input.json"
+        output_path = run_dir / "result.json"
+        progress_path = run_dir / "progress.jsonl"
+        error_path = run_dir / "error.json"
+        summary_path = run_dir / "summary.json"
+        payload = {
+            "run_id": run_id,
+            "game_id": self.selected_game().id,
+            "character_id": self.selected_character().id,
+            "probability_model_id": self.selected_probability_model().id,
+            "current_pieces": [_model_payload(piece) for piece in current_pieces],
+            "inventory_pieces": [_model_payload(piece) for piece in inventory_pieces],
+            "horizon": horizon,
+        }
+        input_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        process = QProcess(self)
+        process.setProgram(sys.executable)
+        process.setArguments(
+            [
+                "-m",
+                "gear_optimizer.action_ev_worker",
+                "--input",
+                str(input_path),
+                "--output",
+                str(output_path),
+                "--progress",
+                str(progress_path),
+                "--error",
+                str(error_path),
+                "--summary",
+                str(summary_path),
+            ]
+        )
+        process.setProcessEnvironment(self._action_process_environment())
+        process.setWorkingDirectory(str(PROJECT_ROOT))
+        process.readyReadStandardError.connect(self._append_action_process_stderr)
+        process.readyReadStandardOutput.connect(self._append_action_process_stdout)
+        process.finished.connect(self._on_action_process_finished)
+        process.errorOccurred.connect(self._on_action_process_error)
+
+        self._action_process = process
+        self._action_process_cancel_requested = False
+        self._action_run_dir = str(run_dir)
+        self._action_input_path = str(input_path)
+        self._action_output_path = str(output_path)
+        self._action_progress_path = str(progress_path)
+        self._action_error_path = str(error_path)
+        self._action_summary_path = str(summary_path)
+        self._action_progress_offset = 0
+        self._start_action_progress()
+        self.progress_detail_label.setText(
+            "horizon=2 正在子进程中精确计算；主窗口可继续切换 Tab，也可取消。"
+        )
+        self._update_action_buttons(busy=True)
+        process.start()
+
+    def _on_action_process_error(self, error: QProcess.ProcessError) -> None:
+        if self._action_process_cancel_requested:
+            return
+        self.log.append(f"Action EV worker process error: {error}")
+
+    def _append_action_process_stderr(self) -> None:
+        if self._action_process is None:
+            return
+        text = bytes(self._action_process.readAllStandardError()).decode("utf-8", errors="replace")
+        if text.strip():
+            self.log.append(text.strip())
+
+    def _append_action_process_stdout(self) -> None:
+        if self._action_process is None:
+            return
+        text = bytes(self._action_process.readAllStandardOutput()).decode("utf-8", errors="replace")
+        if text.strip():
+            self.log.append(text.strip())
+
+    def _clear_action_process_state(self) -> None:
+        self._action_process = None
+        self._action_process_cancel_requested = False
+
+    def cancel_action_ev(self) -> None:
+        if self._action_process is not None:
+            self._action_process_cancel_requested = True
+            self.progress_label.setText("正在取消 Action EV 计算。")
+            self.progress_detail_label.setText("用户取消，未生成新推荐。")
+            self.log.append("用户取消 Action EV 精确计算，未生成新推荐。")
+            self.log_toggle_button.setChecked(True)
+            self._action_process.terminate()
+            QTimer.singleShot(1500, self._kill_action_process_if_running)
+        elif self._worker_thread is not None:
+            self.log.append("当前 horizon=1 计算无法安全中断；请等待它完成。")
+
+    def _kill_action_process_if_running(self) -> None:
+        if self._action_process is not None and self._action_process.state() != QProcess.ProcessState.NotRunning:
+            self._action_process.kill()
+
+    def _on_action_process_finished(
+        self,
+        exit_code: int,
+        exit_status: QProcess.ExitStatus,
+    ) -> None:
+        self._poll_action_process_progress()
+        cancelled = self._action_process_cancel_requested
+        self._stop_action_progress()
+        self._clear_action_process_state()
+        if cancelled:
+            self.progress_label.setText("Action EV 计算已取消。")
+            self.progress_detail_label.setText("用户取消，未生成新推荐。")
+            self.result_recommend_title.setText("计算已取消")
+            self.result_recommend_detail.setText("用户取消，未生成新推荐；旧结果未被覆盖。")
+            self.log.append("Action EV worker 已停止：用户取消，未生成新推荐。")
+            self.log_toggle_button.setChecked(True)
+            self.result_tabs.setCurrentIndex(2)
+            self._update_action_buttons()
+            self._refresh_overview()
+            return
+        if exit_status != QProcess.ExitStatus.NormalExit or exit_code != 0:
+            self._on_action_failed(self._worker_error_text())
+            return
+        try:
+            rows = self._worker_rows_from_output()
+        except Exception:
+            self._on_action_failed(traceback.format_exc())
+            return
+        self._on_action_finished(rows)
+
     def run_best_loadout(self) -> None:
         current_pieces = self._collect_current_or_warn()
         if current_pieces is None or not self._ensure_current_still_confirmed(current_pieces):
@@ -1689,6 +1921,11 @@ class OptimizerWindow(QMainWindow):
         inventory_pieces = self._collect_inventory_or_warn()
         if inventory_pieces is None:
             return
+        horizon = int(self.horizon_combo.currentData() or 1)
+        if horizon == 2:
+            self._start_action_ev_process(current_pieces, inventory_pieces, horizon)
+            self.tabs.setCurrentIndex(3)
+            return
         self._update_action_buttons(busy=True)
         self._start_action_progress()
         self._worker_thread = QThread(self)
@@ -1698,7 +1935,7 @@ class OptimizerWindow(QMainWindow):
             self.selected_probability_model(),
             current_pieces,
             inventory_pieces,
-            int(self.horizon_combo.currentData()),
+            horizon,
         )
         self._worker.moveToThread(self._worker_thread)
         self._worker_thread.started.connect(self._worker.run)
@@ -1715,7 +1952,6 @@ class OptimizerWindow(QMainWindow):
     def _on_action_progress(self, payload: dict) -> None:
         self._last_action_progress_payload = dict(payload)
         self._last_action_progress_seen_at = time.monotonic()
-        self._render_action_progress(self._last_action_progress_payload)
 
     def _on_action_finished(self, rows: list[dict]) -> None:
         self._stop_action_progress()
