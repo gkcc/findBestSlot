@@ -15,7 +15,8 @@ Generated: 2026-07-03
 - `horizon=2` runs via `QProcess` using `python -m gear_optimizer.action_ev_worker`. This gives process isolation, cancellability, and prevents the main PySide6 process from being blocked by long exact calculations.
 - The worker writes final rows only after exact completion. Progress is JSONL, errors are traceback JSON, and run summary is JSON.
 - Cancel terminates/kills the worker process and does not publish partial recommendations.
-- Current implementation does not yet use a process pool or multi-core parallel top-level action execution. That is reserved for the later parallelism phase after state transition DP is stable.
+- A process-pool action-value helper and profiling entrypoint now exist for exact state-DP action evaluation. They are optional and diagnostic-only for now because the current small sample profile shows process startup/serialization overhead exceeding the benefit.
+- `GEAR_OPTIMIZER_WORKERS` can override worker count for the process-pool helper/profile path. The PySide6 default recommendation path does not enable that process pool yet.
 
 ## Progress Model
 
@@ -26,5 +27,5 @@ Generated: 2026-07-03
 
 ## Known Next Concurrency Work
 
-- Implement state-compressed EV transitions so `horizon=2` spends less time reconstructing full inventory list/dict states.
-- Add exact process-pool parallelism only after the transition cache structure is stable and equivalence tests prove single-process state DP results.
+- Manually profile a real large `horizon=2` inventory with the state-DP engine before deciding whether to make it the desktop default.
+- If large profiles show a win, expose a UI worker-count control and route worker runs through the exact process-pool path.

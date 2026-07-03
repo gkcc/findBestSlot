@@ -47,7 +47,7 @@ Results:
 
 - `tests\test_ev_state.py`: 10 passed.
 - `tests\test_position_ev.py`: 26 passed.
-- Full suite: 233 passed.
+- Full suite after state-DP progress/profile and optional process-pool work: 238 passed.
 
 ## Current Default
 
@@ -74,10 +74,11 @@ Result:
 - outcome_count: 2886
 - state_transition_cache_misses: 14
 
-On this small example, state DP is not yet materially faster than the inventory-recursive path. It is therefore kept as an explicit engine switch while transition profiling and parallelism work continue.
+On this small example, state DP is not yet materially faster than the inventory-recursive path. It is therefore kept as an explicit engine switch while larger `horizon=2` profiling remains manual.
 
-## Next Work
+## Follow-Up Status
 
-- Add state-DP progress events and transition cache hit/miss diagnostics.
-- Re-run profile with `use_state_dp=True`.
-- Decide whether to make state DP the default for worker runs after progress parity is in place.
+- State-DP progress events and transition cache hit/miss diagnostics were added.
+- The `--state-dp` profile command was run and wrote `reports/action_ev_profile_state_dp.json` plus `reports/action_ev_profile_state_dp_summary.md`.
+- Optional process-pool action-value profiling was added and documented in `reports/action_ev_parallel_profile.md`.
+- Remaining decision: make state DP and/or process-pool execution the desktop default only after a real large `horizon=2` profile shows a clear win.

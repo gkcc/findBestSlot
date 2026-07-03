@@ -65,11 +65,21 @@ horizon=2 的精确 Action EV 通过 worker 子进程运行：
 python -m gear_optimizer.action_ev_worker --help
 ```
 
+算法侧还有一条显式的 state-transition DP 路径：`position_strategy_efficiency_rows(..., use_state_dp=True)`。它把库存压缩成 `EvState`，用 state signature、transition cache 和 `Best(state)` count-state DP 做严格等价计算；当前测试已覆盖 horizon=1/2 与旧 inventory-recursive 精确路径一致。因为小样本 profile 没有明显快于默认路径，桌面推荐仍默认使用旧精确引擎，state DP 作为可审计/可 profile 的显式开关保留。
+
 性能诊断工具会输出 JSON 和 Markdown 摘要；horizon=2 profile 属于手动重型命令，不默认纳入 CI：
 
 ```powershell
 python -m gear_optimizer.profile_action_ev --horizon 1 --output reports\action_ev_profile.json --summary reports\action_ev_profile_summary.md
+python -m gear_optimizer.profile_action_ev --horizon 1 --state-dp --output reports\action_ev_profile_state_dp.json --summary reports\action_ev_profile_state_dp_summary.md
 python -m gear_optimizer.profile_action_ev --horizon 2 --output reports\action_ev_profile_h2.json --summary reports\action_ev_profile_h2_summary.md
+```
+
+已实现可选的进程池 action-value 计算核心和 profile 命令，用于验证多核并行口径。`GEAR_OPTIMIZER_WORKERS` 可覆盖 worker 数；当前小样本 profile 中 `workers=2` 慢于 `workers=1`，所以并行路径保留为显式诊断能力，不作为桌面默认推荐路径。
+
+```powershell
+$env:GEAR_OPTIMIZER_WORKERS = "4"
+python -m gear_optimizer.profile_parallel_action_ev --horizon 1 --action-limit 4 --workers 1,2 --output reports\action_ev_parallel_profile.md
 ```
 
 桌面导入级 smoke 可显式运行：
