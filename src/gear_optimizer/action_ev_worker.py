@@ -4,6 +4,7 @@ import argparse
 from collections.abc import Callable
 from datetime import datetime, timezone
 import json
+import os
 from pathlib import Path
 import time
 import traceback
@@ -15,6 +16,10 @@ from gear_optimizer.position_ev import position_strategy_efficiency_rows
 from gear_optimizer.scoring import analyse_current_gear
 
 ProgressCallback = Callable[[dict[str, object]], None]
+ACTION_EV_ENGINE_ENV = "GEAR_OPTIMIZER_ACTION_EV_ENGINE"
+DEFAULT_ACTION_EV_ENGINE = "inventory_recursive"
+ACTION_EV_ENGINES = {"inventory_recursive", "state_dp"}
+WORKER_EXECUTION_MODE = "worker_process"
 IMMEDIATE_PROGRESS_EVENTS = {
     "start",
     "cache_hit",
@@ -25,6 +30,25 @@ IMMEDIATE_PROGRESS_EVENTS = {
     "failed",
     "cancelled",
 }
+
+
+def normalize_action_ev_engine(value: object | None) -> str:
+    engine = str(value or DEFAULT_ACTION_EV_ENGINE).strip().lower()
+    if not engine:
+        engine = DEFAULT_ACTION_EV_ENGINE
+    if engine not in ACTION_EV_ENGINES:
+        allowed = ", ".join(sorted(ACTION_EV_ENGINES))
+        raise ValueError(f"Unknown Action EV engine: {engine}. Available: {allowed}")
+    return engine
+
+
+def action_ev_engine_from_payload(payload: dict[str, Any]) -> str:
+    override = os.environ.get(ACTION_EV_ENGINE_ENV)
+    return normalize_action_ev_engine(override if override not in (None, "") else payload.get("engine"))
+
+
+def action_ev_uses_state_dp(engine: str) -> bool:
+    return normalize_action_ev_engine(engine) == "state_dp"
 
 
 def _utc_now() -> str:
@@ -107,7 +131,9 @@ class ProgressJsonlWriter:
 def build_action_ev_rows_from_payload(
     payload: dict[str, Any],
     progress_callback: ProgressCallback | None = None,
+    engine: str | None = None,
 ) -> list[dict[str, Any]]:
+    resolved_engine = normalize_action_ev_engine(engine) if engine else action_ev_engine_from_payload(payload)
     game = load_game(str(payload["game_id"]))
     character = _pick_by_id(
         load_characters(game.id),
@@ -137,6 +163,7 @@ def build_action_ev_rows_from_payload(
         inventory_pieces=[*current_pieces, *inventory_pieces],
         horizon=horizon,
         progress_callback=progress_callback,
+        use_state_dp=action_ev_uses_state_dp(resolved_engine),
     )
 
 
@@ -162,30 +189,53 @@ def main(argv: list[str] | None = None) -> int:
     started_monotonic = time.monotonic()
     payload = _read_json(args.input)
     run_id = str(payload.get("run_id") or Path(args.input).stem)
+    raw_engine = os.environ.get(ACTION_EV_ENGINE_ENV) or payload.get("engine") or DEFAULT_ACTION_EV_ENGINE
     summary_base = {
         "run_id": run_id,
         "input": str(args.input),
         "output": str(args.output),
         "progress": str(args.progress),
         "error": str(args.error),
+        "engine": str(raw_engine),
+        "execution_mode": WORKER_EXECUTION_MODE,
         "started_at": started_wall,
         "horizon": int(payload.get("horizon") or 1),
     }
 
     try:
+        engine = action_ev_engine_from_payload(payload)
+        summary_base["engine"] = engine
         with ProgressJsonlWriter(
             args.progress,
             run_id,
             min_interval_seconds=max(args.progress_interval_ms, 0) / 1000.0,
         ) as progress:
-            progress.emit({"event": "worker_start", "label": "Action EV worker started"}, force=True)
-            rows = build_action_ev_rows_from_payload(payload, progress_callback=progress.emit)
+            progress.emit(
+                {
+                    "event": "worker_start",
+                    "label": "Action EV worker started",
+                    "engine": engine,
+                    "execution_mode": WORKER_EXECUTION_MODE,
+                },
+                force=True,
+            )
+            rows = build_action_ev_rows_from_payload(payload, progress_callback=progress.emit, engine=engine)
             serialised_rows = _jsonable(rows)
-            _write_json(args.output, {"run_id": run_id, "rows": serialised_rows})
+            _write_json(
+                args.output,
+                {
+                    "run_id": run_id,
+                    "engine": engine,
+                    "execution_mode": WORKER_EXECUTION_MODE,
+                    "rows": serialised_rows,
+                },
+            )
             progress.emit(
                 {
                     "event": "worker_done",
                     "label": "Action EV worker complete",
+                    "engine": engine,
+                    "execution_mode": WORKER_EXECUTION_MODE,
                     "rows": len(rows),
                 },
                 force=True,
@@ -208,6 +258,8 @@ def main(argv: list[str] | None = None) -> int:
             {
                 "run_id": run_id,
                 "status": "error",
+                "engine": summary_base["engine"],
+                "execution_mode": WORKER_EXECUTION_MODE,
                 "type": type(exc).__name__,
                 "message": str(exc),
                 "traceback": tb,

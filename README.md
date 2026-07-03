@@ -65,6 +65,15 @@ horizon=2 的精确 Action EV 通过 worker 子进程运行：
 python -m gear_optimizer.action_ev_worker --help
 ```
 
+worker payload 支持 `engine` 字段，合法值为 `inventory_recursive` 和 `state_dp`；缺省值始终是 `inventory_recursive`。也可以用环境变量覆盖：
+
+```powershell
+$env:GEAR_OPTIMIZER_ACTION_EV_ENGINE = "state_dp"
+python -m gear_optimizer.action_ev_worker --help
+```
+
+这只是显式诊断/对比开关，不会把 state DP 变成默认策略。桌面 UI 会在运行日志和结果卡中显示当前 engine 与执行方式；horizon=2 仍通过 QProcess worker 子进程运行，horizon=1 默认在 QThread 后台线程中运行。
+
 算法侧还有一条显式的 state-transition DP 路径：`position_strategy_efficiency_rows(..., use_state_dp=True)`。它把库存压缩成 `EvState`，用 state signature、transition cache 和 `Best(state)` count-state DP 做严格等价计算；当前测试已覆盖 horizon=1/2 与旧 inventory-recursive 精确路径一致。因为小样本 profile 没有明显快于默认路径，桌面推荐仍默认使用旧精确引擎，state DP 作为可审计/可 profile 的显式开关保留。
 
 性能诊断工具会输出 JSON 和 Markdown 摘要；horizon=2 profile 属于手动重型命令，不默认纳入 CI：
@@ -87,6 +96,8 @@ python -m gear_optimizer.profile_parallel_action_ev --horizon 1 --action-limit 4
 ```powershell
 python desktop_app.py --app-check
 ```
+
+worker 临时目录使用系统临时目录下的 `gear-action-ev-*` 文件夹，内部包含 `input.json`、`result.json`、`progress.jsonl`、`error.json` 和 `summary.json`。成功完成的 horizon=2 任务最多保留最近 3 次，便于短期追溯；失败或取消的目录会保留用于诊断。
 
 ## 验证
 

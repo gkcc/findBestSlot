@@ -1,5 +1,6 @@
 from collections import defaultdict
 from itertools import product
+import json
 
 import pytest
 
@@ -369,7 +370,7 @@ def test_random_and_fixed_position_gain_resolve_best_combo_actions():
     assert "代表新盘未进入" not in branch_slot6["互补位"]
 
 
-def test_horizon_two_action_rows_show_two_step_representative_path():
+def test_horizon_two_random_action_row_is_marked_as_mixed_not_representative():
     game, character, probability_model, inventory = _tiny_exact_context()
     analysis = analyse_current_gear(inventory, game, character)
 
@@ -382,10 +383,16 @@ def test_horizon_two_action_rows_show_two_step_representative_path():
     )
     random_row = next(row for row in rows if row["策略"] == "随机位置")
 
-    assert "第1步" in random_row["代表路径"]
-    assert "第2步" in random_row["代表路径"]
-    assert "A2" in random_row["预期搭配"]
-    assert random_row["套装约束"] == "满足A 2"
+    assert "概率混合" in random_row["代表路径"]
+    assert "只推荐第一步" in random_row["代表路径"]
+    assert random_row["预期搭配"] == "混合期望，不存在唯一典型搭配"
+    assert random_row["互补位"] == "请查看同目标套装 1-6 固定位置行作为拆解"
+    assert random_row["_representative_loadout_rows"] == []
+    assert random_row["套装约束"] == "混合动作：固定位置行分别验算套装硬约束"
+    assert random_row["比较口径"] == "随机混合：1-6 固定位置按概率加权；不是单一代表搭配"
+
+    fixed_row = next(row for row in rows if row["策略"] == "固定位置")
+    assert "第1步" in fixed_row["代表路径"]
 
 
 def test_single_action_plan_status_uses_inventory_complement_for_four_plus_two():
@@ -722,6 +729,76 @@ def test_aggregated_action_outcomes_cache_matches_manual_distribution(monkeypatc
         quality_cache=quality_cache,
     )
     assert second is cached
+
+
+def test_core_global_caches_enforce_lru_capacity_limits():
+    cache_specs = [
+        (position_ev._ACTION_EV_ROWS_CACHE, position_ev.ACTION_EV_ROWS_CACHE_MAX_SIZE, "action"),
+        (
+            position_ev._RESOURCE_MARGINAL_EV_ROWS_CACHE,
+            position_ev.RESOURCE_MARGINAL_EV_ROWS_CACHE_MAX_SIZE,
+            "resource",
+        ),
+        (position_ev._BEST_COMBO_VALUE_CACHE, position_ev.BEST_COMBO_VALUE_CACHE_MAX_SIZE, "best"),
+        (
+            position_ev._AGGREGATED_ACTION_OUTCOME_CACHE,
+            position_ev.AGGREGATED_ACTION_OUTCOME_CACHE_MAX_SIZE,
+            "outcome",
+        ),
+        (position_ev._STATE_TRANSITION_CACHE, position_ev.STATE_TRANSITION_CACHE_MAX_SIZE, "state"),
+    ]
+
+    try:
+        for cache, max_size, prefix in cache_specs:
+            cache.clear()
+            for index in range(max_size):
+                position_ev._lru_set(cache, (prefix, index), index, max_size)
+            assert len(cache) == max_size
+
+            assert position_ev._lru_get(cache, (prefix, 0)) == 0
+            position_ev._lru_set(cache, (prefix, "new"), "new", max_size)
+
+            assert len(cache) == max_size
+            assert (prefix, 0) in cache
+            assert (prefix, 1) not in cache
+            assert (prefix, "new") in cache
+    finally:
+        for cache, _max_size, _prefix in cache_specs:
+            cache.clear()
+
+
+def test_action_ev_cache_key_includes_engine_and_config_fingerprints():
+    game, character, probability_model, analysis = _billy_context()
+    inventory_rows = position_ev._current_inventory_rows(analysis, character)
+
+    inventory_key = json.loads(
+        position_ev._action_ev_cache_key(
+            game,
+            character,
+            probability_model,
+            analysis,
+            inventory_rows=inventory_rows,
+            horizon=1,
+            use_state_dp=False,
+        )
+    )
+    state_key = json.loads(
+        position_ev._action_ev_cache_key(
+            game,
+            character,
+            probability_model,
+            analysis,
+            inventory_rows=inventory_rows,
+            horizon=1,
+            use_state_dp=True,
+        )
+    )
+
+    assert inventory_key["engine"] == "inventory_recursive"
+    assert state_key["engine"] == "state_dp"
+    assert inventory_key["fingerprints"]["game"][0] == game.id
+    assert inventory_key["fingerprints"]["character"][0] == character.id
+    assert inventory_key["fingerprints"]["probability_model"][0] == probability_model.id
 
 
 def test_exact_horizon_two_value_follows_dynamic_programming_formula():

@@ -2,27 +2,59 @@ import json
 from pathlib import Path
 
 from gear_optimizer import position_ev
-from gear_optimizer.action_ev_worker import ProgressJsonlWriter, main as worker_main
+from gear_optimizer.action_ev_worker import (
+    ACTION_EV_ENGINE_ENV,
+    ProgressJsonlWriter,
+    build_action_ev_rows_from_payload,
+    main as worker_main,
+)
 from gear_optimizer.presets import load_current_example
 
 
-def _write_worker_input(path: Path, game_id: str = "zzz") -> None:
+def _write_worker_input(path: Path, game_id: str = "zzz", engine: str | None = None) -> None:
     pieces = load_current_example("examples/zzz_billy_current.yaml")
+    payload = {
+        "run_id": "test-run",
+        "game_id": game_id,
+        "character_id": "zzz_starlight_billy",
+        "probability_model_id": "zzz_default",
+        "current_pieces": [piece.model_dump(mode="json") for piece in pieces],
+        "inventory_pieces": [],
+        "horizon": 1,
+    }
+    if engine is not None:
+        payload["engine"] = engine
     path.write_text(
         json.dumps(
-            {
-                "run_id": "test-run",
-                "game_id": game_id,
-                "character_id": "zzz_starlight_billy",
-                "probability_model_id": "zzz_default",
-                "current_pieces": [piece.model_dump(mode="json") for piece in pieces],
-                "inventory_pieces": [],
-                "horizon": 1,
-            },
+            payload,
             ensure_ascii=False,
         ),
         encoding="utf-8",
     )
+
+
+def test_action_ev_worker_engine_defaults_and_env_override(monkeypatch, tmp_path):
+    input_path = tmp_path / "input.json"
+    _write_worker_input(input_path, engine="state_dp")
+    payload = json.loads(input_path.read_text(encoding="utf-8"))
+    captured = []
+
+    def fake_position_strategy_efficiency_rows(*_args, **kwargs):
+        captured.append(kwargs.get("use_state_dp"))
+        return [{"策略": "fake"}]
+
+    monkeypatch.setattr(
+        "gear_optimizer.action_ev_worker.position_strategy_efficiency_rows",
+        fake_position_strategy_efficiency_rows,
+    )
+    monkeypatch.delenv(ACTION_EV_ENGINE_ENV, raising=False)
+
+    assert build_action_ev_rows_from_payload(payload) == [{"策略": "fake"}]
+    assert captured[-1] is True
+
+    monkeypatch.setenv(ACTION_EV_ENGINE_ENV, "inventory_recursive")
+    assert build_action_ev_rows_from_payload(payload) == [{"策略": "fake"}]
+    assert captured[-1] is False
 
 
 def test_action_ev_worker_writes_result_progress_and_summary(tmp_path):
@@ -64,10 +96,15 @@ def test_action_ev_worker_writes_result_progress_and_summary(tmp_path):
     ]
 
     assert result["run_id"] == "test-run"
+    assert result["engine"] == "inventory_recursive"
+    assert result["execution_mode"] == "worker_process"
     assert result["rows"]
     assert summary["status"] == "ok"
+    assert summary["engine"] == "inventory_recursive"
+    assert summary["execution_mode"] == "worker_process"
     assert summary["rows"] == len(result["rows"])
     assert any(event["event"] == "worker_start" for event in progress_events)
+    assert any(event.get("engine") == "inventory_recursive" for event in progress_events)
     assert any(event["event"] == "worker_done" for event in progress_events)
     assert any(
         event.get("inner_event") == "candidate_generation_step_done"

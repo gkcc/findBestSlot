@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import sys
 import tempfile
 import time
@@ -50,6 +51,7 @@ from gear_optimizer.game_rules import (
     validate_current_gear_against_game,
     validate_gear_piece_against_game,
 )
+from gear_optimizer.action_ev_worker import ACTION_EV_ENGINE_ENV, DEFAULT_ACTION_EV_ENGINE, normalize_action_ev_engine
 from gear_optimizer.models import CharacterPreset, GameRules, GearPiece, ProbabilityModel, SubstatLine, position_key
 from gear_optimizer.position_ev import (
     action_ev_brief,
@@ -114,6 +116,8 @@ GEAR_COLUMN_WIDTHS = [
 LEVEL_COMBO_MIN_WIDTH = 82
 ROLL_SPINBOX_MIN_WIDTH = 72
 ACTION_DETAIL_DISPLAY_LIMIT = 20
+ACTION_PROCESS_TEMP_PREFIX = "gear-action-ev-"
+ACTION_SUCCESSFUL_RUNS_TO_KEEP = 3
 SUMMARY_NUMERIC_COLUMNS = {"有效", "质量", "当前有效", "期望有效", "当前质量", "期望质量", "质量/母盘", "有效/母盘"}
 ACTION_VISIBLE_COLUMNS = [
     "策略",
@@ -125,7 +129,7 @@ ACTION_VISIBLE_COLUMNS = [
     "期望提升",
     "质量/母盘",
     "有效/母盘",
-    "相对随机",
+    "比较口径",
     "计算口径",
     "说明",
     "代表路径",
@@ -268,6 +272,46 @@ def _model_payload(item: Any) -> Any:
     if hasattr(item, "model_dump"):
         return item.model_dump(mode="json")
     return item
+
+
+def _engine_label(engine: str) -> str:
+    if engine == "state_dp":
+        return "state_dp（显式状态 DP）"
+    return "inventory_recursive（默认精确递归）"
+
+
+def _execution_mode_label(mode: str) -> str:
+    if mode == "worker_process":
+        return "QProcess 子进程"
+    if mode == "qthread":
+        return "QThread 后台线程"
+    return mode or "-"
+
+
+def cleanup_successful_action_run_dirs(parent: Path, keep: int = ACTION_SUCCESSFUL_RUNS_TO_KEEP) -> list[Path]:
+    successful_dirs: list[Path] = []
+    for child in parent.glob(f"{ACTION_PROCESS_TEMP_PREFIX}*"):
+        if not child.is_dir():
+            continue
+        summary_path = child / "summary.json"
+        if not summary_path.exists():
+            continue
+        try:
+            summary = json.loads(summary_path.read_text(encoding="utf-8-sig"))
+        except Exception:
+            continue
+        if summary.get("status") == "ok":
+            successful_dirs.append(child)
+
+    successful_dirs.sort(
+        key=lambda path: (path / "summary.json").stat().st_mtime,
+        reverse=True,
+    )
+    removed: list[Path] = []
+    for stale_dir in successful_dirs[max(keep, 0):]:
+        shutil.rmtree(stale_dir, ignore_errors=True)
+        removed.append(stale_dir)
+    return removed
 
 
 def _pieces_digest(pieces: list[GearPiece]) -> str:
@@ -497,23 +541,34 @@ def _action_row_explanation(row: dict[str, Any]) -> str:
     strategy = str(row.get("策略") or "")
     relative = str(row.get("相对随机") or "")
     set_plan = str(row.get("套装约束") or "")
+    horizon = int(row.get("horizon") or 1)
+    horizon_note = ""
+    if horizon > 1:
+        horizon_note = "horizon>1 时推荐的是第一步动作；后续步骤在每个命中状态下递归选择最优，不是固定剧本。"
     if set_plan.startswith("未满足"):
         return "未满足当前套装硬约束，不作为推荐结论。"
     if strategy == "随机位置":
-        return "随机位置是同目标套装的基准动作。"
+        return f"随机位置是同目标套装六个固定位置的概率混合；不存在唯一典型搭配。{horizon_note}"
     if strategy == "固定位置":
-        return f"{relative}；只有单位母盘收益高于随机位置时才推荐固定位置。"
+        return f"固定位置是基础 action；{relative}。{horizon_note}"
     if strategy == "固定位置 + 固定主属性":
-        return f"{relative}；只有在固定位置已优于随机后，才继续比较锁主属性。"
+        return f"{relative}；本行只和同位置不锁主属性的固定位置 action 比较。{horizon_note}"
     if strategy == "固定位置 + 固定主属性 + 固定副属性":
-        return f"{relative}；只有在锁主属性已优于上级动作后，才继续比较锁副属性。"
+        return f"{relative}；本行只和同位置锁主属性 action 比较。{horizon_note}"
     if strategy == "强化库存胚子":
-        return "库存强化不消耗母盘；会消耗强化材料，本工具暂不把强化材料折算成母盘。"
-    return relative or "完整概率分布精确计算。"
+        return f"库存强化不消耗母盘；会消耗强化材料，本工具暂不把强化材料折算成母盘。{horizon_note}"
+    return (relative or "完整概率分布精确计算。") + horizon_note
 
 
 def _action_display_row(row: dict[str, Any]) -> dict[str, Any]:
-    display = {column: row.get(column, "") for column in ACTION_VISIBLE_COLUMNS}
+    display = {
+        column: (
+            row.get("比较口径", row.get("相对随机", ""))
+            if column == "比较口径"
+            else row.get(column, "")
+        )
+        for column in ACTION_VISIBLE_COLUMNS
+    }
     display["计算口径"] = "精确"
     display["说明"] = _action_row_explanation(row)
     return display
@@ -920,6 +975,7 @@ class ActionEvWorker(QObject):
         current_pieces: list[GearPiece],
         inventory_pieces: list[GearPiece],
         horizon: int,
+        engine: str = DEFAULT_ACTION_EV_ENGINE,
     ) -> None:
         super().__init__()
         self.game = game
@@ -928,6 +984,7 @@ class ActionEvWorker(QObject):
         self.current_pieces = current_pieces
         self.inventory_pieces = inventory_pieces
         self.horizon = horizon
+        self.engine = normalize_action_ev_engine(engine)
 
     @Slot()
     def run(self) -> None:
@@ -941,6 +998,7 @@ class ActionEvWorker(QObject):
                 inventory_pieces=[*self.current_pieces, *self.inventory_pieces],
                 horizon=self.horizon,
                 progress_callback=lambda payload: self.progress.emit(dict(payload)),
+                use_state_dp=self.engine == "state_dp",
             )
             self.finished.emit(rows)
         except Exception:
@@ -962,6 +1020,8 @@ class OptimizerWindow(QMainWindow):
         self._last_weakest_label = "-"
         self._last_recommended_action_summary = "尚未计算"
         self._last_main_metric_summary = "-"
+        self._last_action_engine = DEFAULT_ACTION_EV_ENGINE
+        self._last_action_execution_mode = "-"
         self._worker_thread: QThread | None = None
         self._worker: ActionEvWorker | None = None
         self._action_process: QProcess | None = None
@@ -1300,6 +1360,8 @@ class OptimizerWindow(QMainWindow):
         self._last_weakest_label = "-"
         self._last_recommended_action_summary = "尚未计算"
         self._last_main_metric_summary = "-"
+        self._last_action_engine = DEFAULT_ACTION_EV_ENGINE
+        self._last_action_execution_mode = "-"
         self._has_calculated_once = False
         self._refresh_current_cards()
         self._refresh_inventory_filters()
@@ -1691,6 +1753,8 @@ class OptimizerWindow(QMainWindow):
             if self._has_calculated_once:
                 self._last_recommended_action_summary = "结果已过期，请重新计算。"
                 self._last_main_metric_summary = "-"
+                self._last_action_engine = DEFAULT_ACTION_EV_ENGINE
+                self._last_action_execution_mode = "-"
                 self.result_recommend_title.setText("结果已过期")
                 self.result_recommend_detail.setText(message or "输入已变化，请重新计算。")
                 self._set_result_recommend_icon(None)
@@ -2072,6 +2136,10 @@ class OptimizerWindow(QMainWindow):
         if not self._action_output_path:
             return []
         payload = json.loads(Path(self._action_output_path).read_text(encoding="utf-8-sig"))
+        self._set_action_execution_metadata(
+            str(payload.get("engine") or self._last_action_engine or DEFAULT_ACTION_EV_ENGINE),
+            str(payload.get("execution_mode") or self._last_action_execution_mode or "worker_process"),
+        )
         rows = payload.get("rows", [])
         if not isinstance(rows, list):
             raise ValueError("worker output rows must be a list")
@@ -2114,14 +2182,22 @@ class OptimizerWindow(QMainWindow):
         env.insert("PYTHONIOENCODING", "utf-8")
         return env
 
+    def _current_action_ev_engine(self) -> str:
+        return normalize_action_ev_engine(os.environ.get(ACTION_EV_ENGINE_ENV) or DEFAULT_ACTION_EV_ENGINE)
+
+    def _set_action_execution_metadata(self, engine: str, execution_mode: str) -> None:
+        self._last_action_engine = normalize_action_ev_engine(engine)
+        self._last_action_execution_mode = execution_mode
+
     def _start_action_ev_process(
         self,
         current_pieces: list[GearPiece],
         inventory_pieces: list[GearPiece],
         horizon: int,
+        engine: str,
     ) -> None:
         run_id = uuid.uuid4().hex
-        run_dir = Path(tempfile.mkdtemp(prefix=f"gear-action-ev-{run_id[:8]}-"))
+        run_dir = Path(tempfile.mkdtemp(prefix=f"{ACTION_PROCESS_TEMP_PREFIX}{run_id[:8]}-"))
         input_path = run_dir / "input.json"
         output_path = run_dir / "result.json"
         progress_path = run_dir / "progress.jsonl"
@@ -2135,6 +2211,7 @@ class OptimizerWindow(QMainWindow):
             "current_pieces": [_model_payload(piece) for piece in current_pieces],
             "inventory_pieces": [_model_payload(piece) for piece in inventory_pieces],
             "horizon": horizon,
+            "engine": engine,
         }
         input_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         process = QProcess(self)
@@ -2171,10 +2248,12 @@ class OptimizerWindow(QMainWindow):
         self._action_error_path = str(error_path)
         self._action_summary_path = str(summary_path)
         self._action_progress_offset = 0
+        self._set_action_execution_metadata(engine, "worker_process")
         self._start_action_progress()
         self.progress_detail_label.setText(
-            "horizon=2 正在子进程中精确计算；主窗口可继续切换 Tab，也可取消。"
+            f"horizon=2 正在子进程中精确计算；engine={engine}；主窗口可继续切换 Tab，也可取消。"
         )
+        self.log.append(f"Action EV engine: {_engine_label(engine)}；执行方式：QProcess 子进程。")
         self._update_action_buttons(busy=True)
         process.start()
 
@@ -2232,7 +2311,9 @@ class OptimizerWindow(QMainWindow):
             self.progress_meter_label.setText("已取消 | 未更新推荐")
             self.progress_detail_label.setText("用户取消，未生成新推荐。")
             self.result_recommend_title.setText("计算已取消")
-            self.result_recommend_detail.setText("用户取消，未生成新推荐；旧结果未被覆盖。")
+            self.result_recommend_detail.setText(
+                f"用户取消，未生成新推荐；旧结果未被覆盖。\n{self._action_execution_summary_text()}"
+            )
             self.log.append("Action EV worker 已停止：用户取消，未生成新推荐。")
             self.log_toggle_button.setChecked(True)
             self.result_tabs.setCurrentIndex(2)
@@ -2248,6 +2329,10 @@ class OptimizerWindow(QMainWindow):
             self._on_action_failed(traceback.format_exc())
             return
         self._on_action_finished(rows)
+        if self._action_run_dir:
+            removed = cleanup_successful_action_run_dirs(Path(self._action_run_dir).parent)
+            if removed:
+                self.log.append(f"已清理 {len(removed)} 个旧的成功 Action EV 临时目录。")
 
     def run_best_loadout(self) -> None:
         current_pieces = self._collect_current_or_warn()
@@ -2288,13 +2373,21 @@ class OptimizerWindow(QMainWindow):
         inventory_pieces = self._collect_inventory_or_warn()
         if inventory_pieces is None:
             return
+        try:
+            engine = self._current_action_ev_engine()
+        except ValueError as exc:
+            QMessageBox.warning(self, "Action EV 引擎配置无效", str(exc))
+            return
         horizon = int(self.horizon_combo.currentData() or 1)
         if horizon == 2:
-            self._start_action_ev_process(current_pieces, inventory_pieces, horizon)
+            self._start_action_ev_process(current_pieces, inventory_pieces, horizon, engine)
             self.tabs.setCurrentIndex(3)
             return
         self._update_action_buttons(busy=True)
+        self._set_action_execution_metadata(engine, "qthread")
+        self.log.append(f"Action EV engine: {_engine_label(engine)}；执行方式：QThread 后台线程。")
         self._start_action_progress()
+        self.progress_detail_label.setText(f"horizon=1 正在后台线程精确计算；engine={engine}。")
         self._worker_thread = QThread(self)
         self._worker = ActionEvWorker(
             self.selected_game(),
@@ -2303,6 +2396,7 @@ class OptimizerWindow(QMainWindow):
             current_pieces,
             inventory_pieces,
             horizon,
+            engine,
         )
         self._worker.moveToThread(self._worker_thread)
         self._worker_thread.started.connect(self._worker.run)
@@ -2363,14 +2457,22 @@ class OptimizerWindow(QMainWindow):
             ("horizon", row.get("horizon", "-")),
             ("质量/母盘", row.get("质量/母盘", "-")),
             ("有效/母盘", row.get("有效/母盘", "-")),
-            ("相对随机", row.get("相对随机", "-")),
+            ("比较口径", row.get("比较口径", row.get("相对随机", "-"))),
             ("计算口径", "精确；完整概率分布枚举，不使用 Monte Carlo/近似/partial 推荐"),
+            ("计算引擎", _engine_label(str(row.get("_engine") or self._last_action_engine))),
+            ("执行方式", _execution_mode_label(str(row.get("_execution_mode") or self._last_action_execution_mode))),
         ]
         detail = "\n".join(f"{label}：{_format_value(value)}" for label, value in fields)
         explanation = _action_row_explanation(row)
         if explanation:
             detail = f"{detail}\n说明：{explanation}"
         return detail
+
+    def _action_execution_summary_text(self) -> str:
+        return (
+            f"计算引擎：{_engine_label(self._last_action_engine)}\n"
+            f"执行方式：{_execution_mode_label(self._last_action_execution_mode)}"
+        )
 
     def _on_action_finished(self, rows: list[dict]) -> None:
         self._stop_action_progress()
@@ -2379,7 +2481,14 @@ class OptimizerWindow(QMainWindow):
         self._action_progress_percent = 100
         self.progress_bar.setValue(100)
         self.progress_bar.setFormat("精确计算 100%")
-        self._action_result_rows = [dict(row) for row in rows]
+        self._action_result_rows = [
+            {
+                **dict(row),
+                "_engine": self._last_action_engine,
+                "_execution_mode": self._last_action_execution_mode,
+            }
+            for row in rows
+        ]
         self._show_all_action_rows = False
         self._render_action_table()
         recommended = recommended_action_ev_row(rows)
@@ -2393,6 +2502,10 @@ class OptimizerWindow(QMainWindow):
                     self.current_table.rowCount(),
                 )
         self._fill_table(self.action_loadout_table, loadout_rows)
+        self.log.append(
+            f"Action EV 完成：engine={_engine_label(self._last_action_engine)}；"
+            f"执行方式={_execution_mode_label(self._last_action_execution_mode)}。"
+        )
         self.log.append(action_ev_brief(rows))
         if recommended:
             self.log.append(
@@ -2415,7 +2528,9 @@ class OptimizerWindow(QMainWindow):
             self._last_recommended_action_summary = "没有找到满足当前硬约束的推荐 action。"
             self._last_main_metric_summary = "-"
             self.result_recommend_title.setText("暂无可推荐 action")
-            self.result_recommend_detail.setText(self._last_recommended_action_summary)
+            self.result_recommend_detail.setText(
+                f"{self._last_recommended_action_summary}\n{self._action_execution_summary_text()}"
+            )
             self._set_result_recommend_icon(None)
         self._has_calculated_once = True
         self._results_stale = False
@@ -2435,7 +2550,7 @@ class OptimizerWindow(QMainWindow):
         self.progress_detail_label.setText("后台计算已停止，错误详情已写入运行日志。")
         self.log.append(traceback_text)
         self.result_recommend_title.setText("调律建议计算失败")
-        self.result_recommend_detail.setText("运行日志已展开，请查看错误详情。")
+        self.result_recommend_detail.setText(f"运行日志已展开，请查看错误详情。\n{self._action_execution_summary_text()}")
         self.log_toggle_button.setChecked(True)
         self.result_tabs.setCurrentIndex(2)
         self.tabs.setCurrentIndex(3)

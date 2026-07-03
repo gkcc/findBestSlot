@@ -178,6 +178,7 @@ def test_optimizer_window_constructs_key_pyside6_components(monkeypatch, tmp_pat
         assert len(window.current_cards) == 6
         assert all(isinstance(card, PieceCard) for card in window.current_cards)
         assert window.current_cards[0].icon_label.toolTip()
+        assert window._current_action_ev_engine() == "inventory_recursive"
         assert window.inventory_summary_table.columnCount() == 8
         assert window.inventory_summary_table.horizontalHeaderItem(0).text() == "位置"
         assert window.inventory_summary_table.horizontalHeaderItem(7).text() == "备注/操作"
@@ -249,6 +250,8 @@ def test_optimizer_window_constructs_key_pyside6_components(monkeypatch, tmp_pat
             window.action_table.horizontalHeaderItem(index).text()
             for index in range(window.action_table.columnCount())
         ]
+        assert "比较口径" in headers
+        assert "相对随机" not in headers
         assert "排序向量/母盘" not in headers
         assert "_sort_vector" not in headers
         assert window.show_all_actions_button.isEnabled()
@@ -259,7 +262,11 @@ def test_optimizer_window_constructs_key_pyside6_components(monkeypatch, tmp_pat
         card_text = window._recommended_action_card_text(sample_action_row)
         assert "推荐动作：固定位置" in card_text
         assert "计算口径：精确" in card_text
-        assert "只有单位母盘收益高于随机位置" in card_text
+        assert "计算引擎：inventory_recursive" in card_text
+        assert "执行方式" in card_text
+        assert "比较口径：优于随机，才建议固定" in card_text
+        assert "固定位置是基础 action" in card_text
+        assert "后续步骤在每个命中状态下递归选择最优" in card_text
         upgrade_text = window._recommended_action_card_text(
             {**sample_action_row, "策略": "强化库存胚子", "相对随机": "库存动作"}
         )
@@ -280,6 +287,37 @@ def test_optimizer_window_constructs_key_pyside6_components(monkeypatch, tmp_pat
     finally:
         window.close()
         app.processEvents()
+
+
+def test_cleanup_successful_action_run_dirs_keeps_failures_and_recent_successes(tmp_path):
+    pytest.importorskip("PySide6")
+
+    from gear_optimizer.pyside6_app import cleanup_successful_action_run_dirs
+
+    success_dirs = []
+    for index in range(5):
+        run_dir = tmp_path / f"gear-action-ev-success-{index}"
+        run_dir.mkdir()
+        summary_path = run_dir / "summary.json"
+        summary_path.write_text(json.dumps({"status": "ok"}), encoding="utf-8")
+        timestamp = 1_700_000_000 + index
+        os.utime(summary_path, (timestamp, timestamp))
+        success_dirs.append(run_dir)
+
+    failed_dir = tmp_path / "gear-action-ev-failed"
+    failed_dir.mkdir()
+    (failed_dir / "summary.json").write_text(json.dumps({"status": "error"}), encoding="utf-8")
+    cancelled_dir = tmp_path / "gear-action-ev-cancelled"
+    cancelled_dir.mkdir()
+
+    removed = cleanup_successful_action_run_dirs(tmp_path, keep=3)
+
+    assert {path.name for path in removed} == {"gear-action-ev-success-0", "gear-action-ev-success-1"}
+    assert not success_dirs[0].exists()
+    assert not success_dirs[1].exists()
+    assert all(path.exists() for path in success_dirs[2:])
+    assert failed_dir.exists()
+    assert cancelled_dir.exists()
 
 
 def test_windows_packaging_scripts_bundle_native_pyside6_resources():

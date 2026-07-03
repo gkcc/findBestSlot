@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections import Counter, defaultdict
+from collections import Counter, OrderedDict, defaultdict
 from collections.abc import Callable, Sequence
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -15,17 +15,39 @@ from gear_optimizer.piece_distribution import fresh_piece_quality_distribution
 from gear_optimizer.probability import normalise_weights
 from gear_optimizer.scoring import score_piece, score_quality_sort_key, substat_quality_vector
 
-_ACTION_EV_ROWS_CACHE: dict[str, list[dict[str, float | str]]] = {}
-_RESOURCE_MARGINAL_EV_ROWS_CACHE: dict[str, list[dict[str, float | str]]] = {}
-_BEST_COMBO_VALUE_CACHE: dict[tuple, tuple[float, ...]] = {}
-_AGGREGATED_ACTION_OUTCOME_CACHE: dict[tuple, list[tuple[list[dict], float]]] = {}
-_STATE_TRANSITION_CACHE: dict[tuple, list[tuple[EvState, float]]] = {}
+ACTION_EV_ROWS_CACHE_MAX_SIZE = 32
+RESOURCE_MARGINAL_EV_ROWS_CACHE_MAX_SIZE = 32
+BEST_COMBO_VALUE_CACHE_MAX_SIZE = 5000
+AGGREGATED_ACTION_OUTCOME_CACHE_MAX_SIZE = 1000
+STATE_TRANSITION_CACHE_MAX_SIZE = 5000
+
+_ACTION_EV_ROWS_CACHE: OrderedDict[str, list[dict[str, float | str]]] = OrderedDict()
+_RESOURCE_MARGINAL_EV_ROWS_CACHE: OrderedDict[str, list[dict[str, float | str]]] = OrderedDict()
+_BEST_COMBO_VALUE_CACHE: OrderedDict[tuple, tuple[float, ...]] = OrderedDict()
+_AGGREGATED_ACTION_OUTCOME_CACHE: OrderedDict[tuple, list[tuple[list[dict], float]]] = OrderedDict()
+_STATE_TRANSITION_CACHE: OrderedDict[tuple, list[tuple[EvState, float]]] = OrderedDict()
 _VECTOR_EPSILON = 1e-9
 _DISPLAY_EPSILON = 0.0005
 _SOURCE_CURRENT = "current"
 _SOURCE_INVENTORY = "inventory"
 _SOURCE_OUTCOME = "outcome"
 ProgressCallback = Callable[[dict[str, object]], None]
+
+
+def _lru_get(cache: OrderedDict, key: object) -> object | None:
+    try:
+        value = cache[key]
+    except KeyError:
+        return None
+    cache.move_to_end(key)
+    return value
+
+
+def _lru_set(cache: OrderedDict, key: object, value: object, max_size: int) -> None:
+    cache[key] = value
+    cache.move_to_end(key)
+    while len(cache) > max_size:
+        cache.popitem(last=False)
 
 
 @dataclass(frozen=True)
@@ -1068,18 +1090,44 @@ def _inventory_signature(inventory: list[dict]) -> tuple[tuple, ...]:
     )
 
 
+def _set_plan_cache_key(character: CharacterPreset) -> str | None:
+    plan = character.active_set_plan()
+    return (
+        json.dumps(plan.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)
+        if plan
+        else None
+    )
+
+
+def _game_cache_key(game: GameRules) -> tuple:
+    return (
+        game.id,
+        game.model_dump_json(),
+    )
+
+
+def _character_cache_key(character: CharacterPreset) -> tuple:
+    return (
+        character.id,
+        character.model_dump_json(),
+    )
+
+
+def _probability_model_cache_key(probability_model: ProbabilityModel) -> tuple:
+    return (
+        probability_model.id,
+        probability_model.target_set_probability,
+        tuple(sorted(probability_model.initial_substat_count_probabilities.items())),
+        tuple(sorted(probability_model.resource_costs.items())),
+    )
+
+
 def _best_combo_cache_key(
     inventory: list[dict],
     game: GameRules,
     character: CharacterPreset,
 ) -> tuple:
-    plan = character.active_set_plan()
-    plan_key = (
-        json.dumps(plan.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)
-        if plan
-        else None
-    )
-    return (game.id, character.id, plan_key, _inventory_signature(inventory))
+    return (_game_cache_key(game), _character_cache_key(character), _inventory_signature(inventory))
 
 
 def _cached_best_combo_value(
@@ -1088,11 +1136,11 @@ def _cached_best_combo_value(
     character: CharacterPreset,
 ) -> tuple[float, ...]:
     key = _best_combo_cache_key(inventory, game, character)
-    cached = _BEST_COMBO_VALUE_CACHE.get(key)
+    cached = _lru_get(_BEST_COMBO_VALUE_CACHE, key)
     if cached is not None:
         return cached
     value = _best_combo_value(inventory, game, character)
-    _BEST_COMBO_VALUE_CACHE[key] = value
+    _lru_set(_BEST_COMBO_VALUE_CACHE, key, value, BEST_COMBO_VALUE_CACHE_MAX_SIZE)
     return value
 
 
@@ -1117,15 +1165,6 @@ def _aggregate_inventory_outcomes(
     ]
 
 
-def _probability_model_cache_key(probability_model: ProbabilityModel) -> tuple:
-    return (
-        probability_model.id,
-        probability_model.target_set_probability,
-        tuple(sorted(probability_model.initial_substat_count_probabilities.items())),
-        tuple(sorted(probability_model.resource_costs.items())),
-    )
-
-
 def _aggregated_action_outcomes_for_spec(
     inventory: list[dict],
     game: GameRules,
@@ -1137,13 +1176,13 @@ def _aggregated_action_outcomes_for_spec(
     progress_depth: int = 0,
 ) -> list[tuple[list[dict], float]]:
     key = (
-        game.id,
-        character.id,
+        _game_cache_key(game),
+        _character_cache_key(character),
         _probability_model_cache_key(probability_model),
         _inventory_signature(inventory),
         spec,
     )
-    cached = _AGGREGATED_ACTION_OUTCOME_CACHE.get(key)
+    cached = _lru_get(_AGGREGATED_ACTION_OUTCOME_CACHE, key)
     if cached is not None:
         _emit_progress(
             progress_callback,
@@ -1192,7 +1231,12 @@ def _aggregated_action_outcomes_for_spec(
         total=len(raw_outcomes),
         result_total=len(outcomes),
     )
-    _AGGREGATED_ACTION_OUTCOME_CACHE[key] = outcomes
+    _lru_set(
+        _AGGREGATED_ACTION_OUTCOME_CACHE,
+        key,
+        outcomes,
+        AGGREGATED_ACTION_OUTCOME_CACHE_MAX_SIZE,
+    )
     _emit_progress(
         progress_callback,
         "aggregated_outcome_cache_miss",
@@ -1361,6 +1405,19 @@ def _representative_action_plan_labels(
 ) -> tuple[str, str, str, str, list[dict]]:
     if not _cached_best_combo_value(inventory, game, character):
         return "-", "-", "-", "-", []
+    if first_spec.strategy == "随机位置":
+        positions = " / ".join(game.position_name(rule.id) for rule in game.positions)
+        path = (
+            f"随机位置是 {positions} 的概率混合；"
+            f"horizon={max(horizon, 1)} 只推荐第一步，后续按实际命中状态递归最优"
+        )
+        return (
+            path,
+            "混合期望，不存在唯一典型搭配",
+            "请查看同目标套装 1-6 固定位置行作为拆解",
+            "混合动作：固定位置行分别验算套装硬约束",
+            [],
+        )
 
     current_inventory = inventory
     current_spec: ActionSpec | None = first_spec
@@ -2019,16 +2076,9 @@ def _state_transition_cache_key(
     probability_model: ProbabilityModel,
     spec: ActionSpec,
 ) -> tuple:
-    plan = character.active_set_plan()
-    plan_key = (
-        json.dumps(plan.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)
-        if plan
-        else None
-    )
     return (
-        game.id,
-        character.id,
-        plan_key,
+        _game_cache_key(game),
+        _character_cache_key(character),
         _probability_model_cache_key(probability_model),
         state.signature,
         spec,
@@ -2060,7 +2110,7 @@ def state_transition_for_action(
     progress_depth: int = 0,
 ) -> list[tuple[EvState, float]]:
     cache_key = _state_transition_cache_key(state, game, character, probability_model, spec)
-    cached = _STATE_TRANSITION_CACHE.get(cache_key)
+    cached = _lru_get(_STATE_TRANSITION_CACHE, cache_key)
     if cached is not None:
         _emit_progress(
             progress_callback,
@@ -2118,7 +2168,7 @@ def state_transition_for_action(
         for next_state, probability in transitions.values()
         if probability > 1e-12
     ]
-    _STATE_TRANSITION_CACHE[cache_key] = result
+    _lru_set(_STATE_TRANSITION_CACHE, cache_key, result, STATE_TRANSITION_CACHE_MAX_SIZE)
     return result
 
 
@@ -2767,6 +2817,11 @@ def _action_ev_cache_key(
     plan = character.active_set_plan()
     priority = character.substat_priority
     data = {
+        "fingerprints": {
+            "game": _game_cache_key(game),
+            "character": _character_cache_key(character),
+            "probability_model": _probability_model_cache_key(probability_model),
+        },
         "game": {
             "id": game.id,
             "positions": [position.model_dump(mode="json") for position in game.positions],
@@ -2782,6 +2837,7 @@ def _action_ev_cache_key(
             "set_plan": plan.model_dump(mode="json") if plan else None,
         },
         "probability_model": {
+            "id": probability_model.id,
             "target_set_probability": probability_model.target_set_probability,
             "initial_substat_count_probabilities": probability_model.initial_substat_count_probabilities,
             "resource_costs": probability_model.resource_costs,
@@ -2824,6 +2880,20 @@ def _action_ev_cache_key(
         ],
     }
     return json.dumps(data, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _comparison_scope_label(spec: ActionSpec, relative: str) -> str:
+    if spec.strategy == "随机位置":
+        return "随机混合：1-6 固定位置按概率加权；不是单一代表搭配"
+    if spec.strategy == "固定位置":
+        return f"固定位置基础行；{relative.replace('随机', '随机混合')}"
+    if spec.strategy == "固定位置 + 固定主属性":
+        return f"相对同位置固定位置；{relative}"
+    if spec.strategy == "固定位置 + 固定主属性 + 固定副属性":
+        return f"相对同位置锁主属性；{relative}"
+    if spec.strategy == "强化库存胚子":
+        return "库存强化动作；不消耗母盘，不折算强化材料"
+    return relative
 
 
 def _initial_weight_states(
@@ -3362,7 +3432,7 @@ def position_strategy_efficiency_rows(
         horizon=horizon,
         use_state_dp=use_state_dp,
     )
-    cached = _ACTION_EV_ROWS_CACHE.get(cache_key)
+    cached = _lru_get(_ACTION_EV_ROWS_CACHE, cache_key)
     if cached is not None:
         _emit_progress(
             progress_callback,
@@ -3684,6 +3754,7 @@ def position_strategy_efficiency_rows(
             "排序向量/母盘": _quality_vector_label(efficiency, character),
             "_sort_vector": efficiency,
             "相对随机": relative,
+            "比较口径": _comparison_scope_label(spec, relative),
         }
         rows.append(row)
         return row
@@ -3750,7 +3821,7 @@ def position_strategy_efficiency_rows(
         ):
             append_row(spec, spec_index)
 
-    _ACTION_EV_ROWS_CACHE[cache_key] = [dict(row) for row in rows]
+    _lru_set(_ACTION_EV_ROWS_CACHE, cache_key, [dict(row) for row in rows], ACTION_EV_ROWS_CACHE_MAX_SIZE)
     _emit_progress(
         progress_callback,
         "complete",
@@ -3825,7 +3896,7 @@ def resource_marginal_ev_rows(
         inventory_rows=inventory_rows,
         horizon=horizon,
     )
-    cached = _RESOURCE_MARGINAL_EV_ROWS_CACHE.get(cache_key)
+    cached = _lru_get(_RESOURCE_MARGINAL_EV_ROWS_CACHE, cache_key)
     if cached is not None:
         _emit_progress(
             progress_callback,
@@ -4034,7 +4105,12 @@ def resource_marginal_ev_rows(
                             "期望共鸣核/次": round(core_cost * len(required_substats), 3),
                         }
                     )
-    _RESOURCE_MARGINAL_EV_ROWS_CACHE[cache_key] = [dict(row) for row in rows]
+    _lru_set(
+        _RESOURCE_MARGINAL_EV_ROWS_CACHE,
+        cache_key,
+        [dict(row) for row in rows],
+        RESOURCE_MARGINAL_EV_ROWS_CACHE_MAX_SIZE,
+    )
     _emit_progress(
         progress_callback,
         "complete",
@@ -4076,9 +4152,10 @@ def action_ev_brief(rows: list[dict[str, float | str]]) -> str:
             return "当前 horizon 没有满足套装硬约束的 action；请提高 horizon 或先补齐套装缺口。"
         return "暂无 action EV 结果。"
     loadout = str(best.get("预期搭配") or "-")
+    comparison = str(best.get("比较口径") or best.get("相对随机") or "-")
     return (
         f"{best['策略']}：{best['目标套装']} {best['位置']}，"
         f"排序向量/母盘 {best.get('排序向量/母盘', '-')}，"
         f"有效/母盘 {best['有效/母盘']}；"
-        f"{best['相对随机']}；{best.get('套装约束', '-')}。预期搭配：{loadout}。"
+        f"{comparison}；{best.get('套装约束', '-')}。预期搭配：{loadout}。"
     )
