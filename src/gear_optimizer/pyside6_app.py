@@ -113,7 +113,26 @@ GEAR_COLUMN_WIDTHS = [
 ]
 LEVEL_COMBO_MIN_WIDTH = 82
 ROLL_SPINBOX_MIN_WIDTH = 72
+ACTION_DETAIL_DISPLAY_LIMIT = 20
 SUMMARY_NUMERIC_COLUMNS = {"有效", "质量", "当前有效", "期望有效", "当前质量", "期望质量", "质量/母盘", "有效/母盘"}
+ACTION_VISIBLE_COLUMNS = [
+    "策略",
+    "目标套装",
+    "位置",
+    "主属性",
+    "固定副属性",
+    "horizon",
+    "期望提升",
+    "质量/母盘",
+    "有效/母盘",
+    "相对随机",
+    "计算口径",
+    "说明",
+    "代表路径",
+    "预期搭配",
+    "互补位",
+    "套装约束",
+]
 APP_QSS = """
 QMainWindow, QWidget {
     background: #f4f6f8;
@@ -472,6 +491,32 @@ def _loadout_display_rows(
             }
         )
     return display_rows
+
+
+def _action_row_explanation(row: dict[str, Any]) -> str:
+    strategy = str(row.get("策略") or "")
+    relative = str(row.get("相对随机") or "")
+    set_plan = str(row.get("套装约束") or "")
+    if set_plan.startswith("未满足"):
+        return "未满足当前套装硬约束，不作为推荐结论。"
+    if strategy == "随机位置":
+        return "随机位置是同目标套装的基准动作。"
+    if strategy == "固定位置":
+        return f"{relative}；只有单位母盘收益高于随机位置时才推荐固定位置。"
+    if strategy == "固定位置 + 固定主属性":
+        return f"{relative}；只有在固定位置已优于随机后，才继续比较锁主属性。"
+    if strategy == "固定位置 + 固定主属性 + 固定副属性":
+        return f"{relative}；只有在锁主属性已优于上级动作后，才继续比较锁副属性。"
+    if strategy == "强化库存胚子":
+        return "库存强化不消耗母盘；会消耗强化材料，本工具暂不把强化材料折算成母盘。"
+    return relative or "完整概率分布精确计算。"
+
+
+def _action_display_row(row: dict[str, Any]) -> dict[str, Any]:
+    display = {column: row.get(column, "") for column in ACTION_VISIBLE_COLUMNS}
+    display["计算口径"] = "精确"
+    display["说明"] = _action_row_explanation(row)
+    return display
 
 
 class GearTable(QTableWidget):
@@ -940,6 +985,8 @@ class OptimizerWindow(QMainWindow):
         self._progress_timer = QTimer(self)
         self._progress_timer.setInterval(400)
         self._progress_timer.timeout.connect(self._refresh_action_progress_clock)
+        self._action_result_rows: list[dict[str, Any]] = []
+        self._show_all_action_rows = False
 
         self.game_combo = QComboBox()
         self.character_combo = QComboBox()
@@ -1015,6 +1062,10 @@ class OptimizerWindow(QMainWindow):
         self.best_table = QTableWidget()
         self.action_table = QTableWidget()
         self.action_loadout_table = QTableWidget()
+        self.action_table_status_label = QLabel("尚无 Action EV 明细。")
+        self.action_table_status_label.setWordWrap(True)
+        self.show_all_actions_button = QPushButton("显示全部")
+        self.show_all_actions_button.setEnabled(False)
         self.log_toggle_button = QPushButton("显示运行日志")
         self.log_toggle_button.setCheckable(True)
         self.log = QTextEdit()
@@ -1154,6 +1205,10 @@ class OptimizerWindow(QMainWindow):
 
         action_detail_page = QWidget()
         action_detail_layout = QVBoxLayout(action_detail_page)
+        action_detail_header = QHBoxLayout()
+        action_detail_header.addWidget(self.action_table_status_label, 1)
+        action_detail_header.addWidget(self.show_all_actions_button)
+        action_detail_layout.addLayout(action_detail_header)
         action_detail_layout.addWidget(self.action_table)
         self.result_tabs.addTab(action_detail_page, "Action EV 明细")
 
@@ -1207,6 +1262,7 @@ class OptimizerWindow(QMainWindow):
         self.best_button.clicked.connect(self.run_best_loadout)
         self.action_button.clicked.connect(self.run_action_ev)
         self.cancel_action_button.clicked.connect(self.cancel_action_ev)
+        self.show_all_actions_button.clicked.connect(self.toggle_action_rows)
         self.horizon_combo.currentIndexChanged.connect(lambda _index: self._update_horizon_note())
 
     def _load_games(self) -> None:
@@ -1609,6 +1665,11 @@ class OptimizerWindow(QMainWindow):
         self.best_table.setColumnCount(0)
         self.action_table.setRowCount(0)
         self.action_table.setColumnCount(0)
+        self._action_result_rows = []
+        self._show_all_action_rows = False
+        self.action_table_status_label.setText("尚无 Action EV 明细。")
+        self.show_all_actions_button.setEnabled(False)
+        self.show_all_actions_button.setText("显示全部")
         self.action_loadout_table.setRowCount(0)
         self.action_loadout_table.setColumnCount(0)
         if not self._action_busy():
@@ -2253,6 +2314,58 @@ class OptimizerWindow(QMainWindow):
         self._last_action_progress_payload = dict(payload)
         self._last_action_progress_seen_at = time.monotonic()
 
+    def _render_action_table(self) -> None:
+        display_rows = [_action_display_row(row) for row in self._action_result_rows]
+        total = len(display_rows)
+        if total == 0:
+            self._fill_table(self.action_table, [])
+            self.action_table_status_label.setText("尚无 Action EV 明细。")
+            self.show_all_actions_button.setEnabled(False)
+            self.show_all_actions_button.setText("显示全部")
+            return
+
+        limit = ACTION_DETAIL_DISPLAY_LIMIT
+        visible_rows = display_rows if self._show_all_action_rows else display_rows[:limit]
+        self._fill_table(self.action_table, visible_rows)
+        shown = len(visible_rows)
+        if total > limit:
+            self.action_table_status_label.setText(
+                f"默认显示前 {limit} 条；完整精确结果共 {total} 条，可展开审计。"
+            )
+            self.show_all_actions_button.setEnabled(True)
+            self.show_all_actions_button.setText(
+                f"收起到前 {limit} 条" if self._show_all_action_rows else f"显示全部 {total} 条"
+            )
+        else:
+            self.action_table_status_label.setText(f"已显示全部 {shown} 条 Action EV 明细。")
+            self.show_all_actions_button.setEnabled(False)
+            self.show_all_actions_button.setText("已显示全部")
+
+    def toggle_action_rows(self) -> None:
+        if len(self._action_result_rows) <= ACTION_DETAIL_DISPLAY_LIMIT:
+            return
+        self._show_all_action_rows = not self._show_all_action_rows
+        self._render_action_table()
+
+    def _recommended_action_card_text(self, row: dict[str, Any]) -> str:
+        fields = [
+            ("推荐动作", row.get("策略", "-")),
+            ("目标套装", row.get("目标套装", "-")),
+            ("目标位置", row.get("位置", "-")),
+            ("主属性", row.get("主属性", "-")),
+            ("固定副属性", row.get("固定副属性", "-")),
+            ("horizon", row.get("horizon", "-")),
+            ("质量/母盘", row.get("质量/母盘", "-")),
+            ("有效/母盘", row.get("有效/母盘", "-")),
+            ("相对随机", row.get("相对随机", "-")),
+            ("计算口径", "精确；完整概率分布枚举，不使用 Monte Carlo/近似/partial 推荐"),
+        ]
+        detail = "\n".join(f"{label}：{_format_value(value)}" for label, value in fields)
+        explanation = _action_row_explanation(row)
+        if explanation:
+            detail = f"{detail}\n说明：{explanation}"
+        return detail
+
     def _on_action_finished(self, rows: list[dict]) -> None:
         self._stop_action_progress()
         self._worker = None
@@ -2260,28 +2373,9 @@ class OptimizerWindow(QMainWindow):
         self._action_progress_percent = 100
         self.progress_bar.setValue(100)
         self.progress_bar.setFormat("精确计算 100%")
-        visible_columns = [
-            "策略",
-            "目标套装",
-            "位置",
-            "主属性",
-            "固定副属性",
-            "horizon",
-            "期望提升",
-            "代表路径",
-            "预期搭配",
-            "互补位",
-            "套装约束",
-            "质量/母盘",
-            "有效/母盘",
-            "排序向量/母盘",
-            "相对随机",
-        ]
-        display_rows = [
-            {column: row.get(column, "") for column in visible_columns}
-            for row in rows
-        ]
-        self._fill_table(self.action_table, display_rows)
+        self._action_result_rows = [dict(row) for row in rows]
+        self._show_all_action_rows = False
+        self._render_action_table()
         recommended = recommended_action_ev_row(rows)
         loadout_rows = []
         if recommended:
@@ -2309,9 +2403,7 @@ class OptimizerWindow(QMainWindow):
                 f"质量/母盘：{recommended.get('质量/母盘', '-')}"
             )
             self.result_recommend_title.setText("推荐调律 action")
-            self.result_recommend_detail.setText(
-                f"{self._last_recommended_action_summary}\n{self._last_main_metric_summary}"
-            )
+            self.result_recommend_detail.setText(self._recommended_action_card_text(recommended))
             self._set_result_recommend_icon(str(recommended.get("目标套装") or ""))
         else:
             self._last_recommended_action_summary = "没有找到满足当前硬约束的推荐 action。"

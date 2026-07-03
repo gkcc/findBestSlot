@@ -160,7 +160,7 @@ def test_optimizer_window_constructs_key_pyside6_components(monkeypatch, tmp_pat
     pytest.importorskip("PySide6")
 
     from PySide6.QtWidgets import QApplication
-    from gear_optimizer.pyside6_app import OptimizerWindow, PieceCard
+    from gear_optimizer.pyside6_app import ACTION_DETAIL_DISPLAY_LIMIT, OptimizerWindow, PieceCard
 
     app = QApplication.instance() or QApplication([])
     window = OptimizerWindow(width=1200, height=760)
@@ -189,6 +189,7 @@ def test_optimizer_window_constructs_key_pyside6_components(monkeypatch, tmp_pat
         assert window.result_tabs.tabText(1) == "代表搭配"
         assert window.result_tabs.tabText(2) == "运行日志"
         assert not window.log.isVisible()
+        assert not window.show_all_actions_button.isEnabled()
         assert not window.cancel_action_button.isEnabled()
         window.horizon_combo.setCurrentIndex(1)
         assert "完整概率分布精确计算" in window.horizon_note_label.text()
@@ -222,11 +223,53 @@ def test_optimizer_window_constructs_key_pyside6_components(monkeypatch, tmp_pat
         assert "候选组完成" in window.progress_detail_label.text()
         assert "内部步数 23" in window.progress_detail_label.text()
         assert "DP状态 5（诊断）" in window.progress_detail_label.text()
+        sample_action_row = {
+            "策略": "固定位置",
+            "目标套装": "云岿如我",
+            "位置": "1号位",
+            "主属性": "生命值",
+            "固定副属性": "不固定",
+            "horizon": 2,
+            "期望提升": "质量 +1",
+            "代表路径": "-",
+            "预期搭配": "-",
+            "互补位": "-",
+            "套装约束": "满足4+2",
+            "质量/母盘": 0.25,
+            "有效/母盘": 0.15,
+            "排序向量/母盘": "internal-ish",
+            "相对随机": "优于随机，才建议固定",
+            "_sort_vector": (1.0,),
+            "_representative_loadout_rows": [],
+        }
+        window._action_result_rows = [dict(sample_action_row) for _index in range(ACTION_DETAIL_DISPLAY_LIMIT + 5)]
+        window._render_action_table()
+        assert window.action_table.rowCount() == ACTION_DETAIL_DISPLAY_LIMIT
+        headers = [
+            window.action_table.horizontalHeaderItem(index).text()
+            for index in range(window.action_table.columnCount())
+        ]
+        assert "排序向量/母盘" not in headers
+        assert "_sort_vector" not in headers
+        assert window.show_all_actions_button.isEnabled()
+        assert "显示全部" in window.show_all_actions_button.text()
+        window.toggle_action_rows()
+        assert window.action_table.rowCount() == ACTION_DETAIL_DISPLAY_LIMIT + 5
+        assert "收起" in window.show_all_actions_button.text()
+        card_text = window._recommended_action_card_text(sample_action_row)
+        assert "推荐动作：固定位置" in card_text
+        assert "计算口径：精确" in card_text
+        assert "只有单位母盘收益高于随机位置" in card_text
+        upgrade_text = window._recommended_action_card_text(
+            {**sample_action_row, "策略": "强化库存胚子", "相对随机": "库存动作"}
+        )
+        assert "不消耗母盘" in upgrade_text
         for method in [
             "confirm_current",
             "run_best_loadout",
             "run_action_ev",
             "cancel_action_ev",
+            "toggle_action_rows",
             "edit_current_piece",
             "edit_inventory_piece",
             "copy_selected_inventory",
