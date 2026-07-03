@@ -7,12 +7,24 @@ from gear_optimizer.models import (
     GameRules,
     GearPiece,
     PositionRule,
+    ProbabilityModel,
     SetPlan,
     SetRequirement,
     SubstatLine,
     SubstatPriority,
 )
-from gear_optimizer.position_ev import EvState, best_loadout_rows, best_loadout_value
+from gear_optimizer.scoring import analyse_current_gear
+from gear_optimizer.position_ev import (
+    ActionSpec,
+    EvState,
+    best_loadout_rows,
+    best_loadout_value,
+    expected_state_action_value,
+    inventory_rows_from_pieces,
+    lookahead_inventory_value,
+    lookahead_inventory_value_state_dp,
+    position_strategy_efficiency_rows,
+)
 
 
 def _gear_piece(position, set_name, rolls=0, *, locked=False, level=0, main_stat=None):
@@ -79,9 +91,9 @@ def _two_slot_game(max_level=0):
             PositionRule(id=1, name="1号位", main_stats=["main1"]),
             PositionRule(id=2, name="2号位", main_stats=["main2"]),
         ],
-        sub_stats=["good", "bad"],
+        sub_stats=["good", "ok", "bad", "worse"],
         main_stat_probabilities={"1": {"main1": 1.0}, "2": {"main2": 1.0}},
-        sub_stat_probabilities={"good": 1.0, "bad": 1.0},
+        sub_stat_probabilities={"good": 1.0, "ok": 1.0, "bad": 1.0, "worse": 1.0},
         enhancement=EnhancementRule(max_level=max_level, step=3, initial_add_level=3),
     )
 
@@ -92,7 +104,7 @@ def _two_slot_character():
         game="two",
         name="Two Char",
         target_set="A",
-        substat_priority=SubstatPriority(core=["good"], usable=[]),
+        substat_priority=SubstatPriority(core=["good"], usable=["ok"]),
         preferred_main_stats={"1": ["main1"], "2": ["main2"]},
         set_plans=[
             SetPlan(
@@ -102,6 +114,20 @@ def _two_slot_character():
             )
         ],
         default_set_plan="a2",
+    )
+
+
+def _two_slot_probability(game_id="two"):
+    return ProbabilityModel(
+        id=f"{game_id}_prob",
+        game=game_id,
+        name="Two deterministic",
+        target_set_probability=1.0,
+        initial_substat_count_probabilities={"3": 0.0, "4": 1.0},
+        resource_costs={
+            "mother_disk_random_position_attempt": 1.0,
+            "mother_disk_fixed_position_attempt": 1.0,
+        },
     )
 
 
@@ -269,3 +295,181 @@ def test_ev_state_candidate_transition_merges_non_improving_rows():
     assert next_state is not state
     assert next_state.signature != state.signature
     assert next_state.best_loadout_value(game, character) > state.best_loadout_value(game, character)
+
+
+def _assert_vector_close(left, right):
+    assert len(left) == len(right)
+    for left_value, right_value in zip(left, right):
+        assert left_value == pytest.approx(right_value)
+
+
+def test_state_action_value_matches_inventory_recursion_for_generation_specs():
+    game = _two_slot_game()
+    character = _two_slot_character()
+    probability_model = _two_slot_probability(game.id)
+    inventory = [
+        _gear_piece(1, "A", rolls=0),
+        _gear_piece(2, "A", rolls=0),
+    ]
+    rows = inventory_rows_from_pieces(inventory, game, character, current_count=2)
+    state = EvState.from_rows(rows, game, character)
+    specs = [
+        ActionSpec("随机位置", "A", ("A",), None),
+        ActionSpec("固定位置", "A", ("A",), 1),
+        ActionSpec("固定位置 + 固定主属性", "A", ("A",), 1, fixed_main_stat="main1"),
+        ActionSpec(
+            "固定位置 + 固定主属性 + 固定副属性",
+            "A",
+            ("A",),
+            1,
+            fixed_main_stat="main1",
+            required_substats=("good",),
+        ),
+    ]
+
+    for spec in specs:
+        old_value = position_ev._expected_action_value(
+            rows,
+            game,
+            character,
+            probability_model,
+            spec,
+            1,
+            memo={},
+            quality_cache={},
+        )
+        new_value = expected_state_action_value(
+            state,
+            game,
+            character,
+            probability_model,
+            spec,
+            1,
+            memo={},
+            quality_cache={},
+        )
+        _assert_vector_close(new_value, old_value)
+
+
+def test_state_action_value_matches_inventory_recursion_for_upgrade_source():
+    game = _two_slot_game(max_level=3)
+    character = _two_slot_character()
+    probability_model = _two_slot_probability(game.id)
+    current = [
+        _gear_piece(1, "A", rolls=0, level=3),
+        _gear_piece(2, "A", rolls=0, level=3),
+    ]
+    embryo = _gear_piece(1, "A", rolls=1, level=0)
+    rows = inventory_rows_from_pieces([*current, embryo], game, character, current_count=2)
+    state = EvState.from_rows(rows, game, character)
+    spec = ActionSpec(
+        "强化库存胚子",
+        "A",
+        upgrade_inventory_id="piece:2",
+    )
+
+    old_value = position_ev._expected_action_value(
+        rows,
+        game,
+        character,
+        probability_model,
+        spec,
+        1,
+        memo={},
+        quality_cache={},
+    )
+    new_value = expected_state_action_value(
+        state,
+        game,
+        character,
+        probability_model,
+        spec,
+        1,
+        memo={},
+        quality_cache={},
+    )
+
+    _assert_vector_close(new_value, old_value)
+
+
+def test_lookahead_state_value_matches_inventory_recursion_for_horizon_two():
+    game = _two_slot_game()
+    character = _two_slot_character()
+    probability_model = _two_slot_probability(game.id)
+    inventory = [
+        _gear_piece(1, "A", rolls=0),
+        _gear_piece(2, "A", rolls=0),
+    ]
+    rows = inventory_rows_from_pieces(inventory, game, character, current_count=2)
+
+    old_value = lookahead_inventory_value(
+        rows,
+        game,
+        character,
+        probability_model,
+        horizon=2,
+        memo={},
+        quality_cache={},
+    )
+    new_value = lookahead_inventory_value_state_dp(
+        rows,
+        game,
+        character,
+        probability_model,
+        horizon=2,
+        memo={},
+    )
+
+    _assert_vector_close(new_value, old_value)
+
+
+def test_position_strategy_rows_match_with_state_dp_for_horizon_one_and_two():
+    game = _two_slot_game()
+    character = _two_slot_character()
+    probability_model = _two_slot_probability(game.id)
+    inventory = [
+        _gear_piece(1, "A", rolls=0),
+        _gear_piece(2, "A", rolls=0),
+    ]
+    analysis = analyse_current_gear(inventory, game, character)
+    compare_columns = [
+        "策略",
+        "目标套装",
+        "位置",
+        "主属性",
+        "固定副属性",
+        "horizon",
+        "期望提升",
+        "质量/母盘",
+        "有效/母盘",
+        "相对随机",
+        "套装约束",
+    ]
+
+    for horizon in (1, 2):
+        position_ev._ACTION_EV_ROWS_CACHE.clear()
+        position_ev._STATE_TRANSITION_CACHE.clear()
+        old_rows = position_strategy_efficiency_rows(
+            game,
+            character,
+            probability_model,
+            analysis,
+            inventory_pieces=inventory,
+            horizon=horizon,
+        )
+        position_ev._ACTION_EV_ROWS_CACHE.clear()
+        position_ev._STATE_TRANSITION_CACHE.clear()
+        new_rows = position_strategy_efficiency_rows(
+            game,
+            character,
+            probability_model,
+            analysis,
+            inventory_pieces=inventory,
+            horizon=horizon,
+            use_state_dp=True,
+        )
+        assert len(new_rows) == len(old_rows)
+        for old_row, new_row in zip(old_rows, new_rows):
+            assert {column: new_row[column] for column in compare_columns} == {
+                column: old_row[column] for column in compare_columns
+            }

@@ -16,6 +16,7 @@ _ACTION_EV_ROWS_CACHE: dict[str, list[dict[str, float | str]]] = {}
 _RESOURCE_MARGINAL_EV_ROWS_CACHE: dict[str, list[dict[str, float | str]]] = {}
 _BEST_COMBO_VALUE_CACHE: dict[tuple, tuple[float, ...]] = {}
 _AGGREGATED_ACTION_OUTCOME_CACHE: dict[tuple, list[tuple[list[dict], float]]] = {}
+_STATE_TRANSITION_CACHE: dict[tuple, list[tuple[EvState, float]]] = {}
 _VECTOR_EPSILON = 1e-9
 _DISPLAY_EPSILON = 0.0005
 _SOURCE_CURRENT = "current"
@@ -2000,6 +2001,198 @@ def _action_outcome_distribution(
     ]
 
 
+def _state_transition_cache_key(
+    state: EvState,
+    game: GameRules,
+    character: CharacterPreset,
+    probability_model: ProbabilityModel,
+    spec: ActionSpec,
+) -> tuple:
+    plan = character.active_set_plan()
+    plan_key = (
+        json.dumps(plan.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)
+        if plan
+        else None
+    )
+    return (
+        game.id,
+        character.id,
+        plan_key,
+        _probability_model_cache_key(probability_model),
+        state.signature,
+        spec,
+    )
+
+
+def _merge_state_transition(
+    transitions: dict[tuple, tuple[EvState, float]],
+    state: EvState,
+    probability: float,
+) -> None:
+    if probability <= 1e-12:
+        return
+    existing = transitions.get(state.signature)
+    if existing is None:
+        transitions[state.signature] = (state, probability)
+    else:
+        transitions[state.signature] = (existing[0], existing[1] + probability)
+
+
+def state_transition_for_action(
+    state: EvState,
+    game: GameRules,
+    character: CharacterPreset,
+    probability_model: ProbabilityModel,
+    spec: ActionSpec,
+    quality_cache: dict[tuple[str, tuple[str, ...]], list[tuple[float, tuple[float, ...], float]]] | None = None,
+) -> list[tuple[EvState, float]]:
+    cache_key = _state_transition_cache_key(state, game, character, probability_model, spec)
+    cached = _STATE_TRANSITION_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    transitions: dict[tuple, tuple[EvState, float]] = {}
+    total_probability = 0.0
+    if spec.upgrade_inventory_id:
+        target = next(
+            (row for row in state.rows if row.get("_inventory_id") == spec.upgrade_inventory_id),
+            None,
+        )
+        if target is not None:
+            for upgraded_row, probability in _upgrade_candidate_row_distribution(target, game, character):
+                next_state = state.with_replaced_upgrade_source(
+                    spec.upgrade_inventory_id,
+                    upgraded_row,
+                    game,
+                    character,
+                )
+                _merge_state_transition(transitions, next_state, probability)
+                total_probability += probability
+    else:
+        for candidate_row, probability in _candidate_distribution_for_action(
+            game,
+            character,
+            probability_model,
+            list(spec.set_options),
+            spec.target_position,
+            fixed_main_stat=spec.fixed_main_stat,
+            required_substats=spec.required_substats,
+            quality_cache=quality_cache,
+        ):
+            next_state = state.with_candidate_row(candidate_row, game, character)
+            _merge_state_transition(transitions, next_state, probability)
+            total_probability += probability
+
+    if total_probability < 1.0:
+        _merge_state_transition(transitions, state, 1.0 - total_probability)
+
+    result = [
+        (next_state, probability)
+        for next_state, probability in transitions.values()
+        if probability > 1e-12
+    ]
+    _STATE_TRANSITION_CACHE[cache_key] = result
+    return result
+
+
+def expected_state_action_value(
+    state: EvState,
+    game: GameRules,
+    character: CharacterPreset,
+    probability_model: ProbabilityModel,
+    spec: ActionSpec,
+    horizon: int,
+    memo: dict[tuple[int, tuple[tuple, ...]], tuple[float, ...]] | None = None,
+    quality_cache: dict[tuple[str, tuple[str, ...]], list[tuple[float, tuple[float, ...], float]]] | None = None,
+) -> tuple[float, ...]:
+    current_value = state.best_loadout_value(game, character)
+    expected = tuple(0.0 for _ in current_value)
+    if not current_value:
+        return expected
+
+    memo = memo if memo is not None else {}
+    for next_state, probability in state_transition_for_action(
+        state,
+        game,
+        character,
+        probability_model,
+        spec,
+        quality_cache=quality_cache,
+    ):
+        next_value = lookahead_state_value(
+            next_state,
+            game,
+            character,
+            probability_model,
+            horizon=max(horizon - 1, 0),
+            memo=memo,
+            quality_cache=quality_cache,
+        )
+        expected = _add_vectors(expected, _scale_vector(next_value, probability))
+    return expected
+
+
+def lookahead_state_value(
+    state: EvState,
+    game: GameRules,
+    character: CharacterPreset,
+    probability_model: ProbabilityModel,
+    horizon: int = 1,
+    memo: dict[tuple[int, tuple[tuple, ...]], tuple[float, ...]] | None = None,
+    quality_cache: dict[tuple[str, tuple[str, ...]], list[tuple[float, tuple[float, ...], float]]] | None = None,
+) -> tuple[float, ...]:
+    if horizon <= 0:
+        return state.best_loadout_value(game, character)
+
+    memo = memo if memo is not None else {}
+    key = (horizon, state.signature)
+    if key in memo:
+        return memo[key]
+
+    current_value = state.best_loadout_value(game, character)
+    values = []
+    for spec in _lookahead_action_specs(game, character, state.to_inventory_rows()):
+        values.append(
+            expected_state_action_value(
+                state,
+                game,
+                character,
+                probability_model,
+                spec,
+                horizon,
+                memo=memo,
+                quality_cache=quality_cache,
+            )
+        )
+    memo[key] = max([current_value, *values], default=current_value)
+    return memo[key]
+
+
+def lookahead_inventory_value_state_dp(
+    inventory: Sequence[GearPiece | dict],
+    game: GameRules,
+    character: CharacterPreset,
+    probability_model: ProbabilityModel,
+    horizon: int = 1,
+    current_count: int = 0,
+    memo: dict[tuple[int, tuple[tuple, ...]], tuple[float, ...]] | None = None,
+) -> tuple[float, ...]:
+    state = EvState.from_inventory(
+        inventory,
+        game,
+        character,
+        current_count=current_count,
+    )
+    return lookahead_state_value(
+        state,
+        game,
+        character,
+        probability_model,
+        horizon=horizon,
+        memo=memo,
+    )
+
+
 def _expected_action_value(
     inventory: list[dict],
     game: GameRules,
@@ -2387,6 +2580,7 @@ def _action_ev_cache_key(
     analysis: CurrentGearAnalysis,
     inventory_rows: list[dict] | None = None,
     horizon: int = 1,
+    use_state_dp: bool = False,
 ) -> str:
     plan = character.active_set_plan()
     priority = character.substat_priority
@@ -2411,6 +2605,7 @@ def _action_ev_cache_key(
             "resource_costs": probability_model.resource_costs,
         },
         "horizon": horizon,
+        "engine": "state_dp" if use_state_dp else "inventory_recursive",
         "scores": [
             {
                 "position": score.position,
@@ -2964,6 +3159,7 @@ def position_strategy_efficiency_rows(
     inventory_pieces: Sequence[GearPiece] | None = None,
     horizon: int = 1,
     progress_callback: ProgressCallback | None = None,
+    use_state_dp: bool = False,
 ) -> list[dict[str, float | str]]:
     inventory_rows = (
         inventory_rows_from_pieces(
@@ -2982,6 +3178,7 @@ def position_strategy_efficiency_rows(
         analysis,
         inventory_rows=inventory_rows,
         horizon=horizon,
+        use_state_dp=use_state_dp,
     )
     cached = _ACTION_EV_ROWS_CACHE.get(cache_key)
     if cached is not None:
@@ -3011,6 +3208,8 @@ def position_strategy_efficiency_rows(
     specs = list(base_specs)
     current_value = _cached_best_combo_value(inventory_rows, game, character)
     memo: dict[tuple[int, tuple[tuple, ...]], tuple[float, ...]] = {}
+    state_memo: dict[tuple[int, tuple[tuple, ...]], tuple[float, ...]] = {}
+    base_state = EvState.from_rows(inventory_rows, game, character) if use_state_dp else None
     quality_cache: dict[tuple[str, tuple[str, ...]], list[tuple[float, tuple[float, ...], float]]] = {}
     total_units = len(specs) * (2 if horizon > 1 else 1)
     completed_units = 0.0
@@ -3120,17 +3319,29 @@ def position_strategy_efficiency_rows(
                 inner_action_main_stat=event.get("action_main_stat"),
             )
 
-        value = _expected_action_value(
-            inventory_rows,
-            game,
-            character,
-            probability_model,
-            spec,
-            unit_horizon,
-            memo,
-            quality_cache,
-            progress_callback=unit_progress,
-        )
+        if use_state_dp and base_state is not None:
+            value = expected_state_action_value(
+                base_state,
+                game,
+                character,
+                probability_model,
+                spec,
+                unit_horizon,
+                memo=state_memo,
+                quality_cache=quality_cache,
+            )
+        else:
+            value = _expected_action_value(
+                inventory_rows,
+                game,
+                character,
+                probability_model,
+                spec,
+                unit_horizon,
+                memo,
+                quality_cache,
+                progress_callback=unit_progress,
+            )
         completed_units += 1
         _emit_progress(
             progress_callback,
