@@ -763,6 +763,25 @@ class PieceCard(QFrame):
         self.main_label.setText(f"主属性：{piece.main_stat}  +{piece.level}")
         self.substat_label.setText(f"副词条：{_piece_substat_label(piece)}")
         self.metrics_label.setText(f"有效 {effective} / 质量 {quality}")
+        try:
+            score = score_piece(piece, game, character)
+        except Exception:
+            return
+        self.main_label.setStyleSheet(
+            "color: #0b57d0; font-weight: 700;"
+            if score.main_stat_preferred
+            else "color: #b3261e; font-weight: 700;"
+        )
+        metric_color = {
+            "excellent": "#137333",
+            "good": "#0b57d0",
+            "usable": "#8a5a00",
+            "weak": "#b3261e",
+        }.get(score.rating, "#56606b")
+        self.metrics_label.setStyleSheet(
+            f"border-radius: 10px; padding: 3px 9px; font-weight: 700; "
+            f"background: #f8fafc; color: {metric_color};"
+        )
 
     def mousePressEvent(self, event) -> None:  # type: ignore[override]
         if event.button() == Qt.MouseButton.LeftButton:
@@ -912,11 +931,18 @@ class OptimizerWindow(QMainWindow):
         self.save_current_button = QPushButton("保存当前装备到本机")
         self.load_example_button = QPushButton("载入示例当前装备")
         self.add_inventory_button = QPushButton("添加库存件")
+        self.copy_inventory_button = QPushButton("复制选中库存")
+        self.clear_substats_button = QPushButton("清空选中副词条")
         self.delete_inventory_button = QPushButton("删除选中库存件")
         self.save_inventory_button = QPushButton("保存库存到本机")
+        self.export_inventory_button = QPushButton("导出完整明细")
         self.position_filter = QComboBox()
         self.set_filter = QComboBox()
         self.main_filter = QComboBox()
+        self.target_set_filter = QCheckBox("只看目标套装")
+        self.weak_position_filter = QCheckBox("只看当前弱位")
+        self.unfinished_filter = QCheckBox("只看未满级胚子")
+        self.replaceable_filter = QCheckBox("只看可替换当前")
         self.inventory_summary_table = QTableWidget()
         self.inventory_detail_label = QLabel("选择一件库存查看副词条详情。")
         self.inventory_detail_label.setWordWrap(True)
@@ -1012,6 +1038,10 @@ class OptimizerWindow(QMainWindow):
         filter_layout.addWidget(self.set_filter)
         filter_layout.addWidget(QLabel("主属性"))
         filter_layout.addWidget(self.main_filter)
+        filter_layout.addWidget(self.target_set_filter)
+        filter_layout.addWidget(self.weak_position_filter)
+        filter_layout.addWidget(self.unfinished_filter)
+        filter_layout.addWidget(self.replaceable_filter)
         filter_layout.addStretch(1)
         inventory_layout.addLayout(filter_layout)
         self.inventory_summary_table.setAlternatingRowColors(True)
@@ -1025,8 +1055,11 @@ class OptimizerWindow(QMainWindow):
         inventory_layout.addWidget(detail_group)
         inventory_buttons = QHBoxLayout()
         inventory_buttons.addWidget(self.add_inventory_button)
+        inventory_buttons.addWidget(self.copy_inventory_button)
+        inventory_buttons.addWidget(self.clear_substats_button)
         inventory_buttons.addWidget(self.delete_inventory_button)
         inventory_buttons.addWidget(self.save_inventory_button)
+        inventory_buttons.addWidget(self.export_inventory_button)
         inventory_buttons.addStretch(1)
         inventory_layout.addLayout(inventory_buttons)
         inventory_page_layout.addWidget(inventory_group)
@@ -1116,14 +1149,21 @@ class OptimizerWindow(QMainWindow):
         self.position_filter.currentIndexChanged.connect(lambda _index: self._refresh_inventory_view())
         self.set_filter.currentIndexChanged.connect(lambda _index: self._refresh_inventory_view())
         self.main_filter.currentIndexChanged.connect(lambda _index: self._refresh_inventory_view())
+        self.target_set_filter.stateChanged.connect(lambda _state: self._refresh_inventory_view())
+        self.weak_position_filter.stateChanged.connect(lambda _state: self._refresh_inventory_view())
+        self.unfinished_filter.stateChanged.connect(lambda _state: self._refresh_inventory_view())
+        self.replaceable_filter.stateChanged.connect(lambda _state: self._refresh_inventory_view())
         self.inventory_summary_table.itemSelectionChanged.connect(self._refresh_inventory_detail)
         self.log_toggle_button.toggled.connect(self._set_log_visible)
         self.confirm_button.clicked.connect(self.confirm_current)
         self.save_current_button.clicked.connect(self.save_current)
         self.load_example_button.clicked.connect(self.load_example_current)
         self.add_inventory_button.clicked.connect(self.add_inventory)
+        self.copy_inventory_button.clicked.connect(self.copy_selected_inventory)
+        self.clear_substats_button.clicked.connect(self.clear_selected_inventory_substats)
         self.delete_inventory_button.clicked.connect(self.delete_inventory)
         self.save_inventory_button.clicked.connect(self.save_inventory)
+        self.export_inventory_button.clicked.connect(self.export_inventory_details)
         self.best_button.clicked.connect(self.run_best_loadout)
         self.action_button.clicked.connect(self.run_action_ev)
         self.cancel_action_button.clicked.connect(self.cancel_action_ev)
@@ -1369,7 +1409,53 @@ class OptimizerWindow(QMainWindow):
             return False
         if main_filter and piece.main_stat != main_filter:
             return False
+        if self.target_set_filter.isChecked() and piece.set_name not in self._target_set_names():
+            return False
+        if self.weak_position_filter.isChecked() and not self._piece_is_current_weak_position(piece):
+            return False
+        if self.unfinished_filter.isChecked() and piece.level >= self.selected_game().enhancement.max_level:
+            return False
+        if self.replaceable_filter.isChecked() and not self._piece_can_replace_current(piece):
+            return False
         return True
+
+    def _target_set_names(self) -> set[str]:
+        character = self.selected_character()
+        plan = character.active_set_plan()
+        if plan is None or plan.is_unrestricted:
+            return {character.target_set}
+        return set(plan.target_sets)
+
+    def _current_pieces_by_position(self) -> dict[str, GearPiece]:
+        return {
+            position_key(piece.position): piece
+            for piece in self._hidden_table_pieces(self.current_table)
+        }
+
+    def _current_weak_position_key(self) -> str | None:
+        pieces = self._hidden_table_pieces(self.current_table)
+        if not pieces:
+            return None
+        try:
+            analysis = analyse_current_gear(pieces, self.selected_game(), self.selected_character())
+        except Exception:
+            return None
+        return position_key(analysis.weakest_position) if analysis.weakest_position is not None else None
+
+    def _piece_is_current_weak_position(self, piece: GearPiece) -> bool:
+        weak_position = self._current_weak_position_key()
+        return weak_position is not None and position_key(piece.position) == weak_position
+
+    def _piece_can_replace_current(self, piece: GearPiece) -> bool:
+        current = self._current_pieces_by_position().get(position_key(piece.position))
+        if current is None or current.locked:
+            return False
+        try:
+            candidate_score = score_piece(piece, self.selected_game(), self.selected_character())
+            current_score = score_piece(current, self.selected_game(), self.selected_character())
+        except Exception:
+            return False
+        return candidate_score.weighted_score > current_score.weighted_score
 
     def _refresh_inventory_view(self) -> None:
         if not self.characters:
@@ -1382,7 +1468,7 @@ class OptimizerWindow(QMainWindow):
             for source_row, piece in enumerate(pieces)
             if self._inventory_piece_visible(piece)
         ]
-        columns = ["位置", "套装", "主属性", "等级", "有效", "质量", "锁定", "操作"]
+        columns = ["位置", "套装", "主属性", "等级", "有效", "质量", "锁定", "备注/操作"]
         self.inventory_summary_table.clear()
         self.inventory_summary_table.setColumnCount(len(columns))
         self.inventory_summary_table.setHorizontalHeaderLabels(columns)
@@ -1643,8 +1729,11 @@ class OptimizerWindow(QMainWindow):
         self.cancel_action_button.setEnabled(self._action_process is not None)
         self.confirm_button.setEnabled(not busy)
         self.add_inventory_button.setEnabled(not busy)
+        self.copy_inventory_button.setEnabled(not busy)
+        self.clear_substats_button.setEnabled(not busy)
         self.delete_inventory_button.setEnabled(not busy)
         self.save_inventory_button.setEnabled(not busy)
+        self.export_inventory_button.setEnabled(not busy)
 
     def _collect_current_or_warn(self) -> list[GearPiece] | None:
         game = self.selected_game()
@@ -1711,6 +1800,24 @@ class OptimizerWindow(QMainWindow):
         self.inventory_table.add_piece(piece)
         self.progress_label.setText("已添加一件库存；不会自动计算。")
 
+    def copy_selected_inventory(self) -> None:
+        source_row = self._selected_inventory_source_row()
+        pieces = self._hidden_table_pieces(self.inventory_table)
+        if source_row is None or source_row < 0 or source_row >= len(pieces):
+            return
+        self.inventory_table.add_piece(pieces[source_row].model_copy(deep=True))
+        self.progress_label.setText("已复制选中库存；不会自动计算。")
+
+    def clear_selected_inventory_substats(self) -> None:
+        source_row = self._selected_inventory_source_row()
+        pieces = self._hidden_table_pieces(self.inventory_table)
+        if source_row is None or source_row < 0 or source_row >= len(pieces):
+            return
+        pieces[source_row] = pieces[source_row].model_copy(update={"substats": []})
+        self.inventory_table.set_context(self.selected_game(), self.selected_character(), pieces)
+        self._inventory_changed()
+        self.progress_label.setText("已清空选中库存副词条；不会自动计算。")
+
     def delete_inventory(self) -> None:
         source_row = self._selected_inventory_source_row()
         if source_row is None:
@@ -1728,6 +1835,24 @@ class OptimizerWindow(QMainWindow):
             return
         path = save_user_inventory(self.selected_game().id, self.selected_character().id, pieces)
         self.progress_label.setText(f"已保存 {len(pieces)} 件库存：{path}")
+
+    def export_inventory_details(self) -> None:
+        pieces = self._hidden_table_pieces(self.inventory_table)
+        output_path = PROJECT_ROOT / "reports" / "inventory_export.json"
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(
+            json.dumps(
+                {
+                    "game_id": self.selected_game().id,
+                    "character_id": self.selected_character().id,
+                    "pieces": [_model_payload(piece) for piece in pieces],
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        self.progress_label.setText(f"已导出 {len(pieces)} 件库存完整明细：{output_path}")
 
     def _ensure_current_still_confirmed(self, pieces: list[GearPiece]) -> bool:
         if self.current_confirmed_digest != _pieces_digest(pieces):

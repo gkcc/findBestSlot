@@ -180,6 +180,11 @@ def test_optimizer_window_constructs_key_pyside6_components(monkeypatch, tmp_pat
         assert window.current_cards[0].icon_label.toolTip()
         assert window.inventory_summary_table.columnCount() == 8
         assert window.inventory_summary_table.horizontalHeaderItem(0).text() == "位置"
+        assert window.inventory_summary_table.horizontalHeaderItem(7).text() == "备注/操作"
+        assert window.target_set_filter.text() == "只看目标套装"
+        assert window.weak_position_filter.text() == "只看当前弱位"
+        assert window.unfinished_filter.text() == "只看未满级胚子"
+        assert window.replaceable_filter.text() == "只看可替换当前"
         assert window.result_tabs.tabText(0) == "Action EV 明细"
         assert window.result_tabs.tabText(1) == "代表搭配"
         assert window.result_tabs.tabText(2) == "运行日志"
@@ -199,6 +204,9 @@ def test_optimizer_window_constructs_key_pyside6_components(monkeypatch, tmp_pat
             "cancel_action_ev",
             "edit_current_piece",
             "edit_inventory_piece",
+            "copy_selected_inventory",
+            "clear_selected_inventory_substats",
+            "export_inventory_details",
         ]:
             assert callable(getattr(window, method))
     finally:
