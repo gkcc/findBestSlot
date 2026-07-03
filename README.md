@@ -6,7 +6,7 @@
 
 ## 当前形态
 
-- 主入口是 PySide6 原生窗口：推荐使用 `gacha-gear-optimizer`；`gacha-gear-optimizer-desktop` 是兼容旧用法的别名，`python desktop_app.py` 和 `scripts/start_desktop.cmd` 也会启动同一个桌面应用。
+- 主入口是 PySide6 原生窗口：推荐使用 `gacha-gear-optimizer`；`gacha-gear-optimizer-desktop` 是兼容旧用法的别名，`python desktop_app.py`、`scripts/start_desktop.ps1` 和 `scripts/start_desktop.cmd` 也会启动同一个桌面应用。
 - 不再保留旧 Web UI、Streamlit 服务、浏览器窗口壳或 `start_app` 脚本。
 - 桌面版复用 `src/gear_optimizer` 的核心算法、YAML 配置、库存保存和当前装备保存逻辑。
 - PyInstaller Windows exe 会打包 `src`、`configs`、`examples`、`assets` 和 PySide6 runtime。
@@ -24,7 +24,13 @@
 
 当前装备必须先确认才允许计算。库存变化、当前装备变化、游戏/角色/概率变化都会清空旧结果，避免拿过期盘面继续算。
 
-Action EV 不做 Monte Carlo、不做快速预览、不做近似推荐。horizon=2 可能耗时较长，会在独立 worker 子进程中运行，主窗口仍可切换页面；计算期间可以取消，取消后不会把未完成的 partial 结果展示为推荐。
+Action EV 不做 Monte Carlo、不做快速预览、不做近似推荐。horizon=1/2 都是理论精确计算；horizon=2 可能耗时较长，会在独立 worker 子进程中运行，主窗口仍可切换页面；计算期间可以取消，取消后不会把未完成的 partial 结果展示为推荐。
+
+结果页先展示推荐卡，包含推荐动作、目标套装/位置、主属性、固定副属性、horizon、质量/母盘、有效/母盘、相对随机和“精确”计算口径。Action EV 明细默认显示前 20 条，可点击“显示全部”展开完整精确结果用于审计。
+
+## 驱动盘图标
+
+游戏规则里的套装可以配置 `set_icon_path` 指向 `assets` 下的图标文件。桌面版会在当前装备卡片、库存套装列和推荐卡中读取 32x32 套装图标，并在 tooltip 中展示 2/4 件套效果；图标缺失时自动回退文字，不影响启动或计算。
 
 ## 快速启动
 
@@ -51,12 +57,34 @@ gacha-gear-optimizer
 .\scripts\start_desktop.ps1
 ```
 
+## Worker、Profile 与 Smoke
+
+horizon=2 的精确 Action EV 通过 worker 子进程运行：
+
+```powershell
+python -m gear_optimizer.action_ev_worker --help
+```
+
+性能诊断工具会输出 JSON 和 Markdown 摘要；horizon=2 profile 属于手动重型命令，不默认纳入 CI：
+
+```powershell
+python -m gear_optimizer.profile_action_ev --horizon 1 --output reports\action_ev_profile.json --summary reports\action_ev_profile_summary.md
+python -m gear_optimizer.profile_action_ev --horizon 2 --output reports\action_ev_profile_h2.json --summary reports\action_ev_profile_h2_summary.md
+```
+
+桌面导入级 smoke 可显式运行：
+
+```powershell
+python desktop_app.py --app-check
+```
+
 ## 验证
 
 ```powershell
 python -m gear_optimizer.diagnostics
+python desktop_app.py --app-check
 python -m pytest -q
-python -m gear_optimizer.acceptance --output reports\acceptance_report.md --check --check-json reports\acceptance_checks.json
+python -m gear_optimizer.acceptance --output reports\acceptance.md --check --check-json reports\acceptance_checks.json
 ```
 
 完整发布门禁默认不跑 smoke：
