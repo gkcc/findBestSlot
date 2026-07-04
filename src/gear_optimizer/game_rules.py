@@ -165,6 +165,10 @@ def validate_gear_piece_against_game(piece: GearPiece, game: GameRules) -> None:
         raise ValueError(f"Gear position is not valid for {game.id}: {piece.position}")
     if game.sets and piece.set_name not in game.sets:
         raise ValueError(f"Gear set is not valid for {game.id}: {piece.set_name}")
+    if game.sets and not game.set_available_for_position(piece.set_name, piece.position):
+        raise ValueError(
+            f"Gear set {piece.set_name} is not available for position {piece.position}"
+        )
     allowed_mains = set(game.main_stats_for(piece.position))
     if piece.main_stat not in allowed_mains:
         raise ValueError(

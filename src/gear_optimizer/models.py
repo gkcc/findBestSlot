@@ -125,6 +125,8 @@ class GameRules(BaseModel):
     sets: list[str] = Field(default_factory=list)
     set_icons: dict[str, str] = Field(default_factory=dict)
     set_effects: dict[str, SetEffect] = Field(default_factory=dict)
+    position_set_names: dict[str, list[str]] = Field(default_factory=dict)
+    random_position_actions: bool = True
     board_layout: list[list[PositionId | None]] = Field(default_factory=list)
     positions: list[PositionRule]
     sub_stats: list[str]
@@ -145,6 +147,15 @@ class GameRules(BaseModel):
         unknown_effect_sets = set(self.set_effects) - set(self.sets)
         if unknown_effect_sets:
             raise ValueError(f"set_effects references unknown sets: {sorted(unknown_effect_sets)}")
+        for position_id, set_names in self.position_set_names.items():
+            if position_id not in position_keys:
+                raise ValueError(f"position_set_names references unknown position: {position_id}")
+            unknown_position_sets = set(set_names) - set(self.sets)
+            if unknown_position_sets:
+                raise ValueError(
+                    f"position_set_names for {position_id} references unknown sets: "
+                    f"{sorted(unknown_position_sets)}"
+                )
         if self.board_layout:
             layout_keys = [
                 position_key(value)
@@ -221,6 +232,13 @@ class GameRules(BaseModel):
 
     def set_effect(self, set_name: str) -> SetEffect | None:
         return self.set_effects.get(set_name)
+
+    def sets_for_position(self, position: PositionId) -> list[str]:
+        allowed = self.position_set_names.get(position_key(position))
+        return list(allowed) if allowed else list(self.sets)
+
+    def set_available_for_position(self, set_name: str, position: PositionId) -> bool:
+        return set_name in self.sets_for_position(position)
 
     def main_stat_probability(self, position: PositionId, stat: str) -> float:
         key = position_key(position)

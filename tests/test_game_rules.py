@@ -61,8 +61,10 @@ def test_key_main_stat_probabilities_are_explicitly_configured():
 
     assert zzz.main_stat_probability(5, "物理伤害") == pytest.approx(1 / 9)
     assert zzz.main_stat_probability(6, "生命值百分比") == pytest.approx(1 / 6)
-    assert hsr.main_stat_probability("body", "暴击率") == pytest.approx(1 / 7)
-    assert hsr.main_stat_probability("sphere", "物理属性伤害") == pytest.approx(0.1)
+    assert hsr.main_stat_probability("body", "暴击率") == pytest.approx(0.1)
+    assert hsr.main_stat_probability("feet", "速度") == pytest.approx(0.12)
+    assert hsr.main_stat_probability("sphere", "物理属性伤害") == pytest.approx(0.09)
+    assert hsr.main_stat_probability("rope", "能量恢复效率") == pytest.approx(0.0510204082)
 
 
 def test_zzz_set_icons_point_to_local_assets():
@@ -99,6 +101,27 @@ def test_hsr_placeholder_sets_cover_relic_and_planar_display():
     assert "位面饰品 2 件套" in (game.set_effect("占位位面饰品套装").two_piece or "")
     assert character.active_set_plan().name == "占位遗器 4 + 占位位面 2"
     assert model.target_set_probability == pytest.approx(1.0)
+    assert game.sets_for_position("head") == ["占位遗器套装"]
+    assert game.sets_for_position("sphere") == ["占位位面饰品套装"]
+    assert not game.set_available_for_position("占位位面饰品套装", "head")
+    assert not game.set_available_for_position("占位遗器套装", "rope")
+    assert model.resource_cost("advanced_material_fixed_main_attempt") == pytest.approx(1.0)
+    assert model.resource_cost("advanced_material_fixed_main_1_substat_attempt") == pytest.approx(2.0)
+    assert model.resource_cost("advanced_material_fixed_main_2_substats_attempt") == pytest.approx(5.0)
+
+
+def test_hsr_validation_rejects_planar_set_on_outer_relic_position():
+    game = load_game("hsr")
+    piece = GearPiece(
+        position="head",
+        set_name="占位位面饰品套装",
+        main_stat="生命值",
+        level=15,
+        substats=[],
+    )
+
+    with pytest.raises(ValueError, match="not available for position"):
+        validate_current_gear_against_game([piece], game)
 
 
 def test_current_and_candidate_examples_validate_against_games():

@@ -450,8 +450,9 @@ def test_piece_editor_uses_card_controls_and_can_check_best_loadout(monkeypatch,
             assert dialog.level_spin.minimumHeight() >= 38
             assert dialog.substat_cards[0].roll_spin.minimumHeight() >= 38
             assert dialog.check_button.isEnabled()
-            dialog._select_set(game.sets[-1])
-            assert dialog._selected_set == game.sets[-1]
+            valid_set = game.sets_for_position(piece.position)[-1]
+            dialog._select_set(valid_set)
+            assert dialog._selected_set == valid_set
             dialog._move_substat_card(0, 1)
             assert dialog.substat_cards[0].index == 0
             dialog._run_optimal_check()
@@ -576,6 +577,24 @@ def test_gear_piece_entry_consistency_flags_substat_and_roll_mismatches():
     )
     assert warnings == []
     assert any("最多应有 0 次副属性强化" in error for error in errors)
+
+
+def test_hsr_default_pieces_use_position_legal_sets():
+    pytest.importorskip("PySide6")
+
+    from gear_optimizer.game_rules import load_characters, load_game, validate_gear_piece_against_game
+    from gear_optimizer.pyside6_app import _default_inventory_piece, _default_piece
+
+    game = load_game("hsr")
+    character = next(item for item in load_characters("hsr") if item.id == "hsr_placeholder")
+
+    for position in game.positions:
+        default_piece = _default_piece(game, character, position.id)
+        default_inventory = _default_inventory_piece(game, character, position.id)
+        validate_gear_piece_against_game(default_piece, game)
+        validate_gear_piece_against_game(default_inventory, game)
+        assert default_piece.set_name in game.sets_for_position(position.id)
+        assert default_inventory.set_name in game.sets_for_position(position.id)
 
 
 def test_horizon_one_gain_summary_marks_no_positive_gain(monkeypatch, tmp_path):

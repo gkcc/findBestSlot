@@ -130,6 +130,7 @@ ACTION_VISIBLE_COLUMNS = [
     "固定副属性",
     "horizon",
     "期望提升",
+    "高级素材/次",
     "增益判断",
     "方案类型",
     "第一步 action",
@@ -369,12 +370,7 @@ def _default_piece(game: GameRules, character: CharacterPreset, position: str | 
     rule = game.position(position)
     preferred = character.preferred_mains_for(rule.id)
     main_stat = preferred[0] if preferred and preferred[0] in rule.main_stats else rule.main_stats[0]
-    set_plan = character.active_set_plan()
-    set_name = character.target_set
-    if set_plan and set_plan.requirements:
-        set_name = set_plan.requirements[0].primary_set
-    elif game.sets:
-        set_name = character.target_set if character.target_set in game.sets else game.sets[0]
+    set_name = _default_set_for_position(game, character, rule.id)
     substats = [
         SubstatLine(stat=stat, rolls=0)
         for stat in character.ordered_effective_substats(exclude=main_stat)
@@ -388,6 +384,27 @@ def _default_piece(game: GameRules, character: CharacterPreset, position: str | 
         initial_substat_count=4,
         substats=substats,
     )
+
+
+def _default_set_for_position(
+    game: GameRules,
+    character: CharacterPreset,
+    position: str | int,
+) -> str:
+    allowed = game.sets_for_position(position)
+    set_plan = character.active_set_plan()
+    if set_plan and set_plan.requirements:
+        for requirement in set_plan.requirements:
+            for set_name in requirement.set_names:
+                if set_name in allowed:
+                    return set_name
+    if character.target_set in allowed:
+        return character.target_set
+    if allowed:
+        return allowed[0]
+    if game.sets:
+        return game.sets[0]
+    return character.target_set
 
 
 def _default_inventory_piece(
@@ -1028,7 +1045,14 @@ class GearTable(QTableWidget):
             item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             self.setItem(row, COL_POSITION, item)
 
-        self.setCellWidget(row, COL_SET, self._combo([(name, name) for name in game.sets], piece.set_name))
+        self.setCellWidget(
+            row,
+            COL_SET,
+            self._combo(
+                [(name, name) for name in game.sets_for_position(piece.position)],
+                piece.set_name,
+            ),
+        )
         self.setCellWidget(
             row,
             COL_MAIN,
@@ -1087,6 +1111,19 @@ class GearTable(QTableWidget):
     def _position_changed(self, row: int) -> None:
         game, _character = self._require_context()
         position = self._position_value(row)
+        set_combo = self.cellWidget(row, COL_SET)
+        current_set = str(set_combo.currentData() if isinstance(set_combo, QComboBox) else "")
+        if isinstance(set_combo, QComboBox):
+            self._loading = True
+            try:
+                set_combo.clear()
+                allowed_sets = game.sets_for_position(position)
+                for set_name in allowed_sets:
+                    set_combo.addItem(set_name, set_name)
+                index = set_combo.findData(current_set)
+                set_combo.setCurrentIndex(index if index >= 0 else 0)
+            finally:
+                self._loading = False
         main_combo = self.cellWidget(row, COL_MAIN)
         current = str(main_combo.currentData() if isinstance(main_combo, QComboBox) else "")
         if isinstance(main_combo, QComboBox):
@@ -1629,12 +1666,20 @@ class GearPieceEditDialog(QDialog):
         for column in range(4):
             self.set_card_grid.setColumnStretch(column, 1)
 
+    def _allowed_set_names(self) -> set[str]:
+        return set(self.game.sets_for_position(self._position_value()))
+
     def _select_set(self, set_name: str) -> None:
+        allowed = self._allowed_set_names()
+        if set_name not in allowed:
+            set_name = next((name for name in self.game.sets if name in allowed), set_name)
         if set_name not in self._set_buttons and self._set_buttons:
-            set_name = next(iter(self._set_buttons))
+            set_name = next((name for name in self._set_buttons if name in allowed), next(iter(self._set_buttons)))
         self._selected_set = set_name
         for name, button in self._set_buttons.items():
             selected = name == set_name
+            enabled = name in allowed
+            button.setEnabled(enabled)
             button.setChecked(selected)
             button.setStyleSheet(_set_button_style(selected))
 
@@ -1653,6 +1698,7 @@ class GearPieceEditDialog(QDialog):
             preferred = self.character.preferred_mains_for(position)
             self._selected_main = next((stat for stat in preferred if stat in allowed), allowed[0])
         self._rebuild_main_stat_cards(allowed)
+        self._select_set(self._selected_set)
         self._refresh_substat_options()
 
     def _rebuild_main_stat_cards(self, allowed: list[str]) -> None:

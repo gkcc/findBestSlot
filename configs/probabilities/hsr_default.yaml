@@ -1,6 +1,6 @@
 id: hsr_default
 game: hsr
-name: 崩铁默认占位模型
+name: 崩铁通用合成概率模型（调研版）
 target_set_probability: 1.0
 initial_substat_count_probabilities:
   "3": 0.8
@@ -10,5 +10,10 @@ resource_costs:
   mother_disk_fixed_position_attempt: 1.0
   tuner_per_fixed_main_attempt: 1.0
   core_per_fixed_substat_attempt: 1.0
+  core_fixed_substat_1_attempt: 1.0
+  core_fixed_substat_2_attempt: 4.0
+  advanced_material_fixed_main_attempt: 1.0
+  advanced_material_fixed_main_1_substat_attempt: 2.0
+  advanced_material_fixed_main_2_substats_attempt: 5.0
 notes:
-  占位模型仅用于加载和 UI 验证；目标套装按指定目标 100% 口径展示，暂不代表真实崩铁刷取/合成概率；校音器/共鸣核只单独计数，不折算成母盘。
+  合成按定向合成口径处理：固定位置为基础；固定主属性消耗 1 个自塑尘脂；固定主属性并额外锁 1 个副属性总消耗 2 个自塑尘脂；固定主属性并额外锁 2 个副属性总消耗 5 个自塑尘脂。initial 3/4 词条概率暂用社区常见 80/20 假设；主词条与副词条权重见 configs/games/hsr.yaml。

@@ -1783,6 +1783,8 @@ def _candidate_distribution_for_action(
         valid_main_stats = game.main_stats_for(position)
         main_stats = [fixed_main_stat] if fixed_main_stat else valid_main_stats
         for set_name, set_probability in _set_distribution(probability_model, set_options):
+            if not game.set_available_for_position(set_name, position):
+                continue
             for main_stat in main_stats:
                 if main_stat not in valid_main_stats:
                     continue
@@ -2003,6 +2005,14 @@ def _fixed_substat_action_options(
     ]
 
 
+def _set_options_available_for_position(
+    game: GameRules,
+    set_options: Sequence[str],
+    position: str | int,
+) -> bool:
+    return any(game.set_available_for_position(set_name, position) for set_name in set_options)
+
+
 def _generation_action_specs(
     game: GameRules,
     character: CharacterPreset,
@@ -2014,6 +2024,8 @@ def _generation_action_specs(
         set_options = tuple(set_options_list)
         label = set_label or " / ".join(set_options)
         for rule in game.positions:
+            if not _set_options_available_for_position(game, set_options, rule.id):
+                continue
             specs.append(ActionSpec("固定位置", label, set_options, rule.id))
             if not include_fixed_main or len(game.main_stats_for(rule.id)) <= 1:
                 continue
@@ -2040,7 +2052,8 @@ def _generation_action_specs(
                             required_substats=required_substats,
                         )
                     )
-        specs.append(ActionSpec("随机位置", label, tuple(set_options), None))
+        if game.random_position_actions:
+            specs.append(ActionSpec("随机位置", label, tuple(set_options), None))
     return specs
 
 
@@ -2108,6 +2121,8 @@ def _dominant_generation_specs_for_target(
     set_options: tuple[str, ...],
     position: str | int,
 ) -> list[ActionSpec]:
+    if not _set_options_available_for_position(game, set_options, position):
+        return []
     main_options = _main_stat_action_options(game, character, position)
     if len(game.main_stats_for(position)) <= 1:
         return [ActionSpec("固定位置", set_label, set_options, position)]
@@ -3012,11 +3027,26 @@ def _action_costs(
         if spec.fixed_main_stat
         else 0.0
     )
-    core = (
-        probability_model.resource_cost("core_per_fixed_substat_attempt", 1.0)
-        * len(spec.required_substats)
+    core = _fixed_substat_extra_resource_cost(
+        probability_model,
+        len(spec.required_substats),
     )
     return mother, tuner, core
+
+
+def _fixed_substat_extra_resource_cost(
+    probability_model: ProbabilityModel,
+    lock_count: int,
+) -> float:
+    if lock_count <= 0:
+        return 0.0
+    configured = probability_model.resource_cost(
+        f"core_fixed_substat_{lock_count}_attempt",
+        -1.0,
+    )
+    if configured >= 0:
+        return configured
+    return probability_model.resource_cost("core_per_fixed_substat_attempt", 1.0) * lock_count
 
 
 def _action_position_label(spec: ActionSpec, game: GameRules) -> str:
@@ -3101,6 +3131,9 @@ def _action_ev_cache_key(
         "game": {
             "id": game.id,
             "positions": [position.model_dump(mode="json") for position in game.positions],
+            "sets": game.sets,
+            "position_set_names": game.position_set_names,
+            "random_position_actions": game.random_position_actions,
             "sub_stats": game.sub_stats,
             "main_stat_probabilities": game.main_stat_probabilities,
             "sub_stat_probabilities": game.sub_stat_probabilities,
@@ -3632,7 +3665,6 @@ def fixed_substat_gain_ladder_rows(
     }
     fixed_position_cost = probability_model.resource_cost("mother_disk_fixed_position_attempt", 6.0)
     tuner_cost = probability_model.resource_cost("tuner_per_fixed_main_attempt", 1.0)
-    core_cost = probability_model.resource_cost("core_per_fixed_substat_attempt", 1.0)
     rows: list[dict[str, float | str]] = []
 
     for rule in game.positions:
@@ -3694,7 +3726,10 @@ def fixed_substat_gain_ladder_rows(
                 locked_probability = _probability_at_least(locked_distribution, threshold)
                 locked_mother_disks = _expected_cost(fixed_position_cost, locked_probability)
                 expected_tuners = _expected_cost(tuner_cost, locked_probability)
-                expected_cores = _expected_cost(core_cost * lock_count, locked_probability)
+                expected_cores = _expected_cost(
+                    _fixed_substat_extra_resource_cost(probability_model, lock_count),
+                    locked_probability,
+                )
                 if not isfinite(fixed_main_mother_disks) and not isfinite(locked_mother_disks):
                     mother_saved = 0.0
                 else:
@@ -4210,6 +4245,7 @@ def position_strategy_efficiency_rows(
             "母盘/次": round(mother_cost, 3),
             "校音器/次": round(tuner_cost, 3),
             "共鸣核/次": round(core_cost, 3),
+            "高级素材/次": round(tuner_cost + core_cost, 3),
             "质量/母盘": round(quality_efficiency, 4),
             "有效/母盘": round(effective_efficiency, 4),
             "排序向量/母盘": _quality_vector_label(efficiency, character),
@@ -4412,7 +4448,6 @@ def resource_marginal_ev_rows(
     rows: list[dict[str, float | str]] = []
     fixed_position_cost = probability_model.resource_cost("mother_disk_fixed_position_attempt", 6.0)
     tuner_cost = probability_model.resource_cost("tuner_per_fixed_main_attempt", 1.0)
-    core_cost = probability_model.resource_cost("core_per_fixed_substat_attempt", 1.0)
     current_value = _cached_best_combo_value(inventory_rows, game, character)
     memo: dict[tuple[int, tuple[tuple, ...]], tuple[float, ...]] = {}
     quality_cache: dict[tuple[str, tuple[str, ...]], list[tuple[float, tuple[float, ...], float]]] = {}
@@ -4603,7 +4638,13 @@ def resource_marginal_ev_rows(
                             if isfinite(substat_saved_quality)
                             else "∞",
                             "期望校音器/次": round(tuner_cost, 3),
-                            "期望共鸣核/次": round(core_cost * len(required_substats), 3),
+                            "期望共鸣核/次": round(
+                                _fixed_substat_extra_resource_cost(
+                                    probability_model,
+                                    len(required_substats),
+                                ),
+                                3,
+                            ),
                         }
                     )
     _lru_set(

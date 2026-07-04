@@ -28,6 +28,9 @@ from gear_optimizer.position_ev import (
     _aggregated_action_outcomes_for_spec,
     _action_outcome_distribution,
     _aggregate_inventory_outcomes,
+    _action_costs,
+    _candidate_distribution_for_action,
+    _generation_action_specs,
     _AGGREGATED_ACTION_OUTCOME_CACHE,
     _combo_value,
     _inventory_signature,
@@ -64,6 +67,22 @@ def _billy_context():
     probability_model = load_probability_models("zzz")[0]
     analysis = analyse_current_gear(
         load_current_example("examples/zzz_billy_current.yaml"),
+        game,
+        character,
+    )
+    return game, character, probability_model, analysis
+
+
+def _hsr_context():
+    game = load_game("hsr")
+    character = next(
+        item
+        for item in load_characters("hsr")
+        if item.id == "hsr_placeholder"
+    )
+    probability_model = load_probability_models("hsr")[0]
+    analysis = analyse_current_gear(
+        load_current_example("examples/hsr_placeholder_current.yaml"),
         game,
         character,
     )
@@ -1006,6 +1025,35 @@ def test_random_position_ev_is_weighted_average_of_fixed_positions(monkeypatch):
     assert calls.count("随机位置") == 0
 
 
+def test_hsr_generation_specs_do_not_include_random_position_actions():
+    hsr_game, hsr_character, _probability_model, _analysis = _hsr_context()
+    zzz_game, zzz_character, _zzz_probability_model, _zzz_analysis = _billy_context()
+
+    hsr_specs = _generation_action_specs(
+        hsr_game,
+        hsr_character,
+        include_fixed_main=False,
+        include_fixed_substats=False,
+    )
+    zzz_specs = _generation_action_specs(
+        zzz_game,
+        zzz_character,
+        include_fixed_main=False,
+        include_fixed_substats=False,
+    )
+
+    assert not any(spec.strategy == "随机位置" for spec in hsr_specs)
+    assert any(spec.strategy == "随机位置" for spec in zzz_specs)
+    assert hsr_specs
+    assert all(
+        any(
+            hsr_game.set_available_for_position(set_name, spec.target_position)
+            for set_name in spec.set_options
+        )
+        for spec in hsr_specs
+    )
+
+
 def test_fixed_main_rows_wait_until_fixed_position_beats_random(monkeypatch):
     rows, calls = _position_rows_with_fake_action_values(
         monkeypatch,
@@ -1092,6 +1140,81 @@ def test_lookahead_action_space_includes_fixed_main_and_fixed_substats(monkeypat
     assert fixed_substat["校音器/次"] == 1.0
     assert fixed_substat["共鸣核/次"] == 1.0
     assert fixed_substat["_sort_vector"] >= fixed_main["_sort_vector"]
+
+
+def test_hsr_action_costs_use_total_self_modeling_resin_steps():
+    _game, character, probability_model, _analysis = _hsr_context()
+    set_name = character.target_set
+
+    fixed_position = ActionSpec("固定位置", set_name, (set_name,), "body")
+    fixed_main = ActionSpec(
+        "固定位置 + 固定主属性",
+        set_name,
+        (set_name,),
+        "body",
+        fixed_main_stat="暴击率",
+    )
+    fixed_one_substat = ActionSpec(
+        "固定位置 + 固定主属性 + 固定副属性",
+        set_name,
+        (set_name,),
+        "body",
+        fixed_main_stat="暴击率",
+        required_substats=("暴击伤害",),
+    )
+    fixed_two_substats = ActionSpec(
+        "固定位置 + 固定主属性 + 固定副属性",
+        set_name,
+        (set_name,),
+        "body",
+        fixed_main_stat="暴击率",
+        required_substats=("暴击伤害", "速度"),
+    )
+
+    assert sum(_action_costs(fixed_position, probability_model)[1:]) == pytest.approx(0.0)
+    assert sum(_action_costs(fixed_main, probability_model)[1:]) == pytest.approx(1.0)
+    assert sum(_action_costs(fixed_one_substat, probability_model)[1:]) == pytest.approx(2.0)
+    assert sum(_action_costs(fixed_two_substats, probability_model)[1:]) == pytest.approx(5.0)
+
+
+def test_hsr_candidate_distribution_respects_outer_and_planar_set_positions():
+    game, character, probability_model, _analysis = _hsr_context()
+
+    illegal_head_distribution = _candidate_distribution_for_action(
+        game,
+        character,
+        probability_model,
+        ["占位位面饰品套装"],
+        "head",
+    )
+    legal_head_distribution = _candidate_distribution_for_action(
+        game,
+        character,
+        probability_model,
+        ["占位遗器套装"],
+        "head",
+    )
+    illegal_rope_distribution = _candidate_distribution_for_action(
+        game,
+        character,
+        probability_model,
+        ["占位遗器套装"],
+        "rope",
+    )
+    legal_rope_distribution = _candidate_distribution_for_action(
+        game,
+        character,
+        probability_model,
+        ["占位位面饰品套装"],
+        "rope",
+    )
+
+    assert illegal_head_distribution == []
+    assert illegal_rope_distribution == []
+    assert legal_head_distribution
+    assert legal_rope_distribution
+    assert {row["set_name"] for row, _probability in legal_head_distribution} == {"占位遗器套装"}
+    assert {row["set_name"] for row, _probability in legal_rope_distribution} == {"占位位面饰品套装"}
 
 
 def test_action_rows_include_upgrading_existing_inventory_candidate():
