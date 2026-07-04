@@ -160,7 +160,12 @@ def test_optimizer_window_constructs_key_pyside6_components(monkeypatch, tmp_pat
     pytest.importorskip("PySide6")
 
     from PySide6.QtWidgets import QApplication
-    from gear_optimizer.pyside6_app import ACTION_DETAIL_DISPLAY_LIMIT, OptimizerWindow, PieceCard
+    from gear_optimizer.pyside6_app import (
+        ACTION_DETAIL_DISPLAY_LIMIT,
+        OptimizerWindow,
+        PieceCard,
+        _default_inventory_piece,
+    )
 
     app = QApplication.instance() or QApplication([])
     window = OptimizerWindow(width=1200, height=760)
@@ -186,10 +191,14 @@ def test_optimizer_window_constructs_key_pyside6_components(monkeypatch, tmp_pat
         assert window.selected_agent().name != "崩铁通用暴击模板"
         assert window.selected_agent().card_path
         assert window.selected_agent().name in window.agent_summary_label.text()
+        if window.selected_agent().faction != "未知":
+            assert window.selected_agent().faction in window.agent_summary_label.text()
         assert window.selected_character().id in window.agent_summary_label.text()
         assert window.overview_confirm_label.text() in {"未确认", "已确认"}
+        assert window.current_table.rowCount() == 0
         assert len(window.current_cards) == 6
         assert all(isinstance(card, PieceCard) for card in window.current_cards)
+        assert "空槽" in window.current_cards[0].position_label.text()
         assert window.current_cards[0].icon_label.toolTip()
         assert window._current_action_ev_engine() == "inventory_recursive"
         assert window.inventory_summary_table.isHidden()
@@ -201,6 +210,14 @@ def test_optimizer_window_constructs_key_pyside6_components(monkeypatch, tmp_pat
         assert window.replaceable_filter.text() == "只看可替换当前"
         game = window.selected_game()
         character = window.selected_character()
+        empty_slot_piece = _default_inventory_piece(game, character, game.positions[0].id)
+        window.inventory_table.set_context(game, character, [empty_slot_piece])
+        window._inventory_changed()
+        window.equip_inventory_piece(0)
+        assert window.current_table.rowCount() == 1
+        assert window.inventory_table.rowCount() == 0
+        assert "该槽位之前为空" in window.progress_label.text()
+        window.load_example_current()
         current_before = window._hidden_table_pieces(window.current_table)
         inventory_piece = current_before[0].model_copy(
             update={
@@ -409,6 +426,7 @@ def test_optimizer_window_constructs_key_pyside6_components(monkeypatch, tmp_pat
             app.processEvents()
             assert window.selected_character().id == target_agent.character_preset_id
             assert target_agent.name in window.agent_summary_label.text()
+            assert target_agent.faction in window.agent_summary_label.text()
             assert target_agent.character_preset_id in window.agent_summary_label.text()
     finally:
         window.close()

@@ -515,16 +515,10 @@ def _initial_current_pieces(game: GameRules, character: CharacterPreset) -> list
     try:
         saved = load_user_current_gears(game.id, character.id)
         if saved:
-            return _complete_position_pieces(game, character, list(saved[-1]["pieces"]))
+            return list(saved[-1]["pieces"])
     except Exception:
         pass
-    try:
-        examples = list_current_examples(game.id, character.id)
-        if examples:
-            return _complete_position_pieces(game, character, load_current_example(examples[0]["path"]))
-    except Exception:
-        pass
-    return [_default_piece(game, character, rule.id) for rule in game.positions]
+    return []
 
 
 def _source_label(source: str | None) -> str:
@@ -1340,6 +1334,25 @@ class PieceCard(QFrame):
             f"border-radius: 10px; padding: 3px 9px; font-weight: 700; "
             f"background: #f8fafc; color: {metric_color};"
         )
+
+    def update_empty(self, game: GameRules, position: str | int) -> None:
+        position_name = game.position_name(position)
+        self.icon_label.clear()
+        self.icon_label.setText("+")
+        self.icon_label.setToolTip(f"{position_name} 空槽")
+        self.position_label.setText(f"{position_name} 空槽")
+        self.locked_badge.setText("未录入")
+        self.locked_badge.setObjectName("MutedBadge")
+        self.locked_badge.style().unpolish(self.locked_badge)
+        self.locked_badge.style().polish(self.locked_badge)
+        self.level_badge.setText("等级 -")
+        self.metric_badge.setText("有效 -")
+        self.metric_badge.setStyleSheet("")
+        self.set_label.setText("当前没有装备")
+        self.main_label.setText("点击录入或从库存装备到这里")
+        self.main_label.setStyleSheet("color: #56606b; font-weight: 700;")
+        self.substat_label.setText("副属性：-")
+        self.setToolTip(f"{position_name} 还没有录入当前装备。")
 
     def set_selected(self, selected: bool) -> None:
         self._selected = selected
@@ -2275,12 +2288,7 @@ class OptimizerWindow(QMainWindow):
     def _agent_summary_text(self, agent: AgentMetadata | None) -> str:
         if agent is None:
             return "未选择代理人"
-        parts = [
-            agent.name,
-            agent.rarity,
-            agent.attribute,
-            agent.specialty,
-        ]
+        parts = [agent.name, agent.rarity, agent.attribute, agent.specialty, agent.faction]
         visible = [part for part in parts if part and part != UNKNOWN_LABEL]
         label = " / ".join(visible) if visible else agent.name
         version = f" · {agent.release_version}" if agent.release_version else ""
@@ -2355,6 +2363,8 @@ class OptimizerWindow(QMainWindow):
         def card_text(agent: AgentMetadata) -> str:
             lines = [agent.name]
             lines.append(f"{agent.rarity} · {agent.attribute} · {agent.specialty}")
+            if agent.faction and agent.faction != UNKNOWN_LABEL:
+                lines.append(f"阵营 {agent.faction}")
             if agent.release_version:
                 lines.append(f"实装 {agent.release_version}")
             lines.append(f"模板 {agent.character_preset_id}")
@@ -2371,7 +2381,7 @@ class OptimizerWindow(QMainWindow):
             status.setText(f"按实装版本从新到旧展示；当前筛选 {len(filtered_agents)} / {len(self.agents)} 名角色。")
             for index, agent in enumerate(filtered_agents):
                 button = QPushButton(card_text(agent))
-                button.setMinimumSize(260, 132)
+                button.setMinimumSize(280, 158)
                 button.setIconSize(QSize(92, 118))
                 pixmap = asset_pixmap(agent.card_path or agent.portrait_path, 92, 118)
                 if pixmap is not None:
@@ -2499,8 +2509,10 @@ class OptimizerWindow(QMainWindow):
         agent = self.selected_agent()
         self.overview_game_label.setText(self.game_combo.currentText() or "-")
         if agent is not None:
+            version = f" · 实装 {agent.release_version}" if agent.release_version else ""
             self.overview_character_label.setText(
-                f"{agent.name} ({agent.attribute}/{agent.specialty}) · 模板 {self.character_combo.currentText()}"
+                f"{agent.name} ({agent.rarity}/{agent.attribute}/{agent.specialty})"
+                f" · {agent.faction}{version} · 模板 {self.character_combo.currentText()}"
             )
         else:
             self.overview_character_label.setText(self.character_combo.currentText() or "-")
@@ -2553,10 +2565,15 @@ class OptimizerWindow(QMainWindow):
                     continue
                 source_row = by_position.get(position_key(position))
                 if source_row is None:
-                    continue
-                card = PieceCard(source_row)
-                card.update_piece(pieces[source_row], game, character)
-                card.clicked.connect(self.edit_current_piece)
+                    card = PieceCard(-1)
+                    card.update_empty(game, position)
+                    card.clicked.connect(
+                        lambda _row=-1, target_position=position: self.edit_current_position(target_position)
+                    )
+                else:
+                    card = PieceCard(source_row)
+                    card.update_piece(pieces[source_row], game, character)
+                    card.clicked.connect(self.edit_current_piece)
                 self.current_cards.append(card)
                 self.current_card_grid.addWidget(card, row_index, column_index)
         self._refresh_overview()
@@ -2642,6 +2659,38 @@ class OptimizerWindow(QMainWindow):
             return
         pieces[row] = dialog.piece
         self.current_table.set_context(self.selected_game(), self.selected_character(), pieces)
+        self._current_changed()
+
+    def edit_current_position(self, position: str | int) -> None:
+        pieces = self._hidden_table_pieces(self.current_table)
+        target_key = position_key(position)
+        existing_row = next(
+            (index for index, piece in enumerate(pieces) if position_key(piece.position) == target_key),
+            None,
+        )
+        if existing_row is not None:
+            self.edit_current_piece(existing_row)
+            return
+        game = self.selected_game()
+        character = self.selected_character()
+        piece = _default_inventory_piece(game, character, position).model_copy(update={"locked": False})
+        dialog = GearPieceEditDialog(
+            game,
+            character,
+            piece,
+            editable_position=False,
+            title=f"新增当前装备：{game.position_name(position)}",
+            parent=self,
+            optimal_check_callback=lambda candidate: self._optimal_loadout_check_text(
+                "new_inventory",
+                None,
+                candidate,
+            ),
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted or dialog.piece is None:
+            return
+        pieces.append(dialog.piece)
+        self.current_table.set_context(game, character, pieces)
         self._current_changed()
 
     def edit_inventory_piece(self, source_row: int) -> None:
@@ -3317,29 +3366,28 @@ class OptimizerWindow(QMainWindow):
             None,
         )
         if current_index is None:
-            QMessageBox.warning(
-                self,
-                "无法装备",
-                f"当前装备里没有 {self.selected_game().position_name(target_piece.position)}，无法互换。",
-            )
-            return
-
-        previous_current = current_pieces[current_index]
-        current_pieces[current_index] = target_piece.model_copy(deep=True)
-        inventory_pieces[source_row] = previous_current.model_copy(deep=True)
+            current_pieces.append(target_piece.model_copy(deep=True))
+            del inventory_pieces[source_row]
+        else:
+            previous_current = current_pieces[current_index]
+            current_pieces[current_index] = target_piece.model_copy(deep=True)
+            inventory_pieces[source_row] = previous_current.model_copy(deep=True)
         game = self.selected_game()
         character = self.selected_character()
         self.current_table.set_context(game, character, current_pieces)
         self.inventory_table.set_context(game, character, inventory_pieces)
         self.current_confirmed_digest = None
-        self._selected_inventory_source_row_value = source_row
+        self._selected_inventory_source_row_value = (
+            min(source_row, len(inventory_pieces) - 1) if inventory_pieces else None
+        )
         self._refresh_current_cards()
         self._refresh_inventory_filters()
         self._refresh_inventory_view()
         self._clear_results("已完成当前装备和库存互换，请重新确认当前装备。")
         self._update_action_buttons()
         self.progress_label.setText(
-            f"已装备库存 #{source_row + 1} 到 {game.position_name(target_piece.position)}；原当前件已放回库存。"
+            f"已装备库存 #{source_row + 1} 到 {game.position_name(target_piece.position)}"
+            + ("；原当前件已放回库存。" if current_index is not None else "；该槽位之前为空。")
         )
 
     def save_inventory(self) -> None:
