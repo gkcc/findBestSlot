@@ -68,6 +68,8 @@ class AgentMetadata(BaseModel):
     specialty: str = UNKNOWN_LABEL
     faction: str = UNKNOWN_LABEL
     level_cap: int | None = Field(default=None, ge=1)
+    release_version: str | None = None
+    release_order: float = 0.0
     portrait_path: str | None = None
     card_path: str | None = None
     character_preset_id: str
@@ -237,7 +239,62 @@ def agent_metadata_with_fallbacks(
         if fallback.agent_id not in known_agent_ids:
             agents.append(fallback)
             known_agent_ids.add(fallback.agent_id)
-    return agents
+    return sort_agent_metadata(agents)
+
+
+def sort_agent_metadata(agents: list[AgentMetadata]) -> list[AgentMetadata]:
+    return sorted(
+        agents,
+        key=lambda agent: (
+            float(agent.release_order or 0.0),
+            1 if str(agent.rarity).startswith("5") or str(agent.rarity).upper() == "S" else 0,
+            agent.name,
+        ),
+        reverse=True,
+    )
+
+
+def filter_agent_metadata(
+    agents: list[AgentMetadata],
+    *,
+    attribute: str | None = None,
+    specialty: str | None = None,
+    text: str | None = None,
+) -> list[AgentMetadata]:
+    attribute = "" if attribute in {None, "", "全部"} else str(attribute)
+    specialty = "" if specialty in {None, "", "全部"} else str(specialty)
+    needle = " ".join(str(text or "").split()).lower()
+    rows: list[AgentMetadata] = []
+    for agent in agents:
+        if attribute and agent.attribute != attribute:
+            continue
+        if specialty and agent.specialty != specialty:
+            continue
+        haystack = " ".join(
+            [
+                agent.name,
+                agent.agent_id,
+                agent.rarity,
+                agent.attribute,
+                agent.specialty,
+                agent.faction,
+                agent.character_preset_id,
+                agent.release_version or "",
+            ]
+        ).lower()
+        if needle and needle not in haystack:
+            continue
+        rows.append(agent)
+    return sort_agent_metadata(rows)
+
+
+def agent_filter_values(agents: list[AgentMetadata], field_name: str) -> list[str]:
+    values = {
+        str(getattr(agent, field_name, "") or "")
+        for agent in agents
+        if str(getattr(agent, field_name, "") or "") not in {"", UNKNOWN_LABEL}
+    }
+    return sorted(values)
 
 
 def missing_agent_asset_issues(

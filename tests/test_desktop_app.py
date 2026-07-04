@@ -178,6 +178,15 @@ def test_optimizer_window_constructs_key_pyside6_components(monkeypatch, tmp_pat
         assert window.selected_agent() is not None
         assert window.selected_agent().character_preset_id == window.selected_character().id
         assert window.selected_character().id in window.agent_summary_label.text()
+        hsr_index = window.game_combo.findData("hsr")
+        assert hsr_index >= 0
+        window.game_combo.setCurrentIndex(hsr_index)
+        assert len(window.agents) >= 80
+        assert window.agents[0].release_order >= window.agents[-1].release_order
+        assert window.selected_agent().name != "崩铁通用暴击模板"
+        assert window.selected_agent().card_path
+        assert window.selected_agent().name in window.agent_summary_label.text()
+        assert window.selected_character().id in window.agent_summary_label.text()
         assert window.overview_confirm_label.text() in {"未确认", "已确认"}
         assert len(window.current_cards) == 6
         assert all(isinstance(card, PieceCard) for card in window.current_cards)

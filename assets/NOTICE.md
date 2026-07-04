@@ -40,3 +40,16 @@ Cached icon files:
 - `yunkui_tales.png`: https://zenless-zone-zero.fandom.com/wiki/File:Drive_Disc_Yunkui_Tales_Icon.png
 
 Fandom community content is generally available under CC BY-SA unless a page indicates otherwise. These files are kept separate from the core logic so they can be replaced with original or licensed assets later.
+
+## Honkai: Star Rail agent images
+
+Character card and icon thumbnails under `assets/hsr/agents/` are locally resized derivatives of image resources indexed by `Mar-7th/StarRailRes`.
+They are used only for local UI prototyping so the agent selector can show real character art instead of template placeholders.
+
+Source index:
+
+- StarRailRes repository: https://github.com/Mar-7th/StarRailRes
+- Character metadata: https://raw.githubusercontent.com/Mar-7th/StarRailRes/master/index_new/cn/characters.json
+- Original image paths use each character's `icon` and `preview` fields from that metadata.
+
+The thumbnails are kept separate from calculation logic and can be replaced by user-provided or officially licensed local assets later.

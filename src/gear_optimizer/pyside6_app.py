@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QInputDialog,
     QLabel,
+    QLineEdit,
     QMainWindow,
     QMessageBox,
     QPushButton,
@@ -53,7 +54,13 @@ from gear_optimizer.game_rules import (
     validate_current_gear_against_game,
     validate_gear_piece_against_game,
 )
-from gear_optimizer.agents import AgentMetadata, UNKNOWN_LABEL, agent_metadata_with_fallbacks
+from gear_optimizer.agents import (
+    AgentMetadata,
+    UNKNOWN_LABEL,
+    agent_filter_values,
+    agent_metadata_with_fallbacks,
+    filter_agent_metadata,
+)
 from gear_optimizer.action_ev_worker import ACTION_EV_ENGINE_ENV, DEFAULT_ACTION_EV_ENGINE, normalize_action_ev_engine
 from gear_optimizer.models import CharacterPreset, GameRules, GearPiece, ProbabilityModel, SubstatLine, position_key
 from gear_optimizer.position_ev import (
@@ -65,7 +72,7 @@ from gear_optimizer.position_ev import (
 from gear_optimizer.presets import list_current_examples, load_current_example
 from gear_optimizer.scoring import analyse_current_gear
 from gear_optimizer.scoring import score_piece
-from gear_optimizer.ui_assets import set_effect_tooltip, set_icon, set_icon_pixmap
+from gear_optimizer.ui_assets import asset_pixmap, set_effect_tooltip, set_icon, set_icon_pixmap
 from gear_optimizer.user_current_gear import load_user_current_gears, save_user_current_gear
 from gear_optimizer.user_inventory import load_user_inventory, save_user_inventory, user_inventory_store_path
 
@@ -1876,6 +1883,7 @@ class OptimizerWindow(QMainWindow):
         self.games = load_games()
         self.characters: list[CharacterPreset] = []
         self.agents: list[AgentMetadata] = []
+        self._selected_agent_id_by_game: dict[str, str] = {}
         self.probabilities: list[ProbabilityModel] = []
         self.current_confirmed_digest: str | None = None
         self._results_stale = True
@@ -2250,6 +2258,11 @@ class OptimizerWindow(QMainWindow):
     def selected_agent(self) -> AgentMetadata | None:
         if not self.agents:
             return None
+        game_id = self.selected_game().id if self.games else ""
+        selected_id = self._selected_agent_id_by_game.get(game_id)
+        for agent in self.agents:
+            if agent.agent_id == selected_id:
+                return agent
         character_id = self.character_combo.currentData()
         for agent in self.agents:
             if agent.character_preset_id == character_id:
@@ -2267,7 +2280,8 @@ class OptimizerWindow(QMainWindow):
         ]
         visible = [part for part in parts if part and part != UNKNOWN_LABEL]
         label = " / ".join(visible) if visible else agent.name
-        return f"{label} -> {agent.character_preset_id}"
+        version = f" · {agent.release_version}" if agent.release_version else ""
+        return f"{label}{version} -> {agent.character_preset_id}"
 
     def _refresh_agent_selector_summary(self) -> None:
         agent = self.selected_agent()
@@ -2283,8 +2297,11 @@ class OptimizerWindow(QMainWindow):
                 f"{agent.name} 引用的模板 {agent.character_preset_id} 不存在，暂不能计算。",
             )
             return
+        self._selected_agent_id_by_game[self.selected_game().id] = agent.agent_id
         if self.character_combo.currentIndex() == index:
             self._refresh_agent_selector_summary()
+            self._refresh_overview()
+            self._clear_results("已切换代理人，请确认当前装备。")
             return
         self.character_combo.setCurrentIndex(index)
 
@@ -2294,35 +2311,100 @@ class OptimizerWindow(QMainWindow):
             return
         dialog = QDialog(self)
         dialog.setWindowTitle("切换代理人")
-        dialog.resize(760, 520)
+        dialog.resize(940, 640)
         root = QVBoxLayout(dialog)
+
+        filters = QHBoxLayout()
+        search = QLineEdit()
+        search.setPlaceholderText("搜索角色")
+        attribute_filter = QComboBox()
+        specialty_filter = QComboBox()
+        attribute_filter.addItem("全部")
+        for value in agent_filter_values(self.agents, "attribute"):
+            attribute_filter.addItem(value)
+        specialty_filter.addItem("全部")
+        for value in agent_filter_values(self.agents, "specialty"):
+            specialty_filter.addItem(value)
+        filters.addWidget(QLabel("搜索"))
+        filters.addWidget(search, 1)
+        filters.addWidget(QLabel("属性"))
+        filters.addWidget(attribute_filter)
+        filters.addWidget(QLabel("职介"))
+        filters.addWidget(specialty_filter)
+        root.addLayout(filters)
+
+        status = QLabel("")
+        status.setWordWrap(True)
+        root.addWidget(status)
         grid_host = QWidget()
         grid = QGridLayout(grid_host)
         grid.setHorizontalSpacing(10)
         grid.setVerticalSpacing(10)
         current_agent = self.selected_agent()
-        for index, agent in enumerate(self.agents):
-            button = QPushButton(self._agent_summary_text(agent))
-            button.setMinimumSize(220, 82)
-            button.setCheckable(True)
-            button.setChecked(
-                current_agent is not None
-                and agent.agent_id == current_agent.agent_id
+
+        def clear_grid() -> None:
+            while grid.count():
+                item = grid.takeAt(0)
+                widget = item.widget()
+                if widget is not None:
+                    widget.deleteLater()
+
+        def card_text(agent: AgentMetadata) -> str:
+            lines = [agent.name]
+            lines.append(f"{agent.rarity} · {agent.attribute} · {agent.specialty}")
+            if agent.release_version:
+                lines.append(f"实装 {agent.release_version}")
+            lines.append(f"模板 {agent.character_preset_id}")
+            return "\n".join(lines)
+
+        def rebuild_grid() -> None:
+            clear_grid()
+            filtered_agents = filter_agent_metadata(
+                self.agents,
+                attribute=attribute_filter.currentText(),
+                specialty=specialty_filter.currentText(),
+                text=search.text(),
             )
-            button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-            button.clicked.connect(
-                lambda _checked=False, selected=agent: (
-                    self._select_agent(selected),
-                    dialog.accept(),
+            status.setText(f"按实装版本从新到旧展示；当前筛选 {len(filtered_agents)} / {len(self.agents)} 名角色。")
+            for index, agent in enumerate(filtered_agents):
+                button = QPushButton(card_text(agent))
+                button.setMinimumSize(260, 132)
+                button.setIconSize(QSize(92, 118))
+                pixmap = asset_pixmap(agent.card_path or agent.portrait_path, 92, 118)
+                if pixmap is not None:
+                    button.setIcon(QIcon(pixmap))
+                button.setCheckable(True)
+                button.setChecked(
+                    current_agent is not None
+                    and agent.agent_id == current_agent.agent_id
                 )
-            )
-            grid.addWidget(button, index // 3, index % 3)
+                button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+                button.setStyleSheet(
+                    "QPushButton { text-align: left; border: 1px solid #d7dce2; "
+                    "border-radius: 8px; padding: 8px; background: #ffffff; font-weight: 700; }"
+                    "QPushButton:checked { border: 2px solid #1a73e8; background: #e8f0fe; color: #0b57d0; }"
+                    "QPushButton:hover { border-color: #1a73e8; }"
+                )
+                button.setToolTip(self._agent_summary_text(agent))
+                button.clicked.connect(
+                    lambda _checked=False, selected=agent: (
+                        self._select_agent(selected),
+                        dialog.accept(),
+                    )
+                )
+                grid.addWidget(button, index // 3, index % 3)
+            grid.setRowStretch((len(filtered_agents) + 2) // 3, 1)
+
         for column in range(3):
             grid.setColumnStretch(column, 1)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setWidget(grid_host)
         root.addWidget(scroll)
+        search.textChanged.connect(lambda _text: rebuild_grid())
+        attribute_filter.currentIndexChanged.connect(lambda _index: rebuild_grid())
+        specialty_filter.currentIndexChanged.connect(lambda _index: rebuild_grid())
+        rebuild_grid()
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         buttons.rejected.connect(dialog.reject)
         root.addWidget(buttons)
@@ -2331,6 +2413,15 @@ class OptimizerWindow(QMainWindow):
     def _reload_character_context(self) -> None:
         game = self.selected_game()
         character = self.selected_character()
+        selected_id = self._selected_agent_id_by_game.get(game.id)
+        selected_agent = next((agent for agent in self.agents if agent.agent_id == selected_id), None)
+        if selected_agent is None or selected_agent.character_preset_id != character.id:
+            matching_agent = next(
+                (agent for agent in self.agents if agent.character_preset_id == character.id),
+                None,
+            )
+            if matching_agent is not None:
+                self._selected_agent_id_by_game[game.id] = matching_agent.agent_id
         current_pieces = _initial_current_pieces(game, character)
         inventory_pieces = load_user_inventory(game.id, character.id)
         self.current_table.set_context(game, character, current_pieces)
@@ -2393,8 +2484,14 @@ class OptimizerWindow(QMainWindow):
     def _refresh_overview(self) -> None:
         if not self.games or not self.characters or not self.probabilities:
             return
+        agent = self.selected_agent()
         self.overview_game_label.setText(self.game_combo.currentText() or "-")
-        self.overview_character_label.setText(self.character_combo.currentText() or "-")
+        if agent is not None:
+            self.overview_character_label.setText(
+                f"{agent.name} ({agent.attribute}/{agent.specialty}) · 模板 {self.character_combo.currentText()}"
+            )
+        else:
+            self.overview_character_label.setText(self.character_combo.currentText() or "-")
         self.overview_probability_label.setText(self.probability_combo.currentText() or "-")
         confirmed = self.current_confirmed_digest is not None
         self._set_badge_text(self.overview_confirm_label, "已确认" if confirmed else "未确认", not confirmed)

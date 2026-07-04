@@ -10,6 +10,7 @@ from gear_optimizer.models import GameRules
 
 _PIXMAP_CACHE: dict[tuple[str, int], QPixmap | None] = {}
 _ICON_CACHE: dict[tuple[str, int], QIcon | None] = {}
+_ASSET_PIXMAP_CACHE: dict[tuple[str, int, int], QPixmap | None] = {}
 
 
 def _asset_path(relative_path: str | None) -> Path | None:
@@ -41,6 +42,28 @@ def set_icon_pixmap(game: GameRules, set_name: str, size: int = 32) -> QPixmap |
         Qt.TransformationMode.SmoothTransformation,
     )
     _PIXMAP_CACHE[cache_key] = scaled
+    return scaled
+
+
+def asset_pixmap(relative_path: str | None, width: int, height: int) -> QPixmap | None:
+    path = _asset_path(relative_path)
+    cache_key = (str(path) if path else "", width, height)
+    if cache_key in _ASSET_PIXMAP_CACHE:
+        return _ASSET_PIXMAP_CACHE[cache_key]
+    if path is None or not path.exists():
+        _ASSET_PIXMAP_CACHE[cache_key] = None
+        return None
+    pixmap = QPixmap(str(path))
+    if pixmap.isNull():
+        _ASSET_PIXMAP_CACHE[cache_key] = None
+        return None
+    scaled = pixmap.scaled(
+        width,
+        height,
+        Qt.AspectRatioMode.KeepAspectRatio,
+        Qt.TransformationMode.SmoothTransformation,
+    )
+    _ASSET_PIXMAP_CACHE[cache_key] = scaled
     return scaled
 
 

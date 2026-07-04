@@ -35,6 +35,8 @@ from gear_optimizer.agents import (
     save_agent_user_state_store,
     save_global_inventory_store,
     split_current_and_inventory_for_agent,
+    filter_agent_metadata,
+    sort_agent_metadata,
 )
 from gear_optimizer.models import CharacterPreset, GearPiece, SubstatLine, SubstatPriority
 from gear_optimizer.user_current_gear import current_gear_store_path, save_user_current_gear
@@ -141,6 +143,34 @@ def test_project_agent_catalogs_match_character_presets():
             for agent in catalog.agents
         }.issubset(character_ids)
         assert len(agent_metadata_with_fallbacks(game_id, characters, catalog)) >= len(characters)
+
+    hsr_catalog = agents.load_agent_catalog("hsr")
+    assert len(hsr_catalog.agents) >= 80
+    assert hsr_catalog.agents == sort_agent_metadata(hsr_catalog.agents)
+    assert hsr_catalog.agents[0].release_order >= hsr_catalog.agents[-1].release_order
+    assert {agent.attribute for agent in hsr_catalog.agents}.issuperset({"火", "冰", "雷", "量子", "虚数"})
+    assert {agent.specialty for agent in hsr_catalog.agents}.issuperset({"毁灭", "巡猎", "智识", "同谐", "虚无", "存护", "丰饶", "记忆"})
+    assert not any(agent.name == "崩铁通用暴击模板" for agent in hsr_catalog.agents)
+    assert all(agent.portrait_path for agent in hsr_catalog.agents)
+    assert all(agent.card_path for agent in hsr_catalog.agents)
+    for agent in hsr_catalog.agents[:8]:
+        assert (agents.PROJECT_ROOT / agent.portrait_path).exists()
+        assert (agents.PROJECT_ROOT / agent.card_path).exists()
+
+
+def test_agent_catalog_filtering_uses_real_agent_fields():
+    hsr_agents = agents.load_agent_catalog("hsr").agents
+
+    fire_agents = filter_agent_metadata(hsr_agents, attribute="火")
+    nihility_agents = filter_agent_metadata(hsr_agents, specialty="虚无")
+    blade_agents = filter_agent_metadata(hsr_agents, text="刃")
+
+    assert fire_agents
+    assert all(agent.attribute == "火" for agent in fire_agents)
+    assert nihility_agents
+    assert all(agent.specialty == "虚无" for agent in nihility_agents)
+    assert any("刃" in agent.name for agent in blade_agents)
+    assert fire_agents == sort_agent_metadata(fire_agents)
 
 
 def test_inventory_item_id_is_stable_after_round_trip(tmp_path):
