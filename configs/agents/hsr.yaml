@@ -1,0 +1,10 @@
+game: hsr
+agents:
+  - agent_id: hsr_generic_crit_template
+    name: 崩铁通用暴击模板
+    rarity: 未知
+    attribute: 通用
+    specialty: 通用
+    faction: 模板
+    level_cap: 80
+    character_preset_id: hsr_placeholder

@@ -1,0 +1,18 @@
+game: zzz
+agents:
+  - agent_id: zzz_starlight_billy
+    name: 星徽·比利
+    rarity: A
+    attribute: 物理
+    specialty: 强攻
+    faction: 狡兔屋
+    level_cap: 60
+    character_preset_id: zzz_starlight_billy
+  - agent_id: zzz_template_anomaly
+    name: 异常代理人模板
+    rarity: 未知
+    attribute: 通用
+    specialty: 异常
+    faction: 模板
+    level_cap: 60
+    character_preset_id: zzz_template_anomaly

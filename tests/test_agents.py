@@ -128,6 +128,21 @@ def test_agent_schemas_save_load_and_fallbacks(tmp_path):
     assert load_agent_user_state_store("missing", tmp_path) == AgentUserStateStore(game="missing")
 
 
+def test_project_agent_catalogs_match_character_presets():
+    for game_id in ["hsr", "zzz"]:
+        catalog = agents.load_agent_catalog(game_id)
+        characters = agents.load_characters(game_id)
+        character_ids = {character.id for character in characters}
+
+        assert catalog.game == game_id
+        assert catalog.agents
+        assert {
+            agent.character_preset_id
+            for agent in catalog.agents
+        }.issubset(character_ids)
+        assert len(agent_metadata_with_fallbacks(game_id, characters, catalog)) >= len(characters)
+
+
 def test_inventory_item_id_is_stable_after_round_trip(tmp_path):
     item = new_inventory_item(_piece(), now="2026-07-04T00:00:00+08:00")
     store = GlobalInventoryStore(game=GAME_ID, items=[item])

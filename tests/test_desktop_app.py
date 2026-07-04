@@ -174,6 +174,10 @@ def test_optimizer_window_constructs_key_pyside6_components(monkeypatch, tmp_pat
             "计算结果",
         }
         assert window.overview_game_label.text()
+        assert window.agent_button.text() == "切换代理人"
+        assert window.selected_agent() is not None
+        assert window.selected_agent().character_preset_id == window.selected_character().id
+        assert window.selected_character().id in window.agent_summary_label.text()
         assert window.overview_confirm_label.text() in {"未确认", "已确认"}
         assert len(window.current_cards) == 6
         assert all(isinstance(card, PieceCard) for card in window.current_cards)
@@ -383,6 +387,16 @@ def test_optimizer_window_constructs_key_pyside6_components(monkeypatch, tmp_pat
             "export_inventory_details",
         ]:
             assert callable(getattr(window, method))
+        zzz_index = window.game_combo.findData("zzz")
+        if zzz_index >= 0:
+            window.game_combo.setCurrentIndex(zzz_index)
+            app.processEvents()
+            assert len(window.agents) == len(window.characters)
+            target_agent = window.agents[-1]
+            window._select_agent(target_agent)
+            app.processEvents()
+            assert window.selected_character().id == target_agent.character_preset_id
+            assert target_agent.character_preset_id in window.agent_summary_label.text()
     finally:
         window.close()
         app.processEvents()

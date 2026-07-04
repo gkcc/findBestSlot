@@ -53,6 +53,7 @@ from gear_optimizer.game_rules import (
     validate_current_gear_against_game,
     validate_gear_piece_against_game,
 )
+from gear_optimizer.agents import AgentMetadata, UNKNOWN_LABEL, agent_metadata_with_fallbacks
 from gear_optimizer.action_ev_worker import ACTION_EV_ENGINE_ENV, DEFAULT_ACTION_EV_ENGINE, normalize_action_ev_engine
 from gear_optimizer.models import CharacterPreset, GameRules, GearPiece, ProbabilityModel, SubstatLine, position_key
 from gear_optimizer.position_ev import (
@@ -1866,6 +1867,7 @@ class OptimizerWindow(QMainWindow):
         self.setStyleSheet(APP_QSS)
         self.games = load_games()
         self.characters: list[CharacterPreset] = []
+        self.agents: list[AgentMetadata] = []
         self.probabilities: list[ProbabilityModel] = []
         self.current_confirmed_digest: str | None = None
         self._results_stale = True
@@ -1904,6 +1906,9 @@ class OptimizerWindow(QMainWindow):
         self.game_combo = QComboBox()
         self.character_combo = QComboBox()
         self.probability_combo = QComboBox()
+        self.agent_button = QPushButton("选择代理人")
+        self.agent_summary_label = QLabel("未选择代理人")
+        self.agent_summary_label.setWordWrap(True)
         self.current_table = GearTable(editable_positions=False, row_label_prefix="当前")
         self.inventory_table = GearTable(editable_positions=True, row_label_prefix="库存")
         self.current_cards: list[PieceCard] = []
@@ -2015,7 +2020,13 @@ class OptimizerWindow(QMainWindow):
         selectors = QGroupBox("基础配置")
         form = QFormLayout(selectors)
         form.addRow("游戏", self.game_combo)
-        form.addRow("角色模板", self.character_combo)
+        agent_row = QWidget()
+        agent_layout = QHBoxLayout(agent_row)
+        agent_layout.setContentsMargins(0, 0, 0, 0)
+        agent_layout.addWidget(self.agent_button)
+        agent_layout.addWidget(self.agent_summary_label, 1)
+        form.addRow("代理人", agent_row)
+        form.addRow("计算模板", self.character_combo)
         form.addRow("概率模型", self.probability_combo)
         layout.addWidget(selectors)
 
@@ -2177,6 +2188,7 @@ class OptimizerWindow(QMainWindow):
         self.game_combo.currentIndexChanged.connect(lambda _index: self._reload_game_context())
         self.character_combo.currentIndexChanged.connect(lambda _index: self._reload_character_context())
         self.probability_combo.currentIndexChanged.connect(lambda _index: self._probability_changed())
+        self.agent_button.clicked.connect(self.open_agent_selector)
         self.current_table.changed.connect(self._current_changed)
         self.inventory_table.changed.connect(self._inventory_changed)
         self.position_filter.currentIndexChanged.connect(lambda _index: self._refresh_inventory_view())
@@ -2213,6 +2225,7 @@ class OptimizerWindow(QMainWindow):
     def _reload_game_context(self) -> None:
         game = self.selected_game()
         self.characters = load_characters(game.id)
+        self.agents = agent_metadata_with_fallbacks(game.id, self.characters)
         self.probabilities = load_probability_models(game.id)
         self.character_combo.blockSignals(True)
         self.character_combo.clear()
@@ -2225,6 +2238,87 @@ class OptimizerWindow(QMainWindow):
             self.probability_combo.addItem(f"{model.name} ({model.id})", model.id)
         self.probability_combo.blockSignals(False)
         self._reload_character_context()
+
+    def selected_agent(self) -> AgentMetadata | None:
+        if not self.agents:
+            return None
+        character_id = self.character_combo.currentData()
+        for agent in self.agents:
+            if agent.character_preset_id == character_id:
+                return agent
+        return self.agents[0]
+
+    def _agent_summary_text(self, agent: AgentMetadata | None) -> str:
+        if agent is None:
+            return "未选择代理人"
+        parts = [
+            agent.name,
+            agent.rarity,
+            agent.attribute,
+            agent.specialty,
+        ]
+        visible = [part for part in parts if part and part != UNKNOWN_LABEL]
+        label = " / ".join(visible) if visible else agent.name
+        return f"{label} -> {agent.character_preset_id}"
+
+    def _refresh_agent_selector_summary(self) -> None:
+        agent = self.selected_agent()
+        self.agent_summary_label.setText(self._agent_summary_text(agent))
+        self.agent_button.setText("切换代理人" if agent else "选择代理人")
+
+    def _select_agent(self, agent: AgentMetadata) -> None:
+        index = self.character_combo.findData(agent.character_preset_id)
+        if index < 0:
+            QMessageBox.warning(
+                self,
+                "代理人缺少计算模板",
+                f"{agent.name} 引用的模板 {agent.character_preset_id} 不存在，暂不能计算。",
+            )
+            return
+        if self.character_combo.currentIndex() == index:
+            self._refresh_agent_selector_summary()
+            return
+        self.character_combo.setCurrentIndex(index)
+
+    def open_agent_selector(self) -> None:
+        if not self.agents:
+            QMessageBox.information(self, "暂无代理人", "当前游戏还没有代理人元数据或计算模板。")
+            return
+        dialog = QDialog(self)
+        dialog.setWindowTitle("切换代理人")
+        dialog.resize(760, 520)
+        root = QVBoxLayout(dialog)
+        grid_host = QWidget()
+        grid = QGridLayout(grid_host)
+        grid.setHorizontalSpacing(10)
+        grid.setVerticalSpacing(10)
+        current_agent = self.selected_agent()
+        for index, agent in enumerate(self.agents):
+            button = QPushButton(self._agent_summary_text(agent))
+            button.setMinimumSize(220, 82)
+            button.setCheckable(True)
+            button.setChecked(
+                current_agent is not None
+                and agent.agent_id == current_agent.agent_id
+            )
+            button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            button.clicked.connect(
+                lambda _checked=False, selected=agent: (
+                    self._select_agent(selected),
+                    dialog.accept(),
+                )
+            )
+            grid.addWidget(button, index // 3, index % 3)
+        for column in range(3):
+            grid.setColumnStretch(column, 1)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(grid_host)
+        root.addWidget(scroll)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.rejected.connect(dialog.reject)
+        root.addWidget(buttons)
+        dialog.exec()
 
     def _reload_character_context(self) -> None:
         game = self.selected_game()
@@ -2243,6 +2337,7 @@ class OptimizerWindow(QMainWindow):
         self._refresh_current_cards()
         self._refresh_inventory_filters()
         self._refresh_inventory_view()
+        self._refresh_agent_selector_summary()
         self._clear_results("已切换角色或游戏，请先确认当前装备。")
         self._update_action_buttons()
 
