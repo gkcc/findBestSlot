@@ -1993,16 +1993,33 @@ def _fixed_substat_action_options(
     main_stat: str,
     lock_counts: tuple[int, ...] = (1, 2),
 ) -> list[tuple[str, ...]]:
-    available = [
-        stat
-        for stat in character.ordered_effective_substats()
-        if stat in game.available_substats(main_stat)
+    available_stats = set(game.available_substats(main_stat))
+    priority_tiers = [
+        [stat for stat in tier if stat in available_stats]
+        for tier in character.priority_tiers()
     ]
-    return [
-        tuple(available[:lock_count])
-        for lock_count in lock_counts
-        if len(available) >= lock_count
-    ]
+    priority_tiers = [tier for tier in priority_tiers if tier]
+    options: list[tuple[str, ...]] = []
+    for lock_count in lock_counts:
+        prefixes: list[tuple[str, ...]] = [tuple()]
+        remaining = lock_count
+        for tier in priority_tiers:
+            if remaining <= 0:
+                break
+            if len(tier) <= remaining:
+                prefixes = [(*prefix, *tier) for prefix in prefixes]
+                remaining -= len(tier)
+                continue
+            prefixes = [
+                (*prefix, *combo)
+                for prefix in prefixes
+                for combo in combinations(tier, remaining)
+            ]
+            remaining = 0
+            break
+        if remaining == 0:
+            options.extend(prefix for prefix in prefixes if len(prefix) == lock_count)
+    return list(dict.fromkeys(options))
 
 
 def _set_options_available_for_position(
@@ -3214,6 +3231,7 @@ def _relative_action_label(
     fixed_main_efficiency_by_target: dict[tuple[str, str, str], tuple[float, ...]],
     *,
     defer_fixed_random_comparison: bool = False,
+    random_baseline_enabled: bool = True,
 ) -> str:
     if set_plan_blocked:
         return "未满足套装硬约束，不作为当前 horizon 推荐"
@@ -3224,6 +3242,12 @@ def _relative_action_label(
     if spec.strategy == "固定位置 + 固定主属性":
         fixed_key = (spec.set_label, position_key(spec.target_position))
         fixed_efficiency = base_fixed_efficiency_by_target.get(fixed_key, tuple())
+        if not random_baseline_enabled:
+            return (
+                "优于固定位置，才建议锁主属性"
+                if fixed_efficiency and _vector_greater(efficiency, fixed_efficiency)
+                else "不如固定位置，不建议锁主属性"
+            )
         return (
             "固定位置已优于随机；优于固定位置，才建议锁主属性"
             if fixed_efficiency and _vector_greater(efficiency, fixed_efficiency)
@@ -3236,11 +3260,19 @@ def _relative_action_label(
             str(spec.fixed_main_stat),
         )
         fixed_main_efficiency = fixed_main_efficiency_by_target.get(fixed_main_key, tuple())
+        if not random_baseline_enabled:
+            return (
+                "优于锁主属性，才建议锁副属性"
+                if fixed_main_efficiency and _vector_greater(efficiency, fixed_main_efficiency)
+                else "不如锁主属性，不建议锁副属性"
+            )
         return (
             "锁主属性已优于固定位置；优于锁主属性，才建议锁副属性"
             if fixed_main_efficiency and _vector_greater(efficiency, fixed_main_efficiency)
             else "锁主属性已优于固定位置；不如锁主属性，不建议锁副属性"
         )
+    if not random_baseline_enabled and spec.strategy == "固定位置":
+        return "固定位置基准"
     random_efficiency = random_efficiency_by_set.get(spec.set_label, tuple())
     if defer_fixed_random_comparison and spec.strategy == "固定位置" and not random_efficiency:
         return "等待随机基准"
@@ -3258,11 +3290,21 @@ def _remember_action_efficiency(
     base_fixed_efficiency_by_target: dict[tuple[str, str], tuple[float, ...]],
     fixed_main_efficiency_by_target: dict[tuple[str, str, str], tuple[float, ...]],
 ) -> None:
-    if spec.strategy == "固定位置" and relative == "优于随机，才建议固定":
+    if spec.strategy == "固定位置" and relative in {
+        "优于随机，才建议固定",
+        "固定位置基准",
+    }:
         base_fixed_efficiency_by_target[
             (spec.set_label, position_key(spec.target_position))
         ] = efficiency
-    elif spec.strategy == "固定位置 + 固定主属性" and spec.fixed_main_stat:
+    elif (
+        spec.strategy == "固定位置 + 固定主属性"
+        and spec.fixed_main_stat
+        and relative in {
+            "固定位置已优于随机；优于固定位置，才建议锁主属性",
+            "优于固定位置，才建议锁主属性",
+        }
+    ):
         fixed_main_efficiency_by_target[
             (spec.set_label, position_key(spec.target_position), spec.fixed_main_stat)
         ] = efficiency
@@ -3533,6 +3575,53 @@ def _saved_mother_disks_for_equal_gain(
         return inf
     base_attempts_for_resource_gain = mother_cost_per_attempt * resource_gain / base_gain
     return max(base_attempts_for_resource_gain - mother_cost_per_attempt, 0.0)
+
+
+def _advanced_material_equivalent_attempts(
+    probability_model: ProbabilityModel,
+) -> float:
+    configured = probability_model.resource_cost(
+        "advanced_material_equivalent_fixed_position_attempts",
+        -1.0,
+    )
+    if configured >= 0:
+        return configured
+    remains_cost = probability_model.resource_cost("self_modeling_resin_remains_cost", 0.0)
+    remains_per_attempt = probability_model.resource_cost("remains_per_fixed_position_attempt", 0.0)
+    if remains_cost > 0 and remains_per_attempt > 0:
+        return remains_cost / remains_per_attempt
+    return 0.0
+
+
+def _material_opportunity_row_fields(
+    saved_effective: float,
+    saved_quality: float,
+    advanced_material_count: float,
+    probability_model: ProbabilityModel,
+) -> dict[str, float | str]:
+    equivalent_attempts = _advanced_material_equivalent_attempts(probability_model)
+    opportunity_cost = advanced_material_count * equivalent_attempts
+
+    def net_saved(saved: float) -> float:
+        if isfinite(saved):
+            return saved - opportunity_cost
+        return inf
+
+    net_effective = net_saved(saved_effective)
+    net_quality = net_saved(saved_quality)
+    if opportunity_cost <= 0:
+        decision = "未配置高级素材折算"
+    elif isfinite(saved_effective) and saved_effective <= opportunity_cost:
+        decision = "不推荐：有效口径省量未超过高级素材机会成本"
+    else:
+        decision = "推荐：有效口径省量超过高级素材机会成本"
+    return {
+        "高级素材折算普通合成/个": round(equivalent_attempts, 3),
+        "高级素材机会成本": round(opportunity_cost, 3),
+        "有效净省母盘": round(net_effective, 3) if isfinite(net_effective) else "∞",
+        "质量净省母盘": round(net_quality, 3) if isfinite(net_quality) else "∞",
+        "素材判断": decision,
+    }
 
 
 def fixed_main_gain_ladder_rows(
@@ -4209,6 +4298,7 @@ def position_strategy_efficiency_rows(
             base_fixed_efficiency_by_target,
             fixed_main_efficiency_by_target,
             defer_fixed_random_comparison=defer_fixed_random_comparison,
+            random_baseline_enabled=bool(random_specs),
         )
         _remember_action_efficiency(
             spec,
@@ -4285,6 +4375,7 @@ def position_strategy_efficiency_rows(
             random_efficiency_by_set,
             base_fixed_efficiency_by_target,
             fixed_main_efficiency_by_target,
+            random_baseline_enabled=bool(random_specs),
         )
         row["相对随机"] = relative
         row["比较口径"] = _comparison_scope_label(spec, relative)
@@ -4295,7 +4386,7 @@ def position_strategy_efficiency_rows(
             base_fixed_efficiency_by_target,
             fixed_main_efficiency_by_target,
         )
-        if relative == "优于随机，才建议固定":
+        if relative in {"优于随机，才建议固定", "固定位置基准"}:
             fixed_main_specs.extend(_fixed_main_refinement_action_specs(game, character, spec))
 
     for spec in upgrade_specs:
@@ -4326,7 +4417,11 @@ def position_strategy_efficiency_rows(
             row = append_row(spec, spec_index)
             if (
                 spec.strategy == "固定位置 + 固定主属性"
-                and row["相对随机"] == "固定位置已优于随机；优于固定位置，才建议锁主属性"
+                and row["相对随机"]
+                in {
+                    "固定位置已优于随机；优于固定位置，才建议锁主属性",
+                    "优于固定位置，才建议锁主属性",
+                }
             ):
                 winning_fixed_main_specs.append(spec)
 
@@ -4398,11 +4493,17 @@ def _is_recommendable_action_row(row: dict[str, float | str]) -> bool:
     if strategy == "随机位置":
         return True
     if strategy == "固定位置":
-        return relative == "优于随机，才建议固定"
+        return relative in {"优于随机，才建议固定", "固定位置基准"}
     if strategy == "固定位置 + 固定主属性":
-        return relative == "固定位置已优于随机；优于固定位置，才建议锁主属性"
+        return relative in {
+            "固定位置已优于随机；优于固定位置，才建议锁主属性",
+            "优于固定位置，才建议锁主属性",
+        }
     if strategy == "固定位置 + 固定主属性 + 固定副属性":
-        return relative == "锁主属性已优于固定位置；优于锁主属性，才建议锁副属性"
+        return relative in {
+            "锁主属性已优于固定位置；优于锁主属性，才建议锁副属性",
+            "优于锁主属性，才建议锁副属性",
+        }
     return False
 
 
@@ -4591,6 +4692,13 @@ def resource_marginal_ev_rows(
                         else "∞",
                         "期望校音器/次": round(tuner_cost, 3),
                         "期望共鸣核/次": 0.0,
+                        "高级素材增量/次": round(tuner_cost, 3),
+                        **_material_opportunity_row_fields(
+                            main_saved_effective,
+                            main_saved_quality,
+                            tuner_cost,
+                            probability_model,
+                        ),
                     }
                 )
                 for required_substats in _fixed_substat_action_options(game, character, main_stat):
@@ -4613,6 +4721,10 @@ def resource_marginal_ev_rows(
                         fixed_main_gain[-1] if fixed_main_gain else 0.0,
                         fixed_substat_gain[-1] if fixed_substat_gain else 0.0,
                         fixed_position_cost,
+                    )
+                    core_cost = _fixed_substat_extra_resource_cost(
+                        probability_model,
+                        len(required_substats),
                     )
                     rows.append(
                         {
@@ -4638,12 +4750,13 @@ def resource_marginal_ev_rows(
                             if isfinite(substat_saved_quality)
                             else "∞",
                             "期望校音器/次": round(tuner_cost, 3),
-                            "期望共鸣核/次": round(
-                                _fixed_substat_extra_resource_cost(
-                                    probability_model,
-                                    len(required_substats),
-                                ),
-                                3,
+                            "期望共鸣核/次": round(core_cost, 3),
+                            "高级素材增量/次": round(core_cost, 3),
+                            **_material_opportunity_row_fields(
+                                substat_saved_effective,
+                                substat_saved_quality,
+                                core_cost,
+                                probability_model,
                             ),
                         }
                     )

@@ -1,7 +1,7 @@
 id: hsr_placeholder
 game: hsr
-name: 崩铁占位模板
-target_set: 占位遗器套装
+name: 崩铁通用暴击模板
+target_set: 识海迷坠的学者
 substat_priority:
   core: [暴击率, 暴击伤害, 速度]
   usable: []
@@ -10,22 +10,22 @@ preferred_main_stats:
   feet: [速度]
   sphere: [攻击力百分比]
   rope: [能量恢复效率]
-default_set_plan: placeholder_4_2
+default_set_plan: generic_crit_4_2
 set_plans:
-  - id: placeholder_4_2
-    name: 占位遗器 4 + 占位位面 2
+  - id: generic_crit_4_2
+    name: 学者 4 + 繁星竞技场 2
     requirements:
       - role: core4
-        set_name: 占位遗器套装
+        set_name: 识海迷坠的学者
         pieces: 4
       - role: planar2
-        set_name: 占位位面饰品套装
+        set_name: 繁星竞技场
         pieces: 2
-    notes: 崩铁占位 4+2 方案仅用于验证规则链路，暂不承诺推荐准确。
+    notes: 通用暴击审计模板；不同角色仍应切换专属模板或调整套装方案。
   - id: unrestricted
     name: 不限套装
     requirements: []
-    notes: 崩铁占位模板暂不约束 4+2 或 2+2。
+    notes: 不约束 4+2 或 2+2，仅用于查看裸分最优。
 target_effective_rolls: 6.0
 target_weighted_score: 6.0
 rating_thresholds:
@@ -33,4 +33,4 @@ rating_thresholds:
   good: 4.0
   excellent: 6.0
 notes:
-  该模板仅用于验证崩铁规则可加载展示，第一版不承诺推荐准确。
+  通用模板仅用于验证和审计崩铁 4+2 调律口径；不代表所有角色毕业推荐。

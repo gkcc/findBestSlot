@@ -864,16 +864,24 @@ def _action_row_recommend_group(row: dict[str, Any]) -> int:
         return 0
     if strategy == "随机位置":
         return 3
-    if strategy == "固定位置" and relative == "优于随机，才建议固定":
+    if strategy == "固定位置" and relative in {"优于随机，才建议固定", "固定位置基准"}:
         return 3
     if (
         strategy == "固定位置 + 固定主属性"
-        and relative == "固定位置已优于随机；优于固定位置，才建议锁主属性"
+        and relative
+        in {
+            "固定位置已优于随机；优于固定位置，才建议锁主属性",
+            "优于固定位置，才建议锁主属性",
+        }
     ):
         return 3
     if (
         strategy == "固定位置 + 固定主属性 + 固定副属性"
-        and relative == "锁主属性已优于固定位置；优于锁主属性，才建议锁副属性"
+        and relative
+        in {
+            "锁主属性已优于固定位置；优于锁主属性，才建议锁副属性",
+            "优于锁主属性，才建议锁副属性",
+        }
     ):
         return 3
     if strategy == "强化库存胚子" and _action_row_has_positive_gain(row):

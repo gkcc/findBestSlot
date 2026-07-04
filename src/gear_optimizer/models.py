@@ -78,13 +78,50 @@ class SetEffect(BaseModel):
 class SubstatPriority(BaseModel):
     core: list[str] = Field(default_factory=list)
     usable: list[str] = Field(default_factory=list)
+    core_tiers: list[list[str]] = Field(default_factory=list)
+    usable_tiers: list[list[str]] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_tier_syntax(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        normalized = dict(data)
+        for field_name in ("core", "usable"):
+            raw_items = normalized.get(field_name) or []
+            if not isinstance(raw_items, list):
+                continue
+            tiers: list[list[str]] = []
+            flat: list[str] = []
+            has_nested = False
+            for item in raw_items:
+                if isinstance(item, list):
+                    has_nested = True
+                    tier = [str(value) for value in item if str(value)]
+                else:
+                    tier = [str(item)] if str(item) else []
+                if not tier:
+                    continue
+                tiers.append(tier)
+                flat.extend(tier)
+            if has_nested:
+                normalized[field_name] = flat
+                normalized[f"{field_name}_tiers"] = tiers
+        return normalized
 
     @model_validator(mode="after")
     def validate_no_duplicate_priority_stats(self) -> "SubstatPriority":
+        if not self.core_tiers:
+            self.core_tiers = [[stat] for stat in self.core]
+        if not self.usable_tiers:
+            self.usable_tiers = [[stat] for stat in self.usable]
         all_stats = self.core + self.usable
         if len(all_stats) != len(set(all_stats)):
             raise ValueError("substat_priority contains duplicate stats")
         return self
+
+    def tiers(self) -> list[list[str]]:
+        return [*self.core_tiers, *self.usable_tiers]
 
 
 def weights_from_priority_groups(
@@ -321,6 +358,16 @@ class CharacterPreset(BaseModel):
             ]
         return list(dict.fromkeys(self.substat_priority.core + self.substat_priority.usable))
 
+    def priority_tiers(self, exclude: str | None = None) -> list[list[str]]:
+        if self.substat_priority is None:
+            return [[stat] for stat in self.priority_stats() if stat != exclude]
+        tiers: list[list[str]] = []
+        for tier in self.substat_priority.tiers():
+            filtered = [stat for stat in tier if stat != exclude]
+            if filtered:
+                tiers.append(filtered)
+        return tiers
+
     def ordered_effective_substats(self, exclude: str | None = None) -> list[str]:
         return [
             stat
@@ -338,10 +385,10 @@ class CharacterPreset(BaseModel):
         return None
 
     def priority_rank_for(self, stat: str) -> int | None:
-        stats = self.priority_stats()
-        if stat not in stats:
-            return None
-        return stats.index(stat) + 1
+        for index, tier in enumerate(self.priority_tiers(), start=1):
+            if stat in tier:
+                return index
+        return None
 
     def priority_sort_index(self, stat: str) -> int:
         rank = self.priority_rank_for(stat)

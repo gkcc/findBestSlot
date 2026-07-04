@@ -1,9 +1,9 @@
 game: hsr
 character: hsr_placeholder
-label: 崩铁占位遗器示例
+label: 崩铁通用暴击 4+2 示例
 pieces:
   - position: head
-    set_name: 占位遗器套装
+    set_name: 识海迷坠的学者
     main_stat: 生命值
     level: 15
     substats:
@@ -16,7 +16,7 @@ pieces:
       - stat: 防御力百分比
         rolls: 2
   - position: hands
-    set_name: 占位遗器套装
+    set_name: 识海迷坠的学者
     main_stat: 攻击力
     level: 15
     substats:
@@ -29,7 +29,7 @@ pieces:
       - stat: 生命值百分比
         rolls: 2
   - position: body
-    set_name: 占位遗器套装
+    set_name: 识海迷坠的学者
     main_stat: 暴击率
     level: 15
     substats:
@@ -42,7 +42,7 @@ pieces:
       - stat: 防御力百分比
         rolls: 1
   - position: feet
-    set_name: 占位遗器套装
+    set_name: 识海迷坠的学者
     main_stat: 速度
     level: 15
     substats:
@@ -55,7 +55,7 @@ pieces:
       - stat: 防御力
         rolls: 2
   - position: sphere
-    set_name: 占位位面饰品套装
+    set_name: 繁星竞技场
     main_stat: 攻击力百分比
     level: 15
     substats:
@@ -68,7 +68,7 @@ pieces:
       - stat: 防御力百分比
         rolls: 4
   - position: rope
-    set_name: 占位位面饰品套装
+    set_name: 繁星竞技场
     main_stat: 能量恢复效率
     level: 15
     substats:

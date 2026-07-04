@@ -1054,6 +1054,68 @@ def test_hsr_generation_specs_do_not_include_random_position_actions():
     )
 
 
+def test_tied_priority_tiers_expand_fixed_substat_action_options():
+    game, _character, _probability_model, _inventory = _tiny_exact_context()
+    character = CharacterPreset(
+        id="tied",
+        game=game.id,
+        name="Tied",
+        target_set="A",
+        substat_priority=SubstatPriority(core=[["a", "b"], "c", "d"], usable=[]),
+        set_plans=[
+            SetPlan(
+                id="a2",
+                name="A 2",
+                requirements=[SetRequirement(set_name="A", pieces=2)],
+            )
+        ],
+        default_set_plan="a2",
+    )
+
+    options = position_ev._fixed_substat_action_options(game, character, "main1")
+
+    assert ("a",) in options
+    assert ("b",) in options
+    assert ("a", "b") in options
+    assert ("c",) not in options
+
+
+def test_hsr_position_rows_expand_fixed_main_without_random_baseline(monkeypatch):
+    game, character, probability_model, analysis = _hsr_context()
+    current_value = best_loadout_value(
+        load_current_example("examples/hsr_placeholder_current.yaml"),
+        game,
+        character,
+        current_count=6,
+    )
+
+    def fake_expected_action_value(
+        _inventory_rows,
+        _game,
+        _character,
+        _probability_model,
+        spec,
+        *_args,
+        **_kwargs,
+    ):
+        bonus_by_strategy = {
+            "固定位置": 1.0,
+            "固定位置 + 固定主属性": 2.0,
+            "固定位置 + 固定主属性 + 固定副属性": 3.0,
+        }
+        return (*current_value[:-1], current_value[-1] + bonus_by_strategy.get(spec.strategy, 0.0))
+
+    position_ev._ACTION_EV_ROWS_CACHE.clear()
+    monkeypatch.setattr(position_ev, "_expected_action_value", fake_expected_action_value)
+    rows = position_strategy_efficiency_rows(game, character, probability_model, analysis)
+    position_ev._ACTION_EV_ROWS_CACHE.clear()
+
+    assert not any(row["策略"] == "随机位置" for row in rows)
+    assert any(row["相对随机"] == "固定位置基准" for row in rows)
+    assert any(row["相对随机"] == "优于固定位置，才建议锁主属性" for row in rows)
+    assert any(row["相对随机"] == "优于锁主属性，才建议锁副属性" for row in rows)
+
+
 def test_fixed_main_rows_wait_until_fixed_position_beats_random(monkeypatch):
     rows, calls = _position_rows_with_fake_action_values(
         monkeypatch,
@@ -1175,6 +1237,57 @@ def test_hsr_action_costs_use_total_self_modeling_resin_steps():
     assert sum(_action_costs(fixed_main, probability_model)[1:]) == pytest.approx(1.0)
     assert sum(_action_costs(fixed_one_substat, probability_model)[1:]) == pytest.approx(2.0)
     assert sum(_action_costs(fixed_two_substats, probability_model)[1:]) == pytest.approx(5.0)
+    assert probability_model.resource_cost("advanced_material_equivalent_fixed_position_attempts") == pytest.approx(8.0)
+
+
+def test_hsr_resource_rows_include_self_modeling_resin_opportunity_cost(monkeypatch):
+    game, character, probability_model, analysis = _hsr_context()
+    current_value = best_loadout_value(
+        load_current_example("examples/hsr_placeholder_current.yaml"),
+        game,
+        character,
+        current_count=6,
+    )
+
+    def fake_expected_action_value(
+        _inventory_rows,
+        _game,
+        _character,
+        _probability_model,
+        spec,
+        *_args,
+        **_kwargs,
+    ):
+        bonus_by_strategy = {
+            "固定位置": 1.0,
+            "固定位置 + 固定主属性": 10.0,
+            "固定位置 + 固定主属性 + 固定副属性": 20.0,
+        }
+        bonus = bonus_by_strategy.get(spec.strategy, 0.0)
+        return (*current_value[:-2], current_value[-2] + bonus, current_value[-1] + bonus)
+
+    position_ev._RESOURCE_MARGINAL_EV_ROWS_CACHE.clear()
+    monkeypatch.setattr(position_ev, "_expected_action_value", fake_expected_action_value)
+    rows = resource_marginal_ev_rows(game, character, probability_model, analysis)
+    position_ev._RESOURCE_MARGINAL_EV_ROWS_CACHE.clear()
+
+    fixed_main_row = next(row for row in rows if row["资源"] == "校音器")
+    one_substat_row = next(
+        row
+        for row in rows
+        if row["资源"] == "共鸣核" and len(str(row["固定副属性"]).split(" + ")) == 1
+    )
+    two_substat_row = next(
+        row
+        for row in rows
+        if row["资源"] == "共鸣核" and len(str(row["固定副属性"]).split(" + ")) == 2
+    )
+
+    assert fixed_main_row["高级素材折算普通合成/个"] == pytest.approx(8.0)
+    assert fixed_main_row["高级素材机会成本"] == pytest.approx(8.0)
+    assert one_substat_row["高级素材机会成本"] == pytest.approx(8.0)
+    assert two_substat_row["高级素材机会成本"] == pytest.approx(32.0)
+    assert fixed_main_row["素材判断"].startswith("推荐")
 
 
 def test_hsr_candidate_distribution_respects_outer_and_planar_set_positions():
@@ -1184,28 +1297,28 @@ def test_hsr_candidate_distribution_respects_outer_and_planar_set_positions():
         game,
         character,
         probability_model,
-        ["占位位面饰品套装"],
+        ["繁星竞技场"],
         "head",
     )
     legal_head_distribution = _candidate_distribution_for_action(
         game,
         character,
         probability_model,
-        ["占位遗器套装"],
+        ["识海迷坠的学者"],
         "head",
     )
     illegal_rope_distribution = _candidate_distribution_for_action(
         game,
         character,
         probability_model,
-        ["占位遗器套装"],
+        ["识海迷坠的学者"],
         "rope",
     )
     legal_rope_distribution = _candidate_distribution_for_action(
         game,
         character,
         probability_model,
-        ["占位位面饰品套装"],
+        ["繁星竞技场"],
         "rope",
     )
 
@@ -1213,8 +1326,8 @@ def test_hsr_candidate_distribution_respects_outer_and_planar_set_positions():
     assert illegal_rope_distribution == []
     assert legal_head_distribution
     assert legal_rope_distribution
-    assert {row["set_name"] for row, _probability in legal_head_distribution} == {"占位遗器套装"}
-    assert {row["set_name"] for row, _probability in legal_rope_distribution} == {"占位位面饰品套装"}
+    assert {row["set_name"] for row, _probability in legal_head_distribution} == {"识海迷坠的学者"}
+    assert {row["set_name"] for row, _probability in legal_rope_distribution} == {"繁星竞技场"}
 
 
 def test_action_rows_include_upgrading_existing_inventory_candidate():

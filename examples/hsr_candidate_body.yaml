@@ -1,7 +1,7 @@
 game: hsr
-label: 崩铁躯干暴击，3中1，等速度
+label: 崩铁学者躯干暴击，3中1，等速度
 position: body
-set_name: 占位遗器套装
+set_name: 识海迷坠的学者
 main_stat: 暴击率
 initial_substat_count: 3
 level: 0

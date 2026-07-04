@@ -90,21 +90,24 @@ def test_zzz_set_effects_cover_local_drive_disc_sets():
     assert "普通攻击" in (woodpecker.four_piece or "")
 
 
-def test_hsr_placeholder_sets_cover_relic_and_planar_display():
+def test_hsr_real_sets_cover_relic_and_planar_display():
     game = load_game("hsr")
     character = next(item for item in load_characters("hsr") if item.id == "hsr_placeholder")
     model = load_probability_models("hsr")[0]
 
-    assert game.sets == ["占位遗器套装", "占位位面饰品套装"]
+    assert len(game.sets) == 60
     assert set(game.set_effects) == set(game.sets)
-    assert "遗器 4 件套" in (game.set_effect("占位遗器套装").four_piece or "")
-    assert "位面饰品 2 件套" in (game.set_effect("占位位面饰品套装").two_piece or "")
-    assert character.active_set_plan().name == "占位遗器 4 + 占位位面 2"
+    assert "占位" not in "\n".join(game.sets)
+    assert "战技和终结技" in (game.set_effect("识海迷坠的学者").four_piece or "")
+    assert "暴击率" in (game.set_effect("繁星竞技场").two_piece or "")
+    assert character.active_set_plan().name == "学者 4 + 繁星竞技场 2"
     assert model.target_set_probability == pytest.approx(1.0)
-    assert game.sets_for_position("head") == ["占位遗器套装"]
-    assert game.sets_for_position("sphere") == ["占位位面饰品套装"]
-    assert not game.set_available_for_position("占位位面饰品套装", "head")
-    assert not game.set_available_for_position("占位遗器套装", "rope")
+    assert len(game.sets_for_position("head")) == 32
+    assert len(game.sets_for_position("sphere")) == 28
+    assert "识海迷坠的学者" in game.sets_for_position("head")
+    assert "繁星竞技场" in game.sets_for_position("sphere")
+    assert not game.set_available_for_position("繁星竞技场", "head")
+    assert not game.set_available_for_position("识海迷坠的学者", "rope")
     assert model.resource_cost("advanced_material_fixed_main_attempt") == pytest.approx(1.0)
     assert model.resource_cost("advanced_material_fixed_main_1_substat_attempt") == pytest.approx(2.0)
     assert model.resource_cost("advanced_material_fixed_main_2_substats_attempt") == pytest.approx(5.0)
@@ -114,7 +117,7 @@ def test_hsr_validation_rejects_planar_set_on_outer_relic_position():
     game = load_game("hsr")
     piece = GearPiece(
         position="head",
-        set_name="占位位面饰品套装",
+        set_name="繁星竞技场",
         main_stat="生命值",
         level=15,
         substats=[],
@@ -510,6 +513,23 @@ def test_character_can_derive_effective_substats_from_priority_groups():
         "生命值百分比": 1.0,
     }
     assert character.ordered_effective_substats() == ["暴击率", "暴击伤害", "生命值百分比"]
+
+
+def test_character_priority_groups_can_express_tied_tiers():
+    data = _minimal_character_config()
+    data.pop("effective_substats")
+    data["substat_priority"] = {
+        "core": [["暴击率", "暴击伤害"], "速度", "生命值百分比"],
+        "usable": [],
+    }
+
+    character = CharacterPreset.model_validate(data)
+
+    assert character.substat_priority.core == ["暴击率", "暴击伤害", "速度", "生命值百分比"]
+    assert character.priority_tiers() == [["暴击率", "暴击伤害"], ["速度"], ["生命值百分比"]]
+    assert character.priority_rank_for("暴击率") == 1
+    assert character.priority_rank_for("暴击伤害") == 1
+    assert character.priority_rank_for("速度") == 2
 
 
 def test_character_rejects_duplicate_priority_stats():
