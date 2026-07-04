@@ -1,6 +1,6 @@
 # 崩铁遗器概率与合成口径调研
 
-日期：2026-07-04
+日期：2026-07-05
 
 ## 当前结论
 
@@ -34,9 +34,14 @@
 ## 来源与边界
 
 - HoYoverse 3.5 更新说明：3.5 后「遂愿尘脂」合并至「自塑尘脂」，仅需消耗相应数量自塑尘脂定向主副属性。
+  - 页面：[Version 3.5 "Before Their Deaths" Update Honkai: Star Rail | HoYoLAB](https://www.hoyolab.com/article/40516796)
 - HoYoverse 3.5 更新说明二次转载/镜像文本确认：此前定向 2 条副属性为 1 自塑 + 4 遂愿，3.5 后简化为直接消耗 5 自塑；1 条副属性对应总消耗 2 自塑。
-- Fandom `Relic/Stats`：提供主属性分布和副属性权重表。该来源是社区百科，不是官方概率公告。
-- 中文 Wiki `遗器图鉴` Semantic MediaWiki API：提供当前 60 套遗器/位面饰品名称、分类与套装效果文本。本轮只写入文本，不下载或内置图片。
+- Fandom `Relic/Stats`：提供主属性分布和副属性权重表。该来源是社区百科，不是官方概率公告；页面自身也说明主属性概率来自 user-compiled data。
+  - 页面：[Relic/Stats | Honkai: Star Rail Wiki | Fandom](https://honkai-star-rail.fandom.com/wiki/Relic/Stats)
+- 中文 Wiki `遗器图鉴` 页面与 Semantic MediaWiki API：提供当前 60 套遗器/位面饰品名称、分类与套装效果文本；页面显示 60 套，其中隧洞遗器 32 套、位面饰品 28 套。本轮只写入文本，不下载或内置图片。
+  - 页面：[遗器图鉴 - 崩坏：星穹铁道WIKI_BWIKI_哔哩哔哩](https://wiki.biligame.com/sr/%E9%81%97%E5%99%A8%E5%9B%BE%E9%89%B4)
+  - API 查询口径：`api.php?action=ask&query=[[分类:遗器]]|?名称|?类别|?两件套效果|?四件套效果|?实装版本|limit=1000`
+- 自塑尘脂 = 800 残骸、普通合成 = 100 残骸为用户提供的游戏内口径；当前配置将该口径落为 `advanced_material_equivalent_fixed_position_attempts: 8`。
 
 ## 已知素材缺口
 
