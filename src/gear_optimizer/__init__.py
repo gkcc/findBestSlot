@@ -2,6 +2,7 @@
 
 __all__ = [
     "acceptance",
+    "agents",
     "candidate_ev",
     "conclusions",
     "exporting",
