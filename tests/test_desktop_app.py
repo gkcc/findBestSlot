@@ -159,7 +159,7 @@ def test_optimizer_window_constructs_key_pyside6_components(monkeypatch, tmp_pat
     monkeypatch.setenv("GEAR_OPTIMIZER_USER_DATA_DIR", str(tmp_path / "user_data"))
     pytest.importorskip("PySide6")
 
-    from PySide6.QtWidgets import QApplication
+    from PySide6.QtWidgets import QApplication, QLabel
     from gear_optimizer.pyside6_app import (
         ACTION_DETAIL_DISPLAY_LIMIT,
         OptimizerWindow,
@@ -428,6 +428,14 @@ def test_optimizer_window_constructs_key_pyside6_components(monkeypatch, tmp_pat
             assert target_agent.name in window.agent_summary_label.text()
             assert target_agent.faction in window.agent_summary_label.text()
             assert target_agent.character_preset_id in window.agent_summary_label.text()
+            unselected_card = window._agent_card_button(target_agent, selected=False)
+            card_texts = {
+                label.objectName(): label.text()
+                for label in unselected_card.findChildren(QLabel)
+            }
+            assert card_texts["AgentCardName"] == target_agent.name
+            assert target_agent.faction in card_texts["AgentCardFaction"]
+            assert target_agent.character_preset_id in card_texts["AgentCardTemplate"]
     finally:
         window.close()
         app.processEvents()
