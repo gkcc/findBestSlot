@@ -2265,6 +2265,9 @@ class OptimizerWindow(QMainWindow):
                 return agent
         character_id = self.character_combo.currentData()
         for agent in self.agents:
+            if agent.agent_id == character_id and agent.character_preset_id == character_id:
+                return agent
+        for agent in self.agents:
             if agent.character_preset_id == character_id:
                 return agent
         return self.agents[0]
@@ -2417,9 +2420,18 @@ class OptimizerWindow(QMainWindow):
         selected_agent = next((agent for agent in self.agents if agent.agent_id == selected_id), None)
         if selected_agent is None or selected_agent.character_preset_id != character.id:
             matching_agent = next(
-                (agent for agent in self.agents if agent.character_preset_id == character.id),
+                (
+                    agent
+                    for agent in self.agents
+                    if agent.agent_id == character.id and agent.character_preset_id == character.id
+                ),
                 None,
             )
+            if matching_agent is None:
+                matching_agent = next(
+                    (agent for agent in self.agents if agent.character_preset_id == character.id),
+                    None,
+                )
             if matching_agent is not None:
                 self._selected_agent_id_by_game[game.id] = matching_agent.agent_id
         current_pieces = _initial_current_pieces(game, character)

@@ -53,3 +53,16 @@ Source index:
 - Original image paths use each character's `icon` and `preview` fields from that metadata.
 
 The thumbnails are kept separate from calculation logic and can be replaced by user-provided or officially licensed local assets later.
+
+## Zenless Zone Zero agent images
+
+Character card and icon thumbnails under `assets/zzz/agents/` are locally resized derivatives of role avatar images indexed by the Chinese Zenless Zone Zero BWiki character catalog.
+They are used only for local UI prototyping so the agent selector can show real agent identities instead of calculation-template placeholders.
+
+Source index:
+
+- Character catalog: https://wiki.biligame.com/zzz/%E8%A7%92%E8%89%B2%E5%9B%BE%E9%89%B4
+- Character metadata API: https://wiki.biligame.com/zzz/api.php?action=parse&page=%E9%9D%92%E8%A1%A3&prop=wikitext&format=json
+- Original image URLs use each catalog card's `role-img` source from `patchwiki.biligame.com`.
+
+The thumbnails are kept separate from calculation logic and can be replaced by user-provided or officially licensed local assets later.

@@ -400,11 +400,15 @@ def test_optimizer_window_constructs_key_pyside6_components(monkeypatch, tmp_pat
         if zzz_index >= 0:
             window.game_combo.setCurrentIndex(zzz_index)
             app.processEvents()
-            assert len(window.agents) == len(window.characters)
-            target_agent = window.agents[-1]
+            assert len(window.agents) >= 50
+            assert window.selected_agent().agent_id == "zzz_starlight_billy"
+            assert window.selected_agent().name == "星徽·比利"
+            assert window.selected_agent().card_path
+            target_agent = next(agent for agent in window.agents if agent.name == "维琳娜")
             window._select_agent(target_agent)
             app.processEvents()
             assert window.selected_character().id == target_agent.character_preset_id
+            assert target_agent.name in window.agent_summary_label.text()
             assert target_agent.character_preset_id in window.agent_summary_label.text()
     finally:
         window.close()

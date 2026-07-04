@@ -157,13 +157,31 @@ def test_project_agent_catalogs_match_character_presets():
         assert (agents.PROJECT_ROOT / agent.portrait_path).exists()
         assert (agents.PROJECT_ROOT / agent.card_path).exists()
 
+    zzz_catalog = agents.load_agent_catalog("zzz")
+    assert len(zzz_catalog.agents) >= 50
+    assert zzz_catalog.agents == sort_agent_metadata(zzz_catalog.agents)
+    assert zzz_catalog.agents[0].release_order >= zzz_catalog.agents[-1].release_order
+    assert {agent.attribute for agent in zzz_catalog.agents}.issuperset({"火", "冰", "电", "物理", "以太", "风"})
+    assert {agent.specialty for agent in zzz_catalog.agents}.issuperset({"强攻", "击破", "支援", "异常", "防护", "命破"})
+    assert not any(agent.name == "异常代理人模板" for agent in zzz_catalog.agents)
+    assert any(agent.agent_id == "zzz_starlight_billy" and agent.name == "星徽·比利" for agent in zzz_catalog.agents)
+    assert all(agent.portrait_path for agent in zzz_catalog.agents)
+    assert all(agent.card_path for agent in zzz_catalog.agents)
+    for agent in zzz_catalog.agents[:8]:
+        assert (agents.PROJECT_ROOT / agent.portrait_path).exists()
+        assert (agents.PROJECT_ROOT / agent.card_path).exists()
+
 
 def test_agent_catalog_filtering_uses_real_agent_fields():
     hsr_agents = agents.load_agent_catalog("hsr").agents
+    zzz_agents = agents.load_agent_catalog("zzz").agents
 
     fire_agents = filter_agent_metadata(hsr_agents, attribute="火")
     nihility_agents = filter_agent_metadata(hsr_agents, specialty="虚无")
     blade_agents = filter_agent_metadata(hsr_agents, text="刃")
+    physical_agents = filter_agent_metadata(zzz_agents, attribute="物理")
+    rupture_agents = filter_agent_metadata(zzz_agents, specialty="命破")
+    billy_agents = filter_agent_metadata(zzz_agents, text="比利")
 
     assert fire_agents
     assert all(agent.attribute == "火" for agent in fire_agents)
@@ -171,6 +189,12 @@ def test_agent_catalog_filtering_uses_real_agent_fields():
     assert all(agent.specialty == "虚无" for agent in nihility_agents)
     assert any("刃" in agent.name for agent in blade_agents)
     assert fire_agents == sort_agent_metadata(fire_agents)
+    assert physical_agents
+    assert all(agent.attribute == "物理" for agent in physical_agents)
+    assert rupture_agents
+    assert all(agent.specialty == "命破" for agent in rupture_agents)
+    assert {agent.name for agent in billy_agents}.issuperset({"星徽·比利", "比利"})
+    assert physical_agents == sort_agent_metadata(physical_agents)
 
 
 def test_inventory_item_id_is_stable_after_round_trip(tmp_path):
