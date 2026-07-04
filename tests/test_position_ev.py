@@ -323,7 +323,8 @@ def _position_rows_with_fake_action_values(monkeypatch, increments: dict[str, fl
         **_kwargs,
     ):
         calls.append(spec.strategy)
-        delta = increments.get(spec.strategy, 0.0)
+        positioned_key = f"{spec.strategy}:{position_key(spec.target_position)}"
+        delta = increments.get(positioned_key, increments.get(spec.strategy, 0.0))
         return (*current_value[:-1], current_value[-1] + delta)
 
     position_ev._ACTION_EV_ROWS_CACHE.clear()
@@ -406,8 +407,8 @@ def test_random_and_fixed_position_gain_resolve_best_combo_actions():
     game, character, probability_model, analysis = _billy_context()
 
     rows = position_strategy_efficiency_rows(game, character, probability_model, analysis)
-    random_row = rows[0]
-    fixed_rows = rows[1:]
+    random_row = next(row for row in rows if row["策略"] == "随机位置")
+    fixed_rows = [row for row in rows if row["策略"] == "固定位置"]
 
     assert random_row["策略"] == "随机位置"
     assert random_row["位置"] == "1-6 随机"
@@ -951,11 +952,64 @@ def test_exact_horizon_two_value_follows_dynamic_programming_formula():
     assert horizon_two[-1] == 8
 
 
+def test_action_ev_progress_calculates_fixed_positions_before_random(monkeypatch):
+    game, character, probability_model, analysis, inventory = _tiny_lock_context()
+    current_value = best_loadout_value(
+        inventory,
+        game,
+        character,
+        current_count=len(inventory),
+    )
+    events = []
+
+    def fake_expected_action_value(
+        _inventory_rows,
+        _game,
+        _character,
+        _probability_model,
+        spec,
+        *_args,
+        **_kwargs,
+    ):
+        return (*current_value[:-1], current_value[-1] + (1.0 if spec.target_position == 1 else 0.5))
+
+    position_ev._ACTION_EV_ROWS_CACHE.clear()
+    monkeypatch.setattr(position_ev, "_expected_action_value", fake_expected_action_value)
+    position_strategy_efficiency_rows(
+        game,
+        character,
+        probability_model,
+        analysis,
+        progress_callback=events.append,
+    )
+    position_ev._ACTION_EV_ROWS_CACHE.clear()
+
+    first_unit = next(event for event in events if event.get("event") == "unit_start")
+    assert first_unit["action_strategy"] == "固定位置"
+
+
+def test_random_position_ev_is_weighted_average_of_fixed_positions(monkeypatch):
+    rows, calls = _position_rows_with_fake_action_values(
+        monkeypatch,
+        {
+            "固定位置:1": 1.0,
+            "固定位置:2": 5.0,
+        },
+    )
+
+    random_row = next(row for row in rows if row["策略"] == "随机位置")
+    slot_1 = next(row for row in rows if row["策略"] == "固定位置" and row["位置"] == "1号位")
+    slot_2 = next(row for row in rows if row["策略"] == "固定位置" and row["位置"] == "2号位")
+
+    assert random_row["质量提升"] == pytest.approx((slot_1["质量提升"] + slot_2["质量提升"]) / 2)
+    assert random_row["有效提升"] == pytest.approx((slot_1["有效提升"] + slot_2["有效提升"]) / 2)
+    assert calls.count("随机位置") == 0
+
+
 def test_fixed_main_rows_wait_until_fixed_position_beats_random(monkeypatch):
     rows, calls = _position_rows_with_fake_action_values(
         monkeypatch,
         {
-            "随机位置": 10.0,
             "固定位置": 1.0,
             "固定位置 + 固定主属性": 99.0,
             "固定位置 + 固定主属性 + 固定副属性": 99.0,
@@ -972,8 +1026,8 @@ def test_fixed_substat_rows_wait_until_fixed_main_beats_fixed_position(monkeypat
     rows, calls = _position_rows_with_fake_action_values(
         monkeypatch,
         {
-            "随机位置": 1.0,
-            "固定位置": 3.0,
+            "固定位置:1": 3.0,
+            "固定位置:2": 0.0,
             "固定位置 + 固定主属性": 2.0,
             "固定位置 + 固定主属性 + 固定副属性": 99.0,
         },
@@ -989,8 +1043,8 @@ def test_fixed_substat_rows_expand_after_fixed_main_beats_fixed_position(monkeyp
     rows, calls = _position_rows_with_fake_action_values(
         monkeypatch,
         {
-            "随机位置": 1.0,
-            "固定位置": 2.0,
+            "固定位置:1": 2.0,
+            "固定位置:2": 0.0,
             "固定位置 + 固定主属性": 3.0,
             "固定位置 + 固定主属性 + 固定副属性": 4.0,
         },
@@ -1013,8 +1067,8 @@ def test_lookahead_action_space_includes_fixed_main_and_fixed_substats(monkeypat
     rows, _calls = _position_rows_with_fake_action_values(
         monkeypatch,
         {
-            "随机位置": 1.0,
-            "固定位置": 2.0,
+            "固定位置:1": 2.0,
+            "固定位置:2": 0.0,
             "固定位置 + 固定主属性": 3.0,
             "固定位置 + 固定主属性 + 固定副属性": 4.0,
         },
