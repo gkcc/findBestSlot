@@ -203,6 +203,7 @@ def test_optimizer_window_constructs_key_pyside6_components(monkeypatch, tmp_pat
         assert "有效" in window.inventory_detail_label.text()
         assert "质量" not in window.inventory_detail_label.text()
         assert window.inventory_cards[0].position_label.text()
+        assert window.inventory_cards[0].index_badge.text() == "库存 #1"
         assert "质量" not in window.inventory_cards[0].metric_badge.text()
         window.equip_inventory_piece(0)
         current_after = window._hidden_table_pieces(window.current_table)
@@ -299,6 +300,7 @@ def test_optimizer_window_constructs_key_pyside6_components(monkeypatch, tmp_pat
         assert "方案类型：代表路径" in card_text
         assert "第二步策略摘要：固定位置 / 云岿如我 / 2号位" in card_text
         assert "质量/母盘" not in card_text
+        assert "排序口径" in card_text
         assert "计算口径：精确" in card_text
         assert "计算引擎：inventory_recursive" in card_text
         assert "执行方式" in card_text
@@ -358,9 +360,16 @@ def test_optimizer_window_constructs_key_pyside6_components(monkeypatch, tmp_pat
         assert window.action_plan_branch_table.rowCount() == 1
         assert window.action_plan_loadout_table.rowCount() == 0
         upgrade_text = window._recommended_action_card_text(
-            {**sample_action_row, "策略": "强化库存胚子", "相对随机": "库存动作"}
+            {
+                **sample_action_row,
+                "策略": "强化库存胚子",
+                "相对随机": "库存动作",
+                "_upgrade_inventory_id": f"piece:{window.current_table.rowCount()}",
+            }
         )
         assert "不消耗母盘" in upgrade_text
+        assert "库存编号：库存 #1" in upgrade_text
+        assert "不等于这件胚子当前已经比已装备件更好" in upgrade_text
         for method in [
             "confirm_current",
             "run_best_loadout",
@@ -438,6 +447,8 @@ def test_piece_editor_uses_card_controls_and_can_check_best_loadout(monkeypatch,
             assert dialog.set_card_scroll.widget() is dialog.set_card_host
             assert dialog.main_stat_card_host is not None
             assert len(dialog.substat_cards) == 4
+            assert dialog.level_spin.minimumHeight() >= 38
+            assert dialog.substat_cards[0].roll_spin.minimumHeight() >= 38
             assert dialog.check_button.isEnabled()
             dialog._select_set(game.sets[-1])
             assert dialog._selected_set == game.sets[-1]
@@ -459,13 +470,17 @@ def test_add_inventory_opens_editor_before_adding(monkeypatch, tmp_path):
 
     from PySide6.QtWidgets import QApplication, QDialog
     import gear_optimizer.pyside6_app as pyside6_app
-    from gear_optimizer.pyside6_app import OptimizerWindow, _default_piece
+    from gear_optimizer.pyside6_app import OptimizerWindow, _default_inventory_piece, _default_piece
 
     app = QApplication.instance() or QApplication([])
     window = OptimizerWindow(width=1200, height=760)
     try:
         game = window.selected_game()
         character = window.selected_character()
+        default_inventory = _default_inventory_piece(game, character, game.positions[0].id)
+        assert default_inventory.level == 0
+        assert default_inventory.initial_substat_count == 3
+        assert len(default_inventory.substats) == 3
         created_piece = _default_piece(game, character, game.positions[-1].id).model_copy(update={"locked": False})
         calls = []
 
@@ -513,6 +528,7 @@ def test_horizon_one_gain_summary_marks_no_positive_gain(monkeypatch, tmp_path):
         ]
         gain_rows = [
             {
+                "策略": "固定位置",
                 "horizon": 1,
                 "套装约束": "满足",
                 "有效提升": 0.2,
@@ -521,9 +537,23 @@ def test_horizon_one_gain_summary_marks_no_positive_gain(monkeypatch, tmp_path):
                 "_sort_vector": (0.2, 0.2),
             }
         ]
+        upgrade_rows = [
+            {
+                "策略": "强化库存胚子",
+                "horizon": 1,
+                "套装约束": "满足",
+                "有效提升": 0.4,
+                "质量提升": 0.4,
+                "有效/母盘": 0.4,
+                "_sort_vector": (0.4, 0.4),
+            }
+        ]
 
-        assert "均无正期望提升" in window._action_gain_summary_text(no_gain_rows)
-        assert "1/1 个可用策略" in window._action_gain_summary_text(gain_rows)
+        assert "当前可用调律 action 均无正期望提升" in window._action_gain_summary_text(no_gain_rows)
+        assert "1/1 个有正期望提升" in window._action_gain_summary_text(gain_rows)
+        upgrade_summary = window._action_gain_summary_text([*gain_rows, *upgrade_rows])
+        assert "调律有效/母盘最高为 0.2" in upgrade_summary
+        assert "库存强化：1/1 个胚子有正期望" in upgrade_summary
     finally:
         window.close()
         app.processEvents()

@@ -198,6 +198,26 @@ QComboBox, QLineEdit, QSpinBox {
     border-radius: 6px;
     padding: 5px 8px;
 }
+QSpinBox {
+    min-height: 34px;
+    min-width: 86px;
+    padding-right: 34px;
+}
+QSpinBox::up-button {
+    subcontrol-origin: border;
+    subcontrol-position: top right;
+    width: 30px;
+    border-left: 1px solid #cbd3dc;
+    border-bottom: 1px solid #e5e9ef;
+    border-top-right-radius: 6px;
+}
+QSpinBox::down-button {
+    subcontrol-origin: border;
+    subcontrol-position: bottom right;
+    width: 30px;
+    border-left: 1px solid #cbd3dc;
+    border-bottom-right-radius: 6px;
+}
 QTableWidget {
     background: #ffffff;
     alternate-background-color: #f8fafc;
@@ -258,6 +278,14 @@ QFrame#PieceCard:hover {
     border-color: #1a73e8;
 }
 QFrame#PieceCardSelected {
+    border: 2px solid #1a73e8;
+}
+QFrame#PieceCardHighlighted {
+    background: #fff8e1;
+    border: 2px solid #fbbc04;
+}
+QFrame#PieceCardHighlightedSelected {
+    background: #fff8e1;
     border: 2px solid #1a73e8;
 }
 QProgressBar#ActionProgressBar {
@@ -362,6 +390,32 @@ def _default_piece(game: GameRules, character: CharacterPreset, position: str | 
     )
 
 
+def _default_inventory_piece(
+    game: GameRules,
+    character: CharacterPreset,
+    position: str | int,
+) -> GearPiece:
+    piece = _default_piece(game, character, position)
+    available = game.available_substats(piece.main_stat)
+    preferred = [
+        stat
+        for stat in character.ordered_effective_substats(exclude=piece.main_stat)
+        if stat in available
+    ]
+    fill_stats = [stat for stat in available if stat not in preferred]
+    substats = [
+        SubstatLine(stat=stat, rolls=0)
+        for stat in [*preferred, *fill_stats][:3]
+    ]
+    return piece.model_copy(
+        update={
+            "level": 0,
+            "initial_substat_count": 3,
+            "substats": substats,
+        }
+    )
+
+
 def _complete_position_pieces(
     game: GameRules,
     character: CharacterPreset,
@@ -408,6 +462,14 @@ def _format_value(value: Any) -> str:
     return "" if value is None else str(value)
 
 
+def _clean_sort_value(value: Any) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    return 0.0 if abs(number) <= 1e-9 else number
+
+
 def _format_duration(seconds: float | None) -> str:
     if seconds is None or seconds < 0:
         return "--:--"
@@ -444,6 +506,13 @@ def _badge(text: str, muted: bool = False) -> QLabel:
     label.setObjectName("MutedBadge" if muted else "Badge")
     label.setAlignment(Qt.AlignmentFlag.AlignCenter)
     return label
+
+
+def _configure_step_spinbox(spin: QSpinBox, minimum_width: int = 92) -> QSpinBox:
+    spin.setMinimumWidth(minimum_width)
+    spin.setMinimumHeight(38)
+    spin.setButtonSymbols(QSpinBox.ButtonSymbols.UpDownArrows)
+    return spin
 
 
 def _piece_metric_labels(
@@ -552,6 +621,56 @@ def _inventory_index(row: dict[str, Any]) -> int | None:
         return None
 
 
+def _inventory_source_row_from_id(raw_id: Any, current_count: int) -> int | None:
+    raw = str(raw_id or "")
+    if not raw.startswith("piece:"):
+        return None
+    try:
+        global_index = int(raw.removeprefix("piece:"))
+    except ValueError:
+        return None
+    source_row = global_index - current_count
+    return source_row if source_row >= 0 else None
+
+
+def _inventory_source_rows_from_loadout_rows(
+    rows: list[dict[str, Any]],
+    current_count: int,
+) -> set[int]:
+    values: set[int] = set()
+    for row in rows:
+        source_row = _inventory_source_row_from_id(row.get("_inventory_id"), current_count)
+        if source_row is not None:
+            values.add(source_row)
+    return values
+
+
+def _inventory_source_rows_from_action_row(
+    row: dict[str, Any] | None,
+    current_count: int,
+) -> set[int]:
+    if not row:
+        return set()
+    values: set[int] = set()
+    source_row = _inventory_source_row_from_id(row.get("_upgrade_inventory_id"), current_count)
+    if source_row is not None:
+        values.add(source_row)
+    raw_loadout_rows = row.get("_representative_loadout_rows")
+    if isinstance(raw_loadout_rows, list):
+        values.update(
+            _inventory_source_rows_from_loadout_rows(
+                [dict(item) for item in raw_loadout_rows if isinstance(item, dict)],
+                current_count,
+            )
+        )
+    return values
+
+
+def _inventory_label_from_piece_id(raw_id: Any, current_count: int) -> str:
+    source_row = _inventory_source_row_from_id(raw_id, current_count)
+    return f"库存 #{source_row + 1}" if source_row is not None else "-"
+
+
 def _loadout_source_ref(row: dict[str, Any], current_count: int) -> str:
     index = _inventory_index(row)
     if index is None:
@@ -642,8 +761,62 @@ def _action_row_explanation(row: dict[str, Any]) -> str:
     if strategy == "固定位置 + 固定主属性 + 固定副属性":
         return f"{relative}；本行只和同位置锁主属性 action 比较。{horizon_note}"
     if strategy == "强化库存胚子":
-        return f"库存强化不消耗母盘；会消耗强化材料，本工具暂不把强化材料折算成母盘。{horizon_note}"
+        return (
+            "库存强化不消耗母盘；会消耗强化材料，本工具暂不把强化材料折算成母盘。"
+            "正期望表示强化后的所有 roll 分支按概率加权后有 option value；"
+            "它不等于这件胚子当前已经比已装备件更好，也不保证代表/均值搭配一定选它。"
+            f"{horizon_note}"
+        )
     return (relative or "完整概率分布精确计算。") + horizon_note
+
+
+def _action_sort_vector(row: dict[str, Any]) -> tuple[float, ...]:
+    raw = row.get("_sort_vector")
+    if isinstance(raw, (list, tuple)):
+        return tuple(_clean_sort_value(value) for value in raw)
+    return (
+        _clean_sort_value(row.get("质量/母盘")),
+        _clean_sort_value(row.get("有效/母盘")),
+    )
+
+
+def _action_row_recommend_group(row: dict[str, Any]) -> int:
+    strategy = str(row.get("策略") or "")
+    relative = str(row.get("相对随机") or "")
+    set_plan_status = str(row.get("套装约束") or "")
+    if set_plan_status.startswith("未满足"):
+        return 0
+    if strategy == "随机位置":
+        return 3
+    if strategy == "固定位置" and relative == "优于随机，才建议固定":
+        return 3
+    if (
+        strategy == "固定位置 + 固定主属性"
+        and relative == "固定位置已优于随机；优于固定位置，才建议锁主属性"
+    ):
+        return 3
+    if (
+        strategy == "固定位置 + 固定主属性 + 固定副属性"
+        and relative == "锁主属性已优于固定位置；优于锁主属性，才建议锁副属性"
+    ):
+        return 3
+    if strategy == "强化库存胚子" and _action_row_has_positive_gain(row):
+        return 2
+    if _action_row_has_positive_gain(row):
+        return 1
+    return 0
+
+
+def _action_display_sort_key(row: dict[str, Any]) -> tuple[Any, ...]:
+    return (
+        _action_row_recommend_group(row),
+        _action_sort_vector(row),
+        _clean_sort_value(row.get("有效/母盘")),
+    )
+
+
+def _sorted_action_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return sorted(rows, key=_action_display_sort_key, reverse=True)
 
 
 def _action_display_row(row: dict[str, Any]) -> dict[str, Any]:
@@ -826,9 +999,8 @@ class GearTable(QTableWidget):
             sub_col = COL_SUB_1 + index * 2
             roll_col = COL_ROLL_1 + index * 2
             self.setCellWidget(row, sub_col, self._substat_combo(piece.main_stat, line.stat))
-            spin = QSpinBox()
+            spin = _configure_step_spinbox(QSpinBox(), ROLL_SPINBOX_MIN_WIDTH)
             spin.setRange(0, 5)
-            spin.setMinimumWidth(ROLL_SPINBOX_MIN_WIDTH)
             spin.setValue(int(line.rolls))
             spin.valueChanged.connect(lambda _value: self._emit_changed())
             self.setCellWidget(row, roll_col, spin)
@@ -934,6 +1106,9 @@ class PieceCard(QFrame):
     ) -> None:
         super().__init__(parent)
         self.row_index = row_index
+        self.show_actions = show_actions
+        self._selected = False
+        self._highlighted = False
         self.setObjectName("PieceCard")
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -947,12 +1122,18 @@ class PieceCard(QFrame):
         self.icon_label = QLabel("")
         self.icon_label.setFixedSize(38, 38)
         self.icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.index_badge = _badge(f"库存 #{row_index + 1}", muted=True)
+        self.index_badge.setVisible(show_actions)
         self.position_label = QLabel("-")
         self.position_label.setStyleSheet("font-weight: 900; font-size: 15px;")
         self.position_label.setWordWrap(True)
+        self.highlight_badge = _badge("入选")
+        self.highlight_badge.setVisible(False)
+        header.addWidget(self.index_badge)
         self.locked_badge = _badge("未锁", muted=True)
         header.addWidget(self.icon_label)
         header.addWidget(self.position_label, 1)
+        header.addWidget(self.highlight_badge)
         header.addWidget(self.locked_badge)
         layout.addLayout(header)
 
@@ -1050,7 +1231,25 @@ class PieceCard(QFrame):
         )
 
     def set_selected(self, selected: bool) -> None:
-        self.setObjectName("PieceCardSelected" if selected else "PieceCard")
+        self._selected = selected
+        self._refresh_visual_state()
+
+    def set_highlighted(self, highlighted: bool, label: str = "入选") -> None:
+        self._highlighted = highlighted
+        self.highlight_badge.setText(label)
+        self.highlight_badge.setVisible(highlighted)
+        self._refresh_visual_state()
+
+    def _refresh_visual_state(self) -> None:
+        if self._selected and self._highlighted:
+            name = "PieceCardHighlightedSelected"
+        elif self._selected:
+            name = "PieceCardSelected"
+        elif self._highlighted:
+            name = "PieceCardHighlighted"
+        else:
+            name = "PieceCard"
+        self.setObjectName(name)
         self.style().unpolish(self)
         self.style().polish(self)
 
@@ -1133,10 +1332,9 @@ class SubstatEditCard(QFrame):
         self.title_label.setStyleSheet("font-weight: 800;")
         self.stat_combo = QComboBox()
         self.stat_combo.setMinimumWidth(150)
-        self.roll_spin = QSpinBox()
+        self.roll_spin = _configure_step_spinbox(QSpinBox(), 96)
         self.roll_spin.setRange(0, 5)
         self.roll_spin.setPrefix("+")
-        self.roll_spin.setMinimumWidth(72)
         self.up_button = QPushButton("上移")
         self.down_button = QPushButton("下移")
         self.clear_button = QPushButton("清空")
@@ -1269,7 +1467,7 @@ class GearPieceEditDialog(QDialog):
             basic_layout.addWidget(QLabel("槽位"), 0, 0)
             basic_layout.addWidget(self.position_label, 0, 1)
 
-        self.level_spin = QSpinBox()
+        self.level_spin = _configure_step_spinbox(QSpinBox(), 110)
         self.level_spin.setRange(0, game.enhancement.max_level)
         self.level_spin.setSingleStep(game.enhancement.step)
         self.level_spin.setPrefix("+")
@@ -1573,6 +1771,8 @@ class OptimizerWindow(QMainWindow):
         self.current_cards: list[PieceCard] = []
         self.inventory_cards: list[PieceCard] = []
         self._selected_inventory_source_row_value: int | None = None
+        self._highlighted_inventory_source_rows: set[int] = set()
+        self._highlighted_inventory_label = "入选"
         self.overview_game_label = QLabel("-")
         self.overview_character_label = QLabel("-")
         self.overview_probability_label = QLabel("-")
@@ -2124,6 +2324,10 @@ class OptimizerWindow(QMainWindow):
         self._selected_inventory_source_row_value = source_row
         for card in self.inventory_cards:
             card.set_selected(card.row_index == source_row)
+            card.set_highlighted(
+                card.row_index in self._highlighted_inventory_source_rows,
+                self._highlighted_inventory_label,
+            )
         self._refresh_inventory_detail()
 
     def _clear_inventory_card_grid(self) -> None:
@@ -2249,6 +2453,10 @@ class OptimizerWindow(QMainWindow):
             card = PieceCard(source_row, show_actions=True, show_equip=True)
             card.update_piece(piece, game, character)
             card.set_selected(source_row == self._selected_inventory_source_row_value)
+            card.set_highlighted(
+                source_row in self._highlighted_inventory_source_rows,
+                self._highlighted_inventory_label,
+            )
             card.clicked.connect(self.select_inventory_piece)
             card.edit_requested.connect(self.edit_inventory_piece)
             card.equip_requested.connect(self.equip_inventory_piece)
@@ -2261,7 +2469,9 @@ class OptimizerWindow(QMainWindow):
             self.inventory_card_grid.setColumnStretch(column, 1)
 
         self.inventory_card_status_label.setText(
-            f"显示 {len(rows)} / {len(pieces)} 件库存。点卡片看完整副属性；点“装备”会和当前同槽位互换。"
+            f"显示 {len(rows)} / {len(pieces)} 件库存；"
+            f"高亮 {len(self._highlighted_inventory_source_rows)} 件。"
+            "点卡片看完整副属性；点“装备”会和当前同槽位互换。"
             if rows
             else "没有符合筛选条件的库存。"
         )
@@ -2284,6 +2494,8 @@ class OptimizerWindow(QMainWindow):
         )
 
     def _inventory_changed(self) -> None:
+        self._highlighted_inventory_source_rows = set()
+        self._highlighted_inventory_label = "入选"
         self._refresh_inventory_filters()
         self._refresh_inventory_view()
         self._clear_results("库存已变化。")
@@ -2318,15 +2530,20 @@ class OptimizerWindow(QMainWindow):
 
     def _current_changed(self) -> None:
         self.current_confirmed_digest = None
+        self._highlighted_inventory_source_rows = set()
+        self._highlighted_inventory_label = "入选"
         self._clear_results("当前装备已变化，请重新确认。")
         self._update_action_buttons()
         self._refresh_current_cards()
+        self._refresh_inventory_view()
 
     def _action_busy(self) -> bool:
         return self._worker is not None or self._action_process is not None
 
     def _clear_results(self, message: str = "") -> None:
         self._results_stale = True
+        self._highlighted_inventory_source_rows = set()
+        self._highlighted_inventory_label = "入选"
         self.best_table.setRowCount(0)
         self.best_table.setColumnCount(0)
         self.action_table.setRowCount(0)
@@ -2669,7 +2886,7 @@ class OptimizerWindow(QMainWindow):
     def add_inventory(self) -> None:
         game = self.selected_game()
         character = self.selected_character()
-        piece = _default_piece(game, character, game.positions[0].id).model_copy(update={"locked": False})
+        piece = _default_inventory_piece(game, character, game.positions[0].id).model_copy(update={"locked": False})
         dialog = GearPieceEditDialog(
             game,
             character,
@@ -3038,6 +3255,14 @@ class OptimizerWindow(QMainWindow):
             self.best_table,
             _loadout_display_rows(rows, game, len(current_pieces)),
         )
+        self._highlighted_inventory_source_rows = _inventory_source_rows_from_loadout_rows(
+            rows,
+            len(current_pieces),
+        )
+        self._highlighted_inventory_label = "最优"
+        if self._highlighted_inventory_source_rows:
+            self._selected_inventory_source_row_value = min(self._highlighted_inventory_source_rows)
+        self._refresh_inventory_view()
         self._has_calculated_once = True
         self._results_stale = False
         self._last_recommended_action_summary = "当前最优搭配已更新。"
@@ -3115,7 +3340,7 @@ class OptimizerWindow(QMainWindow):
         shown = len(visible_rows)
         if total > limit:
             self.action_table_status_label.setText(
-                f"默认显示前 {limit} 条；完整精确结果共 {total} 条，可展开审计。"
+                f"默认按推荐口径显示前 {limit} 条；完整精确结果共 {total} 条，可展开审计。"
             )
             self.show_all_actions_button.setEnabled(True)
             self.show_all_actions_button.setText(
@@ -3138,21 +3363,48 @@ class OptimizerWindow(QMainWindow):
         horizon = int(rows[0].get("horizon") or self.horizon_combo.currentData() or 1)
         if horizon != 1:
             return ""
-        valid_rows = [
+        valid_tuning_rows = [
             row
             for row in rows
             if not str(row.get("套装约束") or "").startswith("未满足")
+            and row.get("策略") != "强化库存胚子"
         ]
-        positive_rows = [row for row in valid_rows if _action_row_has_positive_gain(row)]
-        if not valid_rows:
-            return "H=1 快速判断：没有满足当前套装硬约束的策略。"
-        if not positive_rows:
-            return "H=1 快速判断：当前可用策略均无正期望提升，继续调律的平均收益为 0。"
-        best_positive = max(positive_rows, key=lambda row: _float_value(row.get("有效/母盘")))
-        return (
-            f"H=1 快速判断：{len(positive_rows)}/{len(valid_rows)} 个可用策略有正期望提升；"
-            f"有效/母盘最高为 {best_positive.get('有效/母盘', '-')}。"
-        )
+        positive_tuning_rows = [
+            row for row in valid_tuning_rows if _action_row_has_positive_gain(row)
+        ]
+        upgrade_rows = [
+            row
+            for row in rows
+            if row.get("策略") == "强化库存胚子"
+            and not str(row.get("套装约束") or "").startswith("未满足")
+        ]
+        positive_upgrade_rows = [row for row in upgrade_rows if _action_row_has_positive_gain(row)]
+        parts: list[str] = []
+        if not valid_tuning_rows:
+            parts.append("调律策略：没有满足当前套装硬约束的策略")
+        elif not positive_tuning_rows:
+            parts.append("调律策略：当前可用调律 action 均无正期望提升")
+        else:
+            best_tuning = max(
+                positive_tuning_rows,
+                key=lambda row: _float_value(row.get("有效/母盘")),
+            )
+            parts.append(
+                f"调律策略：{len(positive_tuning_rows)}/{len(valid_tuning_rows)} 个有正期望提升；"
+                f"调律有效/母盘最高为 {best_tuning.get('有效/母盘', '-')}"
+            )
+        if positive_upgrade_rows:
+            best_upgrade = max(
+                positive_upgrade_rows,
+                key=lambda row: _float_value(row.get("有效提升")),
+            )
+            parts.append(
+                f"库存强化：{len(positive_upgrade_rows)}/{len(upgrade_rows)} 个胚子有正期望；"
+                f"最高期望有效提升 {best_upgrade.get('有效提升', '-')}"
+            )
+        elif upgrade_rows:
+            parts.append("库存强化：未满级胚子暂无正期望提升")
+        return "H=1 快速判断：" + "；".join(parts) + "。"
 
     def _recommended_action_card_text(self, row: dict[str, Any]) -> str:
         fields = [
@@ -3169,10 +3421,25 @@ class OptimizerWindow(QMainWindow):
             ("增益判断", _action_gain_label(row)),
             ("有效/母盘", row.get("有效/母盘", "-")),
             ("比较口径", row.get("比较口径", row.get("相对随机", "-"))),
+            (
+                "排序口径",
+                "按排序向量/母盘推荐；浮点毛刺 <=1e-9 忽略，库存强化不与母盘调律直接混排",
+            ),
             ("计算口径", "精确；完整概率分布枚举，不使用 Monte Carlo/近似/partial 推荐"),
             ("计算引擎", _engine_label(str(row.get("_engine") or self._last_action_engine))),
             ("执行方式", _execution_mode_label(str(row.get("_execution_mode") or self._last_action_execution_mode))),
         ]
+        if row.get("策略") == "强化库存胚子":
+            fields.insert(
+                3,
+                (
+                    "库存编号",
+                    _inventory_label_from_piece_id(
+                        row.get("_upgrade_inventory_id"),
+                        self.current_table.rowCount(),
+                    ),
+                ),
+            )
         detail = "\n".join(f"{label}：{_format_value(value)}" for label, value in fields)
         explanation = _action_row_explanation(row)
         if explanation:
@@ -3238,17 +3505,25 @@ class OptimizerWindow(QMainWindow):
         self._action_progress_percent = 100
         self.progress_bar.setValue(100)
         self.progress_bar.setFormat("精确计算 100%")
-        self._action_result_rows = [
+        self._action_result_rows = _sorted_action_rows([
             {
                 **dict(row),
                 "_engine": self._last_action_engine,
                 "_execution_mode": self._last_action_execution_mode,
             }
             for row in rows
-        ]
+        ])
         self._show_all_action_rows = False
         self._render_action_table()
         recommended = recommended_action_ev_row(rows)
+        self._highlighted_inventory_source_rows = _inventory_source_rows_from_action_row(
+            recommended,
+            self.current_table.rowCount(),
+        )
+        self._highlighted_inventory_label = "推荐"
+        if self._highlighted_inventory_source_rows:
+            self._selected_inventory_source_row_value = min(self._highlighted_inventory_source_rows)
+        self._refresh_inventory_view()
         loadout_rows = []
         if recommended:
             raw_loadout_rows = recommended.get("_representative_loadout_rows")
@@ -3279,7 +3554,7 @@ class OptimizerWindow(QMainWindow):
                 f"期望提升：{recommended.get('期望提升', '-')}；"
                 f"有效/母盘：{recommended.get('有效/母盘', '-')}"
             )
-            if gain_summary.startswith("H=1 快速判断：当前可用策略均无正期望提升"):
+            if "当前可用调律 action 均无正期望提升" in gain_summary:
                 self.result_recommend_title.setText("H=1 暂无正期望提升")
             else:
                 self.result_recommend_title.setText("推荐调律 action")

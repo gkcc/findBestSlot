@@ -31,6 +31,8 @@ from gear_optimizer.position_ev import (
     _AGGREGATED_ACTION_OUTCOME_CACHE,
     _combo_value,
     _inventory_signature,
+    _positive_gain,
+    _row_sort_vector,
     _set_plan_satisfied,
     inventory_rows_from_pieces,
 )
@@ -1214,6 +1216,35 @@ def test_action_plan_explain_fields_do_not_affect_recommendation_sorting():
     rows[0]["条件分支"] = [{"第二步 action": "伪造高收益"}]
 
     assert recommended_action_ev_row(rows) is rows[1]
+
+
+def test_recommended_action_ev_ignores_float_noise_before_real_gain():
+    rows = [
+        {
+            "策略": "随机位置",
+            "目标套装": "A",
+            "位置": "1-6 随机",
+            "质量/母盘": 0.0025,
+            "有效/母盘": 0.0025,
+            "_sort_vector": (1e-10, 0.0025, 0.0),
+            "相对随机": "基准",
+            "套装约束": "满足A 6",
+        },
+        {
+            "策略": "随机位置",
+            "目标套装": "B",
+            "位置": "1-6 随机",
+            "质量/母盘": 0.04,
+            "有效/母盘": 0.04,
+            "_sort_vector": (0.0, 0.04, 0.0),
+            "相对随机": "基准",
+            "套装约束": "满足B 6",
+        },
+    ]
+
+    assert _row_sort_vector(rows[0])[0] == 0.0
+    assert recommended_action_ev_row(rows) is rows[1]
+    assert _positive_gain((1e-10, 1.0), (0.0, 1.0)) == (0.0, 0.0)
 
 
 def test_fixed_main_gain_ladder_starts_from_current_weakest_position():

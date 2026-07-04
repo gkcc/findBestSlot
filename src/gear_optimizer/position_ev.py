@@ -998,10 +998,10 @@ def _positive_gain(
     new_value: tuple[float, ...],
     current_value: tuple[float, ...],
 ) -> tuple[float, ...]:
-    if not new_value or new_value <= current_value:
+    if not new_value or not _vector_greater(new_value, current_value):
         return tuple(0.0 for _ in current_value)
     return tuple(
-        max(new_value[index] - current_value[index], 0.0)
+        _clean_vector_value(max(new_value[index] - current_value[index], 0.0))
         for index in range(len(current_value))
     )
 
@@ -1024,6 +1024,14 @@ def _vector_greater(left: tuple[float, ...], right: tuple[float, ...]) -> bool:
         if difference < -_VECTOR_EPSILON:
             return False
     return len(left) > len(right)
+
+
+def _clean_vector_value(value: float) -> float:
+    return 0.0 if abs(value) <= _VECTOR_EPSILON else value
+
+
+def _clean_vector(vector: tuple[float, ...]) -> tuple[float, ...]:
+    return tuple(_clean_vector_value(float(value)) for value in vector)
 
 
 def _subtract_vectors(left: tuple[float, ...], right: tuple[float, ...]) -> tuple[float, ...]:
@@ -4028,6 +4036,7 @@ def position_strategy_efficiency_rows(
             "条件分支": explain_fields["条件分支"],
             "代表路径说明": explain_fields["代表路径说明"],
             "_representative_loadout_rows": representative_loadout_rows,
+            "_upgrade_inventory_id": spec.upgrade_inventory_id or "",
             "质量提升": round(quality_gain, 3),
             "有效提升": round(effective_gain, 3),
             "母盘/次": round(mother_cost, 3),
@@ -4127,13 +4136,13 @@ def position_strategy_efficiency_rows(
 def _row_sort_vector(row: dict[str, float | str]) -> tuple[float, ...]:
     raw = row.get("_sort_vector")
     if isinstance(raw, tuple):
-        return tuple(float(value) for value in raw)
+        return _clean_vector(tuple(float(value) for value in raw))
     if isinstance(raw, list):
-        return tuple(float(value) for value in raw)
-    return (
+        return _clean_vector(tuple(float(value) for value in raw))
+    return _clean_vector((
         float(row.get("质量/母盘") or 0.0),
         float(row.get("有效/母盘") or 0.0),
-    )
+    ))
 
 
 def _is_recommendable_action_row(row: dict[str, float | str]) -> bool:
