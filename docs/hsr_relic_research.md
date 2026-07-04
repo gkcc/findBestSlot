@@ -41,11 +41,14 @@
 - 中文 Wiki `遗器图鉴` 页面与 Semantic MediaWiki API：提供当前 60 套遗器/位面饰品名称、分类与套装效果文本；页面显示 60 套，其中隧洞遗器 32 套、位面饰品 28 套。本轮只写入文本，不下载或内置图片。
   - 页面：[遗器图鉴 - 崩坏：星穹铁道WIKI_BWIKI_哔哩哔哩](https://wiki.biligame.com/sr/%E9%81%97%E5%99%A8%E5%9B%BE%E9%89%B4)
   - API 查询口径：`api.php?action=ask&query=[[分类:遗器]]|?名称|?类别|?两件套效果|?四件套效果|?实装版本|limit=1000`
+- Honey Hunter 4.4 页面：BWIKI 当前对 `坠星启航地` 和 `寰宇生研院` 的 `两件套效果` 字段为空；为避免 UI 出现半截套装，当前暂用 Honey Hunter 的文本补齐这两套效果。该来源属于 fan database / beta data，后续应以官方或 BWIKI 补全文本复核。
+  - 页面：[坠星启航地](https://starrail.honeyhunterworld.com/land-of-the-starfall-voyage-relic_set/?lang=CHS)
+  - 页面：[寰宇生研院](https://starrail.honeyhunterworld.com/universe-shrinker-lab-relic_set/?lang=CHS)
 - 自塑尘脂 = 800 残骸、普通合成 = 100 残骸为用户提供的游戏内口径；当前配置将该口径落为 `advanced_material_equivalent_fixed_position_attempts: 8`。
 
-## 已知素材缺口
+## 已知素材边界
 
-- `坠星启航地` 和 `寰宇生研院` 在本次资料源中已有套装名和分类，但 `两件套效果` 字段暂为空；配置中以“资料源暂未填写2件套效果。”占位，后续等资料源补全或用户提供文本后再更新。
+- `坠星启航地` 和 `寰宇生研院` 的效果文本来自 Honey Hunter，待官方或 BWIKI 补全后复核。
 - 当前没有接入本地授权图片；UI 使用文字和 fallback 展示。
 
 ## 待复核

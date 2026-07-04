@@ -100,6 +100,12 @@ def test_hsr_real_sets_cover_relic_and_planar_display():
     assert "占位" not in "\n".join(game.sets)
     assert "战技和终结技" in (game.set_effect("识海迷坠的学者").four_piece or "")
     assert "暴击率" in (game.set_effect("繁星竞技场").two_piece or "")
+    assert "开拓同行" in (game.set_effect("坠星启航地").two_piece or "")
+    assert "能量上限" in (game.set_effect("寰宇生研院").two_piece or "")
+    assert "资料源暂未填写" not in "\n".join(
+        str(effect.two_piece or "")
+        for effect in game.set_effects.values()
+    )
     assert character.active_set_plan().name == "学者 4 + 繁星竞技场 2"
     assert model.target_set_probability == pytest.approx(1.0)
     assert len(game.sets_for_position("head")) == 32
