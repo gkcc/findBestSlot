@@ -416,6 +416,64 @@ def _default_inventory_piece(
     )
 
 
+def _expected_visible_substat_count(game: GameRules, piece: GearPiece) -> int:
+    if (
+        piece.initial_substat_count == 4
+        or piece.level >= game.enhancement.initial_add_level
+    ):
+        return 4
+    return 3
+
+
+def _expected_roll_total(game: GameRules, piece: GearPiece) -> int:
+    total = sum(
+        1
+        for event_level in game.enhancement.event_levels
+        if event_level <= piece.level
+    )
+    if (
+        piece.initial_substat_count == 3
+        and piece.level >= game.enhancement.initial_add_level
+    ):
+        total -= 1
+    return max(total, 0)
+
+
+def gear_piece_entry_consistency_issues(
+    piece: GearPiece,
+    game: GameRules,
+) -> tuple[list[str], list[str]]:
+    actual_substats = len(piece.substats)
+    expected_substats = _expected_visible_substat_count(game, piece)
+    actual_rolls = sum(line.rolls for line in piece.substats)
+    expected_rolls = _expected_roll_total(game, piece)
+    config_label = (
+        f"初始 {piece.initial_substat_count} 条 / 等级 +{piece.level}"
+    )
+    errors: list[str] = []
+    warnings: list[str] = []
+
+    if actual_substats > expected_substats:
+        errors.append(
+            f"{config_label} 最多应显示 {expected_substats} 条副属性；当前填写了 {actual_substats} 条。"
+        )
+    elif actual_substats < expected_substats:
+        warnings.append(
+            f"{config_label} 通常应显示 {expected_substats} 条副属性；当前只填写了 {actual_substats} 条。"
+        )
+
+    if actual_rolls > expected_rolls:
+        errors.append(
+            f"{config_label} 最多应有 {expected_rolls} 次副属性强化；当前填写了 {actual_rolls} 次。"
+        )
+    elif actual_rolls < expected_rolls:
+        warnings.append(
+            f"{config_label} 通常应有 {expected_rolls} 次副属性强化；当前只填写了 {actual_rolls} 次。"
+        )
+
+    return errors, warnings
+
+
 def _complete_position_pieces(
     game: GameRules,
     character: CharacterPreset,
@@ -1645,9 +1703,9 @@ class GearPieceEditDialog(QDialog):
             self.substat_layout.removeWidget(card)
             self.substat_layout.addWidget(card)
 
-    def _collect_piece(self) -> GearPiece:
+    def _build_piece(self) -> GearPiece:
         substats = [line for card in self.substat_cards if (line := card.line()) is not None]
-        piece = GearPiece(
+        return GearPiece(
             position=self._position_value(),
             set_name=self._selected_set,
             main_stat=self._selected_main,
@@ -1656,6 +1714,9 @@ class GearPieceEditDialog(QDialog):
             locked=self.locked_checkbox.isChecked(),
             substats=substats,
         )
+
+    def _collect_piece(self) -> GearPiece:
+        piece = self._build_piece()
         validate_gear_piece_against_game(piece, self.game)
         return piece
 
@@ -1670,10 +1731,41 @@ class GearPieceEditDialog(QDialog):
 
     def accept(self) -> None:  # type: ignore[override]
         try:
-            self._piece = self._collect_piece()
+            piece = self._build_piece()
         except Exception as exc:
             QMessageBox.warning(self, "装备无法保存", str(exc))
             return
+
+        consistency_errors, consistency_warnings = gear_piece_entry_consistency_issues(
+            piece,
+            self.game,
+        )
+        if consistency_errors:
+            QMessageBox.warning(
+                self,
+                "装备配置不匹配",
+                "当前强化配置和已填写副属性不匹配：\n\n"
+                + "\n".join(f"- {item}" for item in consistency_errors),
+            )
+            return
+        try:
+            validate_gear_piece_against_game(piece, self.game)
+        except Exception as exc:
+            QMessageBox.warning(self, "装备无法保存", str(exc))
+            return
+        if consistency_warnings:
+            answer = QMessageBox.question(
+                self,
+                "确认保存装备？",
+                "当前强化配置和已填写副属性不完全匹配：\n\n"
+                + "\n".join(f"- {item}" for item in consistency_warnings)
+                + "\n\n仍然保存吗？",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+        self._piece = piece
         super().accept()
 
 

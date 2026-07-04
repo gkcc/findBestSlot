@@ -506,6 +506,78 @@ def test_add_inventory_opens_editor_before_adding(monkeypatch, tmp_path):
         app.processEvents()
 
 
+def test_gear_piece_entry_consistency_flags_substat_and_roll_mismatches():
+    pytest.importorskip("PySide6")
+
+    from gear_optimizer.game_rules import load_game
+    from gear_optimizer.models import GearPiece, SubstatLine
+    from gear_optimizer.pyside6_app import gear_piece_entry_consistency_issues
+
+    game = load_game("zzz")
+    position = game.positions[0]
+    main_stat = position.main_stats[0]
+    set_name = game.sets[0]
+    substat_names = game.available_substats(main_stat)[:4]
+
+    def make_piece(
+        *,
+        initial_substat_count: int,
+        level: int,
+        substat_count: int,
+        rolls: list[int] | None = None,
+    ) -> GearPiece:
+        roll_values = rolls or [0] * substat_count
+        return GearPiece(
+            position=position.id,
+            set_name=set_name,
+            main_stat=main_stat,
+            level=level,
+            initial_substat_count=initial_substat_count,
+            substats=[
+                SubstatLine(
+                    stat=substat_names[index],
+                    rolls=roll_values[index] if index < len(roll_values) else 0,
+                )
+                for index in range(substat_count)
+            ],
+        )
+
+    errors, warnings = gear_piece_entry_consistency_issues(
+        make_piece(initial_substat_count=4, level=0, substat_count=3),
+        game,
+    )
+    assert errors == []
+    assert any("通常应显示 4 条副属性" in warning for warning in warnings)
+
+    errors, warnings = gear_piece_entry_consistency_issues(
+        make_piece(initial_substat_count=3, level=0, substat_count=4),
+        game,
+    )
+    assert warnings == []
+    assert any("最多应显示 3 条副属性" in error for error in errors)
+
+    errors, warnings = gear_piece_entry_consistency_issues(
+        make_piece(initial_substat_count=3, level=3, substat_count=3),
+        game,
+    )
+    assert errors == []
+    assert any("通常应显示 4 条副属性" in warning for warning in warnings)
+
+    errors, warnings = gear_piece_entry_consistency_issues(
+        make_piece(initial_substat_count=4, level=3, substat_count=4),
+        game,
+    )
+    assert errors == []
+    assert any("通常应有 1 次副属性强化" in warning for warning in warnings)
+
+    errors, warnings = gear_piece_entry_consistency_issues(
+        make_piece(initial_substat_count=3, level=3, substat_count=4, rolls=[1, 0, 0, 0]),
+        game,
+    )
+    assert warnings == []
+    assert any("最多应有 0 次副属性强化" in error for error in errors)
+
+
 def test_horizon_one_gain_summary_marks_no_positive_gain(monkeypatch, tmp_path):
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
     monkeypatch.setenv("GEAR_OPTIMIZER_USER_DATA_DIR", str(tmp_path / "user_data"))
