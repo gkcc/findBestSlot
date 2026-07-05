@@ -428,7 +428,7 @@ def test_optimizer_window_constructs_key_pyside6_components(monkeypatch, tmp_pat
             assert target_agent.name in window.agent_summary_label.text()
             assert target_agent.faction in window.agent_summary_label.text()
             assert target_agent.character_preset_id in window.agent_summary_label.text()
-            unselected_card = window._agent_card_button(target_agent, selected=False)
+            unselected_card = window._agent_card_widget(target_agent, selected=False)
             card_texts = {
                 label.objectName(): label.text()
                 for label in unselected_card.findChildren(QLabel)

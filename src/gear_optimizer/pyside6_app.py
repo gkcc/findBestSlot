@@ -1383,6 +1383,98 @@ class PieceCard(QFrame):
         super().mousePressEvent(event)
 
 
+class AgentCard(QFrame):
+    clicked = Signal()
+
+    def __init__(
+        self,
+        agent: AgentMetadata,
+        *,
+        selected: bool,
+        summary: str,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.agent = agent
+        self._selected = selected
+        self.setObjectName("AgentCardSelected" if selected else "AgentCard")
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setMinimumSize(280, 158)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.setAccessibleName(summary)
+        self.setStyleSheet(
+            "QFrame#AgentCard { border: 1px solid #d7dce2; border-radius: 8px; "
+            "background: #ffffff; }"
+            "QFrame#AgentCard:hover { border-color: #1a73e8; }"
+            "QFrame#AgentCardSelected { border: 2px solid #1a73e8; border-radius: 8px; "
+            "background: #e8f0fe; }"
+        )
+
+        text_color = "#0b57d0" if selected else "#202124"
+        muted_color = "#0b57d0" if selected else "#56606b"
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(10)
+
+        self.image_label = QLabel("图")
+        self.image_label.setObjectName("AgentCardImage")
+        self.image_label.setFixedSize(96, 124)
+        self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        pixmap = asset_pixmap(agent.card_path or agent.portrait_path, 96, 124)
+        if pixmap is not None:
+            self.image_label.setPixmap(pixmap)
+            self.image_label.setText("")
+        self.image_label.setStyleSheet("background: transparent; color: #56606b;")
+        layout.addWidget(self.image_label)
+
+        text_layout = QVBoxLayout()
+        text_layout.setContentsMargins(0, 0, 0, 0)
+        text_layout.setSpacing(3)
+
+        def add_line(text: str, *, style: str, object_name: str) -> QLabel:
+            label = QLabel(text)
+            label.setObjectName(object_name)
+            label.setWordWrap(True)
+            label.setStyleSheet(style)
+            text_layout.addWidget(label)
+            return label
+
+        self.name_label = add_line(
+            agent.name,
+            style=f"background: transparent; color: {text_color}; font-weight: 900; font-size: 15px;",
+            object_name="AgentCardName",
+        )
+        self.meta_label = add_line(
+            f"{agent.rarity} · {agent.attribute} · {agent.specialty}",
+            style=f"background: transparent; color: {text_color}; font-weight: 800;",
+            object_name="AgentCardMeta",
+        )
+        if agent.faction and agent.faction != UNKNOWN_LABEL:
+            self.faction_label = add_line(
+                f"阵营 {agent.faction}",
+                style=f"background: transparent; color: {muted_color}; font-weight: 700;",
+                object_name="AgentCardFaction",
+            )
+        if agent.release_version:
+            self.version_label = add_line(
+                f"实装 {agent.release_version}",
+                style=f"background: transparent; color: {muted_color}; font-weight: 700;",
+                object_name="AgentCardVersion",
+            )
+        self.template_label = add_line(
+            f"模板 {agent.character_preset_id}",
+            style=f"background: transparent; color: {muted_color}; font-weight: 700;",
+            object_name="AgentCardTemplate",
+        )
+        text_layout.addStretch(1)
+        layout.addLayout(text_layout, 1)
+
+    def mousePressEvent(self, event) -> None:  # type: ignore[override]
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit()
+        super().mousePressEvent(event)
+
+
 class SubstatDropGroup(QGroupBox):
     reorder_requested = Signal(int, int)
 
@@ -2294,91 +2386,17 @@ class OptimizerWindow(QMainWindow):
         version = f" · {agent.release_version}" if agent.release_version else ""
         return f"{label}{version} -> {agent.character_preset_id}"
 
-    def _agent_card_button(
+    def _agent_card_widget(
         self,
         agent: AgentMetadata,
         *,
         selected: bool,
         on_click: Callable[[], None] | None = None,
-    ) -> QPushButton:
-        button = QPushButton("")
-        button.setObjectName("AgentCardButton")
-        button.setMinimumSize(280, 158)
-        button.setCheckable(True)
-        button.setChecked(selected)
-        button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        button.setToolTip(self._agent_summary_text(agent))
-        button.setStyleSheet(
-            "QPushButton#AgentCardButton { text-align: left; border: 1px solid #d7dce2; "
-            "border-radius: 8px; padding: 8px; background: #ffffff; }"
-            "QPushButton#AgentCardButton:checked { border: 2px solid #1a73e8; background: #e8f0fe; }"
-            "QPushButton#AgentCardButton:hover { border-color: #1a73e8; }"
-        )
-
-        text_color = "#0b57d0" if selected else "#202124"
-        muted_color = "#0b57d0" if selected else "#56606b"
-        layout = QHBoxLayout(button)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(10)
-
-        image_label = QLabel("图")
-        image_label.setObjectName("AgentCardImage")
-        image_label.setFixedSize(96, 124)
-        image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        image_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-        pixmap = asset_pixmap(agent.card_path or agent.portrait_path, 96, 124)
-        if pixmap is not None:
-            image_label.setPixmap(pixmap)
-            image_label.setText("")
-        image_label.setStyleSheet("background: transparent; color: #56606b;")
-        layout.addWidget(image_label)
-
-        text_layout = QVBoxLayout()
-        text_layout.setContentsMargins(0, 0, 0, 0)
-        text_layout.setSpacing(3)
-
-        def add_line(text: str, *, style: str, object_name: str) -> QLabel:
-            label = QLabel(text)
-            label.setObjectName(object_name)
-            label.setWordWrap(True)
-            label.setStyleSheet(style)
-            label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
-            text_layout.addWidget(label)
-            return label
-
-        add_line(
-            agent.name,
-            style=f"background: transparent; color: {text_color}; font-weight: 900; font-size: 15px;",
-            object_name="AgentCardName",
-        )
-        add_line(
-            f"{agent.rarity} · {agent.attribute} · {agent.specialty}",
-            style=f"background: transparent; color: {text_color}; font-weight: 800;",
-            object_name="AgentCardMeta",
-        )
-        if agent.faction and agent.faction != UNKNOWN_LABEL:
-            add_line(
-                f"阵营 {agent.faction}",
-                style=f"background: transparent; color: {muted_color}; font-weight: 700;",
-                object_name="AgentCardFaction",
-            )
-        if agent.release_version:
-            add_line(
-                f"实装 {agent.release_version}",
-                style=f"background: transparent; color: {muted_color}; font-weight: 700;",
-                object_name="AgentCardVersion",
-            )
-        add_line(
-            f"模板 {agent.character_preset_id}",
-            style=f"background: transparent; color: {muted_color}; font-weight: 700;",
-            object_name="AgentCardTemplate",
-        )
-        text_layout.addStretch(1)
-        layout.addLayout(text_layout, 1)
-
+    ) -> AgentCard:
+        card = AgentCard(agent, selected=selected, summary=self._agent_summary_text(agent))
         if on_click is not None:
-            button.clicked.connect(lambda _checked=False: on_click())
-        return button
+            card.clicked.connect(on_click)
+        return card
 
     def _refresh_agent_selector_summary(self) -> None:
         agent = self.selected_agent()
@@ -2456,7 +2474,7 @@ class OptimizerWindow(QMainWindow):
             )
             status.setText(f"按实装版本从新到旧展示；当前筛选 {len(filtered_agents)} / {len(self.agents)} 名角色。")
             for index, agent in enumerate(filtered_agents):
-                button = self._agent_card_button(
+                card = self._agent_card_widget(
                     agent,
                     selected=current_agent is not None and agent.agent_id == current_agent.agent_id,
                     on_click=lambda selected=agent: (
@@ -2464,7 +2482,7 @@ class OptimizerWindow(QMainWindow):
                         dialog.accept(),
                     ),
                 )
-                grid.addWidget(button, index // 3, index % 3)
+                grid.addWidget(card, index // 3, index % 3)
             grid.setRowStretch((len(filtered_agents) + 2) // 3, 1)
 
         for column in range(3):
@@ -4078,12 +4096,25 @@ class OptimizerWindow(QMainWindow):
         self.log.append(f"{title}\n" + "\n".join(warnings))
 
 
+def _disable_transient_popup_effects() -> None:
+    for effect in [
+        Qt.UIEffect.UI_AnimateCombo,
+        Qt.UIEffect.UI_AnimateMenu,
+        Qt.UIEffect.UI_AnimateToolBox,
+        Qt.UIEffect.UI_AnimateTooltip,
+        Qt.UIEffect.UI_FadeMenu,
+        Qt.UIEffect.UI_FadeTooltip,
+    ]:
+        QApplication.setEffectEnabled(effect, False)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Launch the native PySide6 desktop app.")
     parser.add_argument("--width", type=int, default=1500)
     parser.add_argument("--height", type=int, default=950)
     args = parser.parse_args(argv)
     app = QApplication.instance() or QApplication(sys.argv[:1])
+    _disable_transient_popup_effects()
     window = OptimizerWindow(width=args.width, height=args.height)
     window.show()
     return int(app.exec())
