@@ -159,7 +159,7 @@ def test_optimizer_window_constructs_key_pyside6_components(monkeypatch, tmp_pat
     monkeypatch.setenv("GEAR_OPTIMIZER_USER_DATA_DIR", str(tmp_path / "user_data"))
     pytest.importorskip("PySide6")
 
-    from PySide6.QtWidgets import QApplication, QLabel
+    from PySide6.QtWidgets import QApplication, QLabel, QInputDialog, QMessageBox
     from gear_optimizer.pyside6_app import (
         ACTION_DETAIL_DISPLAY_LIMIT,
         OptimizerWindow,
@@ -195,6 +195,8 @@ def test_optimizer_window_constructs_key_pyside6_components(monkeypatch, tmp_pat
             assert window.selected_agent().faction in window.agent_summary_label.text()
         assert window.selected_character().id in window.agent_summary_label.text()
         assert window.overview_confirm_label.text() in {"未确认", "已确认"}
+        assert window.current_template_combo.currentData() == ""
+        assert not window.load_current_template_button.isEnabled()
         assert window.current_table.rowCount() == 0
         assert len(window.current_cards) == 6
         assert all(isinstance(card, PieceCard) for card in window.current_cards)
@@ -217,6 +219,25 @@ def test_optimizer_window_constructs_key_pyside6_components(monkeypatch, tmp_pat
         assert window.current_table.rowCount() == 1
         assert window.inventory_table.rowCount() == 0
         assert "该槽位之前为空" in window.progress_label.text()
+        monkeypatch.setattr(QInputDialog, "getText", lambda *args, **kwargs: ("半成品模板", True))
+        window.save_current()
+        assert window.current_template_combo.currentData()
+        assert "半成品模板" in window.current_template_combo.currentText()
+        assert "1/6" in window.current_template_combo.currentText()
+        window.current_table.set_context(game, character, [])
+        window.load_current_template()
+        assert window.current_table.rowCount() == 1
+        monkeypatch.setattr(QInputDialog, "getText", lambda *args, **kwargs: ("重命名模板", True))
+        window.rename_current_template()
+        assert "重命名模板" in window.current_template_combo.currentText()
+        monkeypatch.setattr(
+            QMessageBox,
+            "question",
+            lambda *args, **kwargs: QMessageBox.StandardButton.Yes,
+        )
+        window.delete_current_template()
+        assert window.current_template_combo.currentData() == ""
+        assert not window.load_current_template_button.isEnabled()
         window.load_example_current()
         current_before = window._hidden_table_pieces(window.current_table)
         inventory_piece = current_before[0].model_copy(
@@ -411,6 +432,9 @@ def test_optimizer_window_constructs_key_pyside6_components(monkeypatch, tmp_pat
             "copy_selected_inventory",
             "clear_selected_inventory_substats",
             "export_inventory_details",
+            "load_current_template",
+            "rename_current_template",
+            "delete_current_template",
         ]:
             assert callable(getattr(window, method))
         zzz_index = window.game_combo.findData("zzz")

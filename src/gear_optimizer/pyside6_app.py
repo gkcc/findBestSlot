@@ -73,7 +73,11 @@ from gear_optimizer.presets import list_current_examples, load_current_example
 from gear_optimizer.scoring import analyse_current_gear
 from gear_optimizer.scoring import score_piece
 from gear_optimizer.ui_assets import asset_pixmap, set_effect_tooltip, set_icon, set_icon_pixmap
-from gear_optimizer.user_current_gear import load_user_current_gears, save_user_current_gear
+from gear_optimizer.user_current_gear import (
+    delete_user_current_gear,
+    load_user_current_gears,
+    save_user_current_gear,
+)
 from gear_optimizer.user_inventory import load_user_inventory, save_user_inventory, user_inventory_store_path
 
 
@@ -2050,8 +2054,12 @@ class OptimizerWindow(QMainWindow):
         self.overview_metric_label.setWordWrap(True)
         self.overview_guide_label = QLabel("先维护库存与当前装备，确认当前装备后再计算最优搭配或调律建议。")
         self.overview_guide_label.setWordWrap(True)
+        self.current_template_combo = QComboBox()
+        self.load_current_template_button = QPushButton("载入模板")
         self.confirm_button = QPushButton("确认当前装备")
-        self.save_current_button = QPushButton("保存当前装备到本机")
+        self.save_current_button = QPushButton("保存为模板")
+        self.rename_current_template_button = QPushButton("重命名模板")
+        self.delete_current_template_button = QPushButton("删除模板")
         self.load_example_button = QPushButton("载入示例当前装备")
         self.add_inventory_button = QPushButton("添加库存件")
         self.copy_inventory_button = QPushButton("复制选中库存")
@@ -2220,14 +2228,22 @@ class OptimizerWindow(QMainWindow):
         current_page_layout = QVBoxLayout(current_page)
         current_group = QGroupBox("当前装备（身上 6 件）")
         current_layout = QVBoxLayout(current_group)
+        template_group = QGroupBox("装备模板")
+        template_layout = QHBoxLayout(template_group)
+        template_layout.addWidget(QLabel("已保存模板"))
+        template_layout.addWidget(self.current_template_combo, 1)
+        template_layout.addWidget(self.load_current_template_button)
+        template_layout.addWidget(self.save_current_button)
+        template_layout.addWidget(self.rename_current_template_button)
+        template_layout.addWidget(self.delete_current_template_button)
+        template_layout.addWidget(self.load_example_button)
+        current_layout.addWidget(template_group)
         self.current_card_grid = QGridLayout()
         self.current_card_grid.setHorizontalSpacing(12)
         self.current_card_grid.setVerticalSpacing(12)
         current_layout.addLayout(self.current_card_grid)
         current_buttons = QHBoxLayout()
         current_buttons.addWidget(self.confirm_button)
-        current_buttons.addWidget(self.save_current_button)
-        current_buttons.addWidget(self.load_example_button)
         current_buttons.addStretch(1)
         current_layout.addLayout(current_buttons)
         current_page_layout.addWidget(current_group)
@@ -2321,7 +2337,10 @@ class OptimizerWindow(QMainWindow):
         self.replaceable_filter.stateChanged.connect(lambda _state: self._refresh_inventory_view())
         self.log_toggle_button.toggled.connect(self._set_log_visible)
         self.confirm_button.clicked.connect(self.confirm_current)
+        self.load_current_template_button.clicked.connect(self.load_current_template)
         self.save_current_button.clicked.connect(self.save_current)
+        self.rename_current_template_button.clicked.connect(self.rename_current_template)
+        self.delete_current_template_button.clicked.connect(self.delete_current_template)
         self.load_example_button.clicked.connect(self.load_example_current)
         self.add_inventory_button.clicked.connect(self.add_inventory)
         self.copy_inventory_button.clicked.connect(self.copy_selected_inventory)
@@ -2532,6 +2551,7 @@ class OptimizerWindow(QMainWindow):
         self._last_action_engine = DEFAULT_ACTION_EV_ENGINE
         self._last_action_execution_mode = "-"
         self._has_calculated_once = False
+        self._refresh_current_template_controls()
         self._refresh_current_cards()
         self._refresh_inventory_filters()
         self._refresh_inventory_view()
@@ -2612,6 +2632,52 @@ class OptimizerWindow(QMainWindow):
         elif self._has_visible_results() and not self._results_stale:
             guide = "结果已更新，可在“计算结果”页查看 Action EV 明细、H=2 方案、代表搭配和运行日志。"
         self.overview_guide_label.setText(guide)
+
+    def _current_template_items(self) -> list[dict[str, Any]]:
+        try:
+            return load_user_current_gears(
+                self.selected_game().id,
+                self.selected_character().id,
+            )
+        except Exception:
+            return []
+
+    def _refresh_current_template_controls(self, selected_id: str | None = None) -> None:
+        templates = self._current_template_items()
+        previous_id = str(self.current_template_combo.currentData() or "")
+        target_id = selected_id or previous_id
+        if not target_id and templates:
+            target_id = str(templates[-1]["id"])
+
+        self.current_template_combo.blockSignals(True)
+        try:
+            self.current_template_combo.clear()
+            if templates:
+                for item in templates:
+                    count = len(item.get("pieces") or [])
+                    suffix = f" · {count}/6 件" if count != 6 else " · 6/6 件"
+                    self.current_template_combo.addItem(f"{item['label']}{suffix}", item["id"])
+                index = self.current_template_combo.findData(target_id)
+                self.current_template_combo.setCurrentIndex(index if index >= 0 else self.current_template_combo.count() - 1)
+            else:
+                self.current_template_combo.addItem("未保存模板", "")
+                self.current_template_combo.setCurrentIndex(0)
+        finally:
+            self.current_template_combo.blockSignals(False)
+
+        has_template = bool(templates)
+        self.load_current_template_button.setEnabled(has_template)
+        self.rename_current_template_button.setEnabled(has_template)
+        self.delete_current_template_button.setEnabled(has_template)
+
+    def _selected_current_template(self) -> dict[str, Any] | None:
+        template_id = str(self.current_template_combo.currentData() or "")
+        if not template_id:
+            return None
+        return next(
+            (item for item in self._current_template_items() if item["id"] == template_id),
+            None,
+        )
 
     def _hidden_table_pieces(self, table: GearTable) -> list[GearPiece]:
         pieces, _warnings = table.collect_pieces()
@@ -3291,6 +3357,12 @@ class OptimizerWindow(QMainWindow):
         self.action_button.setEnabled(enabled)
         self.cancel_action_button.setEnabled(self._action_process is not None)
         self.confirm_button.setEnabled(not busy)
+        has_current_template = bool(str(self.current_template_combo.currentData() or ""))
+        self.load_current_template_button.setEnabled(not busy and has_current_template)
+        self.save_current_button.setEnabled(not busy)
+        self.rename_current_template_button.setEnabled(not busy and has_current_template)
+        self.delete_current_template_button.setEnabled(not busy and has_current_template)
+        self.load_example_button.setEnabled(not busy)
         self.add_inventory_button.setEnabled(not busy)
         self.copy_inventory_button.setEnabled(not busy)
         self.clear_substats_button.setEnabled(not busy)
@@ -3310,6 +3382,16 @@ class OptimizerWindow(QMainWindow):
             warnings.append(str(exc))
         if warnings:
             self._show_warning("当前装备还不能确认", warnings)
+            return None
+        return pieces
+
+    def _collect_current_template_or_warn(self) -> list[GearPiece] | None:
+        pieces, warnings = self.current_table.collect_pieces()
+        if warnings:
+            self._show_warning("当前装备模板里有不能保存的装备", warnings)
+            return None
+        if not pieces:
+            QMessageBox.warning(self, "没有可保存的装备模板", "当前装备还是空的，请先录入或从库存装备。")
             return None
         return pieces
 
@@ -3333,11 +3415,26 @@ class OptimizerWindow(QMainWindow):
         self._update_action_buttons()
         self._refresh_overview()
 
+    def load_current_template(self) -> None:
+        template = self._selected_current_template()
+        if template is None:
+            QMessageBox.information(self, "没有装备模板", "当前代理人还没有保存过装备模板。")
+            return
+        self.current_table.set_context(
+            self.selected_game(),
+            self.selected_character(),
+            list(template["pieces"]),
+        )
+        self._current_changed()
+        self.progress_label.setText(f"已载入装备模板：{template['label']}。")
+
     def save_current(self) -> None:
-        pieces = self._collect_current_or_warn()
+        pieces = self._collect_current_template_or_warn()
         if pieces is None:
             return
-        label, ok = QInputDialog.getText(self, "保存当前装备", "模板名称")
+        current = self._selected_current_template()
+        default_label = str(current["label"]) if current is not None else "当前装备"
+        label, ok = QInputDialog.getText(self, "保存装备模板", "模板名称", text=default_label)
         if not ok:
             return
         saved = save_user_current_gear(
@@ -3346,7 +3443,58 @@ class OptimizerWindow(QMainWindow):
             pieces,
             label or "当前装备",
         )
-        self.progress_label.setText(f"已保存当前装备：{saved['label']}")
+        self._refresh_current_template_controls(saved["id"])
+        self.progress_label.setText(f"已保存装备模板：{saved['label']}（{len(pieces)}/6 件）。")
+
+    def rename_current_template(self) -> None:
+        template = self._selected_current_template()
+        if template is None:
+            QMessageBox.information(self, "没有装备模板", "当前代理人还没有保存过装备模板。")
+            return
+        label, ok = QInputDialog.getText(
+            self,
+            "重命名装备模板",
+            "模板名称",
+            text=str(template["label"]),
+        )
+        if not ok:
+            return
+        saved = save_user_current_gear(
+            self.selected_game().id,
+            self.selected_character().id,
+            list(template["pieces"]),
+            label or str(template["label"]),
+        )
+        if saved["id"] != template["id"]:
+            delete_user_current_gear(
+                self.selected_game().id,
+                self.selected_character().id,
+                str(template["id"]),
+            )
+        self._refresh_current_template_controls(saved["id"])
+        self.progress_label.setText(f"已重命名装备模板：{saved['label']}。")
+
+    def delete_current_template(self) -> None:
+        template = self._selected_current_template()
+        if template is None:
+            QMessageBox.information(self, "没有装备模板", "当前代理人还没有保存过装备模板。")
+            return
+        answer = QMessageBox.question(
+            self,
+            "删除装备模板？",
+            f"确定删除装备模板“{template['label']}”吗？当前正在编辑的盘面不会被清空。",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        delete_user_current_gear(
+            self.selected_game().id,
+            self.selected_character().id,
+            str(template["id"]),
+        )
+        self._refresh_current_template_controls()
+        self.progress_label.setText(f"已删除装备模板：{template['label']}。当前编辑盘面不变。")
 
     def load_example_current(self) -> None:
         game = self.selected_game()
