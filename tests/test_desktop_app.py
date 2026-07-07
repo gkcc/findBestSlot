@@ -1898,6 +1898,7 @@ def test_action_process_input_payload_includes_input_audit(monkeypatch, tmp_path
 
         payload = json.loads(Path(window._action_input_path).read_text(encoding="utf-8"))
         assert FakeProcess.instances[-1].started
+        assert payload["action_mode"] == "fast"
         assert payload["input_audit"] == audit_text
         assert payload["input_audit_lines"] == audit_text.splitlines()
         assert "输入指纹：" in payload["input_audit"]

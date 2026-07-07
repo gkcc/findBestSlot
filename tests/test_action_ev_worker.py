@@ -4,6 +4,7 @@ from pathlib import Path
 from gear_optimizer import position_ev
 from gear_optimizer.action_ev_worker import (
     ACTION_EV_ENGINE_ENV,
+    ACTION_EV_MODE_ENV,
     ProgressJsonlWriter,
     build_action_ev_rows_from_payload,
     main as worker_main,
@@ -14,7 +15,12 @@ from gear_optimizer.user_target_templates import save_user_target_template
 from gear_optimizer.user_target_templates import target_template_store_path
 
 
-def _write_worker_input(path: Path, game_id: str = "zzz", engine: str | None = None) -> None:
+def _write_worker_input(
+    path: Path,
+    game_id: str = "zzz",
+    engine: str | None = None,
+    action_mode: str | None = None,
+) -> None:
     pieces = load_current_example("examples/zzz_billy_current.yaml")
     payload = {
         "run_id": "test-run",
@@ -29,6 +35,8 @@ def _write_worker_input(path: Path, game_id: str = "zzz", engine: str | None = N
     }
     if engine is not None:
         payload["engine"] = engine
+    if action_mode is not None:
+        payload["action_mode"] = action_mode
     path.write_text(
         json.dumps(
             payload,
@@ -60,6 +68,30 @@ def test_action_ev_worker_engine_defaults_and_env_override(monkeypatch, tmp_path
     monkeypatch.setenv(ACTION_EV_ENGINE_ENV, "inventory_recursive")
     assert build_action_ev_rows_from_payload(payload) == [{"策略": "fake"}]
     assert captured[-1] is False
+
+
+def test_action_ev_worker_action_mode_defaults_and_env_override(monkeypatch, tmp_path):
+    input_path = tmp_path / "input.json"
+    _write_worker_input(input_path, action_mode="exact")
+    payload = json.loads(input_path.read_text(encoding="utf-8"))
+    captured = []
+
+    def fake_position_strategy_efficiency_rows(*_args, **kwargs):
+        captured.append(kwargs.get("action_mode"))
+        return [{"策略": "fake"}]
+
+    monkeypatch.setattr(
+        "gear_optimizer.action_ev_worker.position_strategy_efficiency_rows",
+        fake_position_strategy_efficiency_rows,
+    )
+    monkeypatch.delenv(ACTION_EV_MODE_ENV, raising=False)
+
+    assert build_action_ev_rows_from_payload(payload) == [{"策略": "fake"}]
+    assert captured[-1] == "exact"
+
+    monkeypatch.setenv(ACTION_EV_MODE_ENV, "fast")
+    assert build_action_ev_rows_from_payload(payload) == [{"策略": "fake"}]
+    assert captured[-1] == "fast"
 
 
 def test_action_ev_worker_loads_user_target_templates(monkeypatch, tmp_path):
@@ -234,19 +266,25 @@ def test_action_ev_worker_writes_result_progress_and_summary(tmp_path):
 
     assert result["run_id"] == "test-run"
     assert result["engine"] == "inventory_recursive"
+    assert result["action_mode"] == "fast"
     assert result["execution_mode"] == "worker_process"
     assert result["input_audit"] == "输入指纹：worker-test\n库存：0 件"
     assert result["input_audit_lines"] == ["输入指纹：worker-test", "库存：0 件"]
     assert result["rows"]
     assert summary["status"] == "ok"
     assert summary["engine"] == "inventory_recursive"
+    assert summary["action_mode"] == "fast"
     assert summary["execution_mode"] == "worker_process"
     assert summary["input_audit"] == result["input_audit"]
     assert summary["input_audit_lines"] == result["input_audit_lines"]
     assert summary["rows"] == len(result["rows"])
+    assert result["performance_audit"]["action_count"] == len(result["rows"])
+    assert summary["performance_audit"]["action_count"] == len(result["rows"])
     assert any(event["event"] == "worker_start" for event in progress_events)
     assert any(event.get("engine") == "inventory_recursive" for event in progress_events)
+    assert any(event.get("action_mode") == "fast" for event in progress_events)
     assert any(event["event"] == "worker_done" for event in progress_events)
+    assert any(event.get("performance_audit") for event in progress_events)
     assert any(
         event.get("inner_event") == "candidate_generation_step_done"
         for event in progress_events

@@ -12,13 +12,18 @@ from typing import Any
 
 from gear_optimizer.game_rules import load_characters, load_game, load_probability_models
 from gear_optimizer.models import GearPiece
-from gear_optimizer.position_ev import position_strategy_efficiency_rows
+from gear_optimizer.position_ev import (
+    DEFAULT_ACTION_EV_MODE,
+    normalize_action_ev_mode,
+    position_strategy_efficiency_rows,
+)
 from gear_optimizer.presets import _sanitize_piece_data_for_game
 from gear_optimizer.scoring import analyse_current_gear
 from gear_optimizer.user_target_templates import load_user_target_templates
 
 ProgressCallback = Callable[[dict[str, object]], None]
 ACTION_EV_ENGINE_ENV = "GEAR_OPTIMIZER_ACTION_EV_ENGINE"
+ACTION_EV_MODE_ENV = "GEAR_OPTIMIZER_ACTION_EV_MODE"
 DEFAULT_ACTION_EV_ENGINE = "inventory_recursive"
 ACTION_EV_ENGINES = {"inventory_recursive", "state_dp"}
 WORKER_EXECUTION_MODE = "worker_process"
@@ -27,6 +32,7 @@ IMMEDIATE_PROGRESS_EVENTS = {
     "cache_hit",
     "unit_start",
     "unit_done",
+    "action_perf",
     "refinement_start",
     "complete",
     "failed",
@@ -47,6 +53,13 @@ def normalize_action_ev_engine(value: object | None) -> str:
 def action_ev_engine_from_payload(payload: dict[str, Any]) -> str:
     override = os.environ.get(ACTION_EV_ENGINE_ENV)
     return normalize_action_ev_engine(override if override not in (None, "") else payload.get("engine"))
+
+
+def action_ev_mode_from_payload(payload: dict[str, Any]) -> str:
+    override = os.environ.get(ACTION_EV_MODE_ENV)
+    return normalize_action_ev_mode(
+        override if override not in (None, "") else payload.get("action_mode")
+    )
 
 
 def action_ev_uses_state_dp(engine: str) -> bool:
@@ -146,8 +159,10 @@ def build_action_ev_rows_from_payload(
     payload: dict[str, Any],
     progress_callback: ProgressCallback | None = None,
     engine: str | None = None,
+    action_mode: str | None = None,
 ) -> list[dict[str, Any]]:
     resolved_engine = normalize_action_ev_engine(engine) if engine else action_ev_engine_from_payload(payload)
+    resolved_mode = normalize_action_ev_mode(action_mode) if action_mode else action_ev_mode_from_payload(payload)
     game = load_game(str(payload["game_id"]))
     character = _pick_character(game.id, str(payload["character_id"]))
     probability_model = _pick_by_id(
@@ -174,6 +189,7 @@ def build_action_ev_rows_from_payload(
         horizon=horizon,
         progress_callback=progress_callback,
         use_state_dp=action_ev_uses_state_dp(resolved_engine),
+        action_mode=resolved_mode,
     )
 
 
@@ -200,6 +216,7 @@ def main(argv: list[str] | None = None) -> int:
     payload = _read_json(args.input)
     run_id = str(payload.get("run_id") or Path(args.input).stem)
     raw_engine = os.environ.get(ACTION_EV_ENGINE_ENV) or payload.get("engine") or DEFAULT_ACTION_EV_ENGINE
+    raw_mode = os.environ.get(ACTION_EV_MODE_ENV) or payload.get("action_mode") or DEFAULT_ACTION_EV_MODE
     input_audit = str(payload.get("input_audit") or "")
     input_audit_lines = payload.get("input_audit_lines") or (
         input_audit.splitlines() if input_audit else []
@@ -211,6 +228,7 @@ def main(argv: list[str] | None = None) -> int:
         "progress": str(args.progress),
         "error": str(args.error),
         "engine": str(raw_engine),
+        "action_mode": str(raw_mode),
         "execution_mode": WORKER_EXECUTION_MODE,
         "started_at": started_wall,
         "horizon": int(payload.get("horizon") or 1),
@@ -220,7 +238,10 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         engine = action_ev_engine_from_payload(payload)
+        action_mode = action_ev_mode_from_payload(payload)
         summary_base["engine"] = engine
+        summary_base["action_mode"] = action_mode
+        latest_performance_audit: dict[str, Any] = {}
         with ProgressJsonlWriter(
             args.progress,
             run_id,
@@ -231,20 +252,36 @@ def main(argv: list[str] | None = None) -> int:
                     "event": "worker_start",
                     "label": "Action EV worker started",
                     "engine": engine,
+                    "action_mode": action_mode,
                     "execution_mode": WORKER_EXECUTION_MODE,
                 },
                 force=True,
             )
-            rows = build_action_ev_rows_from_payload(payload, progress_callback=progress.emit, engine=engine)
+
+            def emit_progress(event: dict[str, object]) -> None:
+                nonlocal latest_performance_audit
+                performance = event.get("performance_audit")
+                if isinstance(performance, dict):
+                    latest_performance_audit = dict(performance)
+                progress.emit(event)
+
+            rows = build_action_ev_rows_from_payload(
+                payload,
+                progress_callback=emit_progress,
+                engine=engine,
+                action_mode=action_mode,
+            )
             serialised_rows = _jsonable(rows)
             _write_json(
                 args.output,
                 {
                     "run_id": run_id,
                     "engine": engine,
+                    "action_mode": action_mode,
                     "execution_mode": WORKER_EXECUTION_MODE,
                     "input_audit": input_audit,
                     "input_audit_lines": input_audit_lines,
+                    "performance_audit": latest_performance_audit,
                     "rows": serialised_rows,
                 },
             )
@@ -253,8 +290,10 @@ def main(argv: list[str] | None = None) -> int:
                     "event": "worker_done",
                     "label": "Action EV worker complete",
                     "engine": engine,
+                    "action_mode": action_mode,
                     "execution_mode": WORKER_EXECUTION_MODE,
                     "rows": len(rows),
+                    "performance_audit": latest_performance_audit,
                 },
                 force=True,
             )
@@ -266,6 +305,7 @@ def main(argv: list[str] | None = None) -> int:
                 "finished_at": _utc_now(),
                 "elapsed_seconds": round(time.monotonic() - started_monotonic, 3),
                 "rows": len(rows),
+                "performance_audit": latest_performance_audit,
             },
         )
         return 0

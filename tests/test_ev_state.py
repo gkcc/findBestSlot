@@ -19,6 +19,7 @@ from gear_optimizer.position_ev import (
     EvState,
     best_loadout_rows,
     best_loadout_value,
+    compare_action_ev_engines,
     configured_action_ev_workers,
     expected_state_action_value,
     inventory_rows_from_pieces,
@@ -475,6 +476,38 @@ def test_position_strategy_rows_match_with_state_dp_for_horizon_one_and_two():
             assert {column: new_row[column] for column in compare_columns} == {
                 column: old_row[column] for column in compare_columns
             }
+
+
+def test_action_ev_engine_compare_report_matches_golden_case():
+    game = _two_slot_game()
+    character = _two_slot_character()
+    probability_model = _two_slot_probability(game.id)
+    inventory = [
+        _gear_piece(1, "A", rolls=0),
+        _gear_piece(2, "A", rolls=0),
+    ]
+    analysis = analyse_current_gear(inventory, game, character)
+
+    position_ev._ACTION_EV_ROWS_CACHE.clear()
+    position_ev._STATE_TRANSITION_CACHE.clear()
+    report = compare_action_ev_engines(
+        game,
+        character,
+        probability_model,
+        analysis,
+        inventory_pieces=inventory,
+        horizon=1,
+    )
+
+    assert report["consistent"] is True
+    assert report["recommendation_consistent"] is True
+    assert report["top_10_order_consistent"] is True
+    assert report["core_ev_consistent"] is True
+    assert report["row_counts"]["inventory_recursive"] == report["row_counts"]["state_dp"]
+    assert report["elapsed_seconds"]["inventory_recursive"] >= 0
+    assert report["elapsed_seconds"]["state_dp"] >= 0
+    assert report["top_10"]["inventory_recursive"] == report["top_10"]["state_dp"]
+    assert "core EV values match" in report["diff_report"]
 
 
 def test_state_dp_action_rows_emit_transition_progress():

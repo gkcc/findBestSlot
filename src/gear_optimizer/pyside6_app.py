@@ -64,7 +64,14 @@ from gear_optimizer.agents import (
     agent_metadata_with_fallbacks,
     filter_agent_metadata,
 )
-from gear_optimizer.action_ev_worker import ACTION_EV_ENGINE_ENV, DEFAULT_ACTION_EV_ENGINE, normalize_action_ev_engine
+from gear_optimizer.action_ev_worker import (
+    ACTION_EV_ENGINE_ENV,
+    ACTION_EV_MODE_ENV,
+    DEFAULT_ACTION_EV_ENGINE,
+    DEFAULT_ACTION_EV_MODE,
+    normalize_action_ev_engine,
+    normalize_action_ev_mode,
+)
 from gear_optimizer.models import (
     CharacterPreset,
     GameRules,
@@ -2848,6 +2855,7 @@ class ActionEvWorker(QObject):
         inventory_pieces: list[GearPiece],
         horizon: int,
         engine: str = DEFAULT_ACTION_EV_ENGINE,
+        action_mode: str = DEFAULT_ACTION_EV_MODE,
     ) -> None:
         super().__init__()
         self.game = game
@@ -2857,6 +2865,7 @@ class ActionEvWorker(QObject):
         self.inventory_pieces = inventory_pieces
         self.horizon = horizon
         self.engine = normalize_action_ev_engine(engine)
+        self.action_mode = normalize_action_ev_mode(action_mode)
 
     @Slot()
     def run(self) -> None:
@@ -2871,6 +2880,7 @@ class ActionEvWorker(QObject):
                 horizon=self.horizon,
                 progress_callback=lambda payload: self.progress.emit(dict(payload)),
                 use_state_dp=self.engine == "state_dp",
+                action_mode=self.action_mode,
             )
             self.finished.emit(rows)
         except Exception:
@@ -3085,6 +3095,7 @@ class OptimizerWindow(QMainWindow):
         self._last_recommended_action_summary = "尚未计算"
         self._last_main_metric_summary = "-"
         self._last_action_engine = DEFAULT_ACTION_EV_ENGINE
+        self._last_action_mode = DEFAULT_ACTION_EV_MODE
         self._last_action_execution_mode = "-"
         self._inventory_loaded_storage_id = ""
         self._loaded_current_snapshot_id = ""
@@ -3112,6 +3123,7 @@ class OptimizerWindow(QMainWindow):
         self._action_progress_plan_expanded = False
         self._action_progress_percent = 0
         self._last_action_progress_payload: dict[str, Any] = {}
+        self._last_action_performance_audit: dict[str, Any] = {}
         self._last_action_progress_seen_at: float | None = None
         self._progress_timer = QTimer(self)
         self._progress_timer.setInterval(400)
@@ -3210,6 +3222,7 @@ class OptimizerWindow(QMainWindow):
         self.cancel_action_button = QPushButton("取消计算")
         self.cancel_action_button.setEnabled(False)
         self.horizon_combo = QComboBox()
+        self.action_mode_combo = QComboBox()
         self.horizon_note_label = QLabel("horizon=1 为完整概率分布精确计算。")
         self.horizon_note_label.setWordWrap(True)
         self.progress_bar = QProgressBar()
@@ -3400,8 +3413,12 @@ class OptimizerWindow(QMainWindow):
         settings = QHBoxLayout()
         self.horizon_combo.addItem("horizon=1", 1)
         self.horizon_combo.addItem("horizon=2", 2)
+        self.action_mode_combo.addItem("快速推荐", "fast")
+        self.action_mode_combo.addItem("深度精算", "exact")
         settings.addWidget(QLabel("Action EV 展望步数"))
         settings.addWidget(self.horizon_combo)
+        settings.addWidget(QLabel("计算模式"))
+        settings.addWidget(self.action_mode_combo)
         settings.addWidget(self.best_button)
         settings.addWidget(self.action_button)
         settings.addWidget(self.portfolio_button)
@@ -3521,6 +3538,7 @@ class OptimizerWindow(QMainWindow):
         self.cancel_action_button.clicked.connect(self.cancel_action_ev)
         self.show_all_actions_button.clicked.connect(self.toggle_action_rows)
         self.horizon_combo.currentIndexChanged.connect(lambda _index: self._update_horizon_note())
+        self.action_mode_combo.currentIndexChanged.connect(lambda _index: self._update_horizon_note())
         self.current_template_combo.currentIndexChanged.connect(lambda _index: self._update_action_buttons())
 
     def _tab_context_changed(self) -> None:
@@ -3857,6 +3875,7 @@ class OptimizerWindow(QMainWindow):
         self._last_recommended_action_summary = "尚未计算"
         self._last_main_metric_summary = "-"
         self._last_action_engine = DEFAULT_ACTION_EV_ENGINE
+        self._last_action_mode = DEFAULT_ACTION_EV_MODE
         self._last_action_execution_mode = "-"
         self._has_calculated_once = False
         self._clear_loaded_current_snapshot()
@@ -3888,6 +3907,7 @@ class OptimizerWindow(QMainWindow):
         self._last_recommended_action_summary = "尚未计算"
         self._last_main_metric_summary = "-"
         self._last_action_engine = DEFAULT_ACTION_EV_ENGINE
+        self._last_action_mode = DEFAULT_ACTION_EV_MODE
         self._last_action_execution_mode = "-"
         self._has_calculated_once = False
         self._clear_loaded_current_snapshot()
@@ -4875,12 +4895,18 @@ class OptimizerWindow(QMainWindow):
 
     def _update_horizon_note(self) -> None:
         horizon = int(self.horizon_combo.currentData() or 1)
+        mode = self._current_action_ev_mode() if hasattr(self, "action_mode_combo") else DEFAULT_ACTION_EV_MODE
+        mode_text = (
+            "快速推荐：只算随机位置、固定位置、固定主属性。"
+            if mode == "fast"
+            else "深度精算：包含库存强化与固定副属性展开，可能明显更慢。"
+        )
         if horizon == 2:
             self.horizon_note_label.setText(
-                "horizon=2 为完整概率分布精确计算，可能耗时较长；计算期间可取消。"
+                f"horizon=2 为完整概率分布精确计算，可能耗时较长；计算期间可取消。{mode_text}"
             )
         else:
-            self.horizon_note_label.setText("horizon=1 为完整概率分布精确计算。")
+            self.horizon_note_label.setText(f"horizon=1 为完整概率分布计算。{mode_text}")
         if hasattr(self, "input_audit_label"):
             self._refresh_overview()
 
@@ -4934,6 +4960,7 @@ class OptimizerWindow(QMainWindow):
             self._action_progress_plan_expanded = False
             self._action_progress_percent = 0
             self._last_action_progress_payload = {}
+            self._last_action_performance_audit = {}
             self._last_action_progress_seen_at = None
             self.progress_bar.setValue(0)
             self.progress_bar.setFormat("精确计算 0%")
@@ -4944,6 +4971,7 @@ class OptimizerWindow(QMainWindow):
                 self._last_recommended_action_summary = "结果已过期，请重新计算。"
                 self._last_main_metric_summary = "-"
                 self._last_action_engine = DEFAULT_ACTION_EV_ENGINE
+                self._last_action_mode = DEFAULT_ACTION_EV_MODE
                 self._last_action_execution_mode = "-"
                 self.result_recommend_title.setText("结果已过期")
                 self.result_recommend_detail.setText(message or "输入已变化，请重新计算。")
@@ -4964,6 +4992,7 @@ class OptimizerWindow(QMainWindow):
         self._action_progress_plan_expanded = False
         self._last_action_progress_seen_at = now
         self._last_action_progress_payload = {}
+        self._last_action_performance_audit = {}
         self._action_progress_percent = 0
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
@@ -4976,6 +5005,7 @@ class OptimizerWindow(QMainWindow):
     def _stop_action_progress(self) -> None:
         self._progress_timer.stop()
         self._last_action_progress_payload = {}
+        self._last_action_performance_audit = {}
         self._last_action_progress_seen_at = None
         self._action_progress_current_unit_started_at = None
         self._action_progress_current_unit_key = None
@@ -5770,10 +5800,14 @@ class OptimizerWindow(QMainWindow):
         self._set_action_execution_metadata(
             str(payload.get("engine") or self._last_action_engine or DEFAULT_ACTION_EV_ENGINE),
             str(payload.get("execution_mode") or self._last_action_execution_mode or "worker_process"),
+            str(payload.get("action_mode") or self._last_action_mode or DEFAULT_ACTION_EV_MODE),
         )
         rows = payload.get("rows", [])
         if not isinstance(rows, list):
             raise ValueError("worker output rows must be a list")
+        performance = payload.get("performance_audit")
+        if isinstance(performance, dict):
+            self._last_action_performance_audit = dict(performance)
         return [self._restore_worker_value(row) for row in rows]
 
     def _worker_error_text(self) -> str:
@@ -5816,8 +5850,18 @@ class OptimizerWindow(QMainWindow):
     def _current_action_ev_engine(self) -> str:
         return normalize_action_ev_engine(os.environ.get(ACTION_EV_ENGINE_ENV) or DEFAULT_ACTION_EV_ENGINE)
 
-    def _set_action_execution_metadata(self, engine: str, execution_mode: str) -> None:
+    def _current_action_ev_mode(self) -> str:
+        selected = self.action_mode_combo.currentData() if hasattr(self, "action_mode_combo") else None
+        return normalize_action_ev_mode(os.environ.get(ACTION_EV_MODE_ENV) or selected or DEFAULT_ACTION_EV_MODE)
+
+    def _set_action_execution_metadata(
+        self,
+        engine: str,
+        execution_mode: str,
+        action_mode: str | None = None,
+    ) -> None:
         self._last_action_engine = normalize_action_ev_engine(engine)
+        self._last_action_mode = normalize_action_ev_mode(action_mode or self._last_action_mode)
         self._last_action_execution_mode = execution_mode
 
     def _start_action_ev_process(
@@ -5826,6 +5870,7 @@ class OptimizerWindow(QMainWindow):
         inventory_pieces: list[GearPiece],
         horizon: int,
         engine: str,
+        action_mode: str = DEFAULT_ACTION_EV_MODE,
     ) -> None:
         run_id = uuid.uuid4().hex
         run_dir = Path(tempfile.mkdtemp(prefix=f"{ACTION_PROCESS_TEMP_PREFIX}{run_id[:8]}-"))
@@ -5844,6 +5889,7 @@ class OptimizerWindow(QMainWindow):
             "inventory_pieces": [_model_payload(piece) for piece in inventory_pieces],
             "horizon": horizon,
             "engine": engine,
+            "action_mode": action_mode,
             "input_audit": input_audit,
             "input_audit_lines": input_audit.splitlines(),
         }
@@ -5882,12 +5928,12 @@ class OptimizerWindow(QMainWindow):
         self._action_error_path = str(error_path)
         self._action_summary_path = str(summary_path)
         self._action_progress_offset = 0
-        self._set_action_execution_metadata(engine, "worker_process")
+        self._set_action_execution_metadata(engine, "worker_process", action_mode)
         self._start_action_progress()
         self.progress_detail_label.setText(
-            f"horizon=2 正在子进程中精确计算；engine={engine}；主窗口可继续切换 Tab，也可取消。"
+            f"horizon=2 正在子进程中计算；engine={engine}；mode={action_mode}；主窗口可继续切换 Tab，也可取消。"
         )
-        self.log.append(f"Action EV engine: {_engine_label(engine)}；执行方式：QProcess 子进程。")
+        self.log.append(f"Action EV engine: {_engine_label(engine)}；mode={action_mode}；执行方式：QProcess 子进程。")
         self._update_action_buttons(busy=True)
         process.start()
 
@@ -6192,19 +6238,20 @@ class OptimizerWindow(QMainWindow):
             return
         try:
             engine = self._current_action_ev_engine()
+            action_mode = self._current_action_ev_mode()
         except ValueError as exc:
             QMessageBox.warning(self, "Action EV 引擎配置无效", str(exc))
             return
         horizon = int(self.horizon_combo.currentData() or 1)
         if horizon == 2:
-            self._start_action_ev_process(current_pieces, inventory_pieces, horizon, engine)
+            self._start_action_ev_process(current_pieces, inventory_pieces, horizon, engine, action_mode)
             self.tabs.setCurrentIndex(3)
             return
         self._update_action_buttons(busy=True)
-        self._set_action_execution_metadata(engine, "qthread")
-        self.log.append(f"Action EV engine: {_engine_label(engine)}；执行方式：QThread 后台线程。")
+        self._set_action_execution_metadata(engine, "qthread", action_mode)
+        self.log.append(f"Action EV engine: {_engine_label(engine)}；mode={action_mode}；执行方式：QThread 后台线程。")
         self._start_action_progress()
-        self.progress_detail_label.setText(f"horizon=1 正在后台线程精确计算；engine={engine}。")
+        self.progress_detail_label.setText(f"horizon=1 正在后台线程计算；engine={engine}；mode={action_mode}。")
         self._worker_thread = QThread(self)
         self._worker = ActionEvWorker(
             self.selected_game(),
@@ -6214,6 +6261,7 @@ class OptimizerWindow(QMainWindow):
             inventory_pieces,
             horizon,
             engine,
+            action_mode,
         )
         self._worker.moveToThread(self._worker_thread)
         self._worker_thread.started.connect(self._worker.run)
@@ -6229,6 +6277,9 @@ class OptimizerWindow(QMainWindow):
 
     def _on_action_progress(self, payload: dict) -> None:
         self._last_action_progress_payload = dict(payload)
+        performance = payload.get("performance_audit")
+        if isinstance(performance, dict):
+            self._last_action_performance_audit = dict(performance)
         self._last_action_progress_seen_at = time.monotonic()
 
     def _render_action_table(self) -> None:
@@ -6361,10 +6412,37 @@ class OptimizerWindow(QMainWindow):
         return detail
 
     def _action_execution_summary_text(self) -> str:
-        return (
+        parts = [
             f"计算引擎：{_engine_label(self._last_action_engine)}\n"
-            f"执行方式：{_execution_mode_label(self._last_action_execution_mode)}"
-        )
+            f"执行方式：{_execution_mode_label(self._last_action_execution_mode)}",
+            f"计算模式：{'快速推荐' if self._last_action_mode == 'fast' else '深度精算'}",
+        ]
+        audit = self._last_action_performance_audit
+        if not audit:
+            performance = self._last_action_progress_payload.get("performance_audit")
+            audit = dict(performance) if isinstance(performance, dict) else {}
+        if audit:
+            parts.append(
+                "性能审计："
+                f"actions={audit.get('action_count', '-')}, "
+                f"raw_outcomes={audit.get('raw_outcome_count', '-')}, "
+                f"aggregated_outcomes={audit.get('aggregated_outcome_count', '-')}, "
+                f"best_loadout={audit.get('best_loadout_value_calls', '-')} "
+                f"(hit={audit.get('best_loadout_cache_hits', '-')}, miss={audit.get('best_loadout_cache_misses', '-')}), "
+                f"outcome_cache hit/miss={audit.get('outcome_cache_hits', '-')}/{audit.get('outcome_cache_misses', '-')}, "
+                f"total={audit.get('total_seconds', '-')}s"
+            )
+            slowest = audit.get("top_10_slowest_actions")
+            if isinstance(slowest, list) and slowest:
+                parts.append(
+                    "最慢 action Top3："
+                    + "；".join(
+                        f"{item.get('label', '-')}: {item.get('seconds', '-')}s"
+                        for item in slowest[:3]
+                        if isinstance(item, dict)
+                    )
+                )
+        return "\n".join(parts)
 
     def _action_plan_summary_text(self, row: dict[str, Any]) -> str:
         plan_type = str(row.get("方案类型") or "-")

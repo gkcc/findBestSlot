@@ -3,7 +3,8 @@ from __future__ import annotations
 from collections import Counter, OrderedDict, defaultdict
 from collections.abc import Callable, Sequence
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from dataclasses import dataclass
+from contextvars import ContextVar
+from dataclasses import dataclass, field
 from itertools import combinations
 import json
 from math import inf, isfinite
@@ -35,6 +36,112 @@ _SOURCE_OUTCOME = "outcome"
 _MIXED_RANDOM_LOADOUT_LABEL = "混合结果，不存在唯一典型搭配"
 _REPRESENTATIVE_PATH_NOTE = "代表路径仅用于审计；真实 H=2 EV 已对所有 outcome 加权。"
 ProgressCallback = Callable[[dict[str, object]], None]
+ACTION_EV_FAST_MODE = "fast"
+ACTION_EV_EXACT_MODE = "exact"
+DEFAULT_ACTION_EV_MODE = ACTION_EV_FAST_MODE
+ACTION_EV_MODES = {ACTION_EV_FAST_MODE, ACTION_EV_EXACT_MODE}
+
+
+@dataclass
+class ActionEvPerformanceAudit:
+    action_count: int = 0
+    raw_outcome_count: int = 0
+    aggregated_outcome_count: int = 0
+    best_loadout_value_calls: int = 0
+    best_loadout_cache_hits: int = 0
+    best_loadout_cache_misses: int = 0
+    outcome_cache_hits: int = 0
+    outcome_cache_misses: int = 0
+    action_timings: list[dict[str, object]] = field(default_factory=list)
+    started_at: float = field(default_factory=time.monotonic)
+    total_seconds: float = 0.0
+
+    def snapshot(self) -> dict[str, int]:
+        return {
+            "raw_outcome_count": self.raw_outcome_count,
+            "aggregated_outcome_count": self.aggregated_outcome_count,
+            "best_loadout_value_calls": self.best_loadout_value_calls,
+            "best_loadout_cache_hits": self.best_loadout_cache_hits,
+            "best_loadout_cache_misses": self.best_loadout_cache_misses,
+            "outcome_cache_hits": self.outcome_cache_hits,
+            "outcome_cache_misses": self.outcome_cache_misses,
+        }
+
+    def delta_since(self, before: dict[str, int]) -> dict[str, int]:
+        return {
+            key: int(getattr(self, key)) - int(before.get(key, 0))
+            for key in before
+        }
+
+    def record_action(
+        self,
+        *,
+        spec: ActionSpec,
+        game: GameRules,
+        spec_index: int,
+        seconds: float,
+        delta: dict[str, int],
+    ) -> dict[str, object]:
+        self.action_count += 1
+        timing = {
+            "index": spec_index,
+            "strategy": spec.strategy,
+            "label": _action_progress_label(spec, game),
+            "target_set": spec.set_label,
+            "position": _action_position_label(spec, game),
+            "main_stat": _action_main_label(spec),
+            "fixed_substats": _action_substat_label(spec),
+            "seconds": round(seconds, 6),
+            **delta,
+        }
+        self.action_timings.append(timing)
+        return timing
+
+    def summary(self) -> dict[str, object]:
+        total_seconds = self.total_seconds or (time.monotonic() - self.started_at)
+        slowest = sorted(
+            self.action_timings,
+            key=lambda item: float(item.get("seconds") or 0.0),
+            reverse=True,
+        )[:10]
+        return {
+            "action_count": self.action_count,
+            "raw_outcome_count": self.raw_outcome_count,
+            "aggregated_outcome_count": self.aggregated_outcome_count,
+            "best_loadout_value_calls": self.best_loadout_value_calls,
+            "best_loadout_cache_hits": self.best_loadout_cache_hits,
+            "best_loadout_cache_misses": self.best_loadout_cache_misses,
+            "outcome_cache_hits": self.outcome_cache_hits,
+            "outcome_cache_misses": self.outcome_cache_misses,
+            "action_timings": self.action_timings,
+            "top_10_slowest_actions": slowest,
+            "total_seconds": round(total_seconds, 6),
+        }
+
+
+_ACTIVE_ACTION_EV_AUDIT: ContextVar[ActionEvPerformanceAudit | None] = ContextVar(
+    "gear_optimizer_action_ev_audit",
+    default=None,
+)
+
+
+def normalize_action_ev_mode(value: object | None) -> str:
+    mode = str(value or DEFAULT_ACTION_EV_MODE).strip().lower()
+    if not mode:
+        mode = DEFAULT_ACTION_EV_MODE
+    aliases = {
+        "quick": ACTION_EV_FAST_MODE,
+        "fast": ACTION_EV_FAST_MODE,
+        "default": ACTION_EV_FAST_MODE,
+        "deep": ACTION_EV_EXACT_MODE,
+        "full": ACTION_EV_EXACT_MODE,
+        "exact": ACTION_EV_EXACT_MODE,
+    }
+    mode = aliases.get(mode, mode)
+    if mode not in ACTION_EV_MODES:
+        allowed = ", ".join(sorted(ACTION_EV_MODES))
+        raise ValueError(f"Unknown Action EV mode: {mode}. Available: {allowed}")
+    return mode
 
 
 def _lru_get(cache: OrderedDict, key: object) -> object | None:
@@ -1174,10 +1281,17 @@ def _cached_best_combo_value(
     game: GameRules,
     character: CharacterPreset,
 ) -> tuple[float, ...]:
+    audit = _ACTIVE_ACTION_EV_AUDIT.get()
+    if audit is not None:
+        audit.best_loadout_value_calls += 1
     key = _best_combo_cache_key(inventory, game, character)
     cached = _lru_get(_BEST_COMBO_VALUE_CACHE, key)
     if cached is not None:
+        if audit is not None:
+            audit.best_loadout_cache_hits += 1
         return cached
+    if audit is not None:
+        audit.best_loadout_cache_misses += 1
     value = _best_combo_value(inventory, game, character)
     _lru_set(_BEST_COMBO_VALUE_CACHE, key, value, BEST_COMBO_VALUE_CACHE_MAX_SIZE)
     return value
@@ -1223,12 +1337,19 @@ def _aggregated_action_outcomes_for_spec(
     )
     cached = _lru_get(_AGGREGATED_ACTION_OUTCOME_CACHE, key)
     if cached is not None:
+        audit = _ACTIVE_ACTION_EV_AUDIT.get()
+        if audit is not None:
+            audit.outcome_cache_hits += 1
+            audit.aggregated_outcome_count += len(cached)
         _emit_progress(
             progress_callback,
             "aggregated_outcome_cache_hit",
             depth=progress_depth,
         )
         return cached
+    audit = _ACTIVE_ACTION_EV_AUDIT.get()
+    if audit is not None:
+        audit.outcome_cache_misses += 1
     _emit_progress(
         progress_callback,
         "outcome_distribution_start",
@@ -1246,6 +1367,8 @@ def _aggregated_action_outcomes_for_spec(
         progress_callback=progress_callback,
         progress_depth=progress_depth,
     )
+    if audit is not None:
+        audit.raw_outcome_count += len(raw_outcomes)
     _emit_progress(
         progress_callback,
         "outcome_distribution_done",
@@ -1262,6 +1385,8 @@ def _aggregated_action_outcomes_for_spec(
         total=len(raw_outcomes),
     )
     outcomes = _aggregate_inventory_outcomes(raw_outcomes, game, character)
+    if audit is not None:
+        audit.aggregated_outcome_count += len(outcomes)
     _emit_progress(
         progress_callback,
         "outcome_aggregate_done",
@@ -3179,7 +3304,9 @@ def _action_ev_cache_key(
     inventory_rows: list[dict] | None = None,
     horizon: int = 1,
     use_state_dp: bool = False,
+    action_mode: str = DEFAULT_ACTION_EV_MODE,
 ) -> str:
+    action_mode = normalize_action_ev_mode(action_mode)
     plan = character.active_set_plan()
     priority = character.substat_priority
     data = {
@@ -3213,6 +3340,7 @@ def _action_ev_cache_key(
         },
         "horizon": horizon,
         "engine": "state_dp" if use_state_dp else "inventory_recursive",
+        "action_mode": action_mode,
         "scores": [
             {
                 "position": score.position,
@@ -3919,7 +4047,9 @@ def position_strategy_efficiency_rows(
     horizon: int = 1,
     progress_callback: ProgressCallback | None = None,
     use_state_dp: bool = False,
+    action_mode: str = DEFAULT_ACTION_EV_MODE,
 ) -> list[dict[str, float | str]]:
+    action_mode = normalize_action_ev_mode(action_mode)
     inventory_rows = (
         inventory_rows_from_pieces(
             inventory_pieces,
@@ -3938,19 +4068,36 @@ def position_strategy_efficiency_rows(
         inventory_rows=inventory_rows,
         horizon=horizon,
         use_state_dp=use_state_dp,
+        action_mode=action_mode,
     )
     cached = _lru_get(_ACTION_EV_ROWS_CACHE, cache_key)
     if cached is not None:
+        audit = ActionEvPerformanceAudit()
+        performance_audit = audit.summary()
         _emit_progress(
             progress_callback,
             "cache_hit",
             phase="action_ev",
+            action_mode=action_mode,
             completed=1,
             total=1,
-            label="已使用上次精确计算缓存",
+            label="已使用上次计算缓存",
+            performance_audit=performance_audit,
+            action_count=performance_audit["action_count"],
+            raw_outcome_count=performance_audit["raw_outcome_count"],
+            aggregated_outcome_count=performance_audit["aggregated_outcome_count"],
+            best_loadout_value_calls=performance_audit["best_loadout_value_calls"],
+            best_loadout_cache_hits=performance_audit["best_loadout_cache_hits"],
+            best_loadout_cache_misses=performance_audit["best_loadout_cache_misses"],
+            outcome_cache_hits=performance_audit["outcome_cache_hits"],
+            outcome_cache_misses=performance_audit["outcome_cache_misses"],
+            top_10_slowest_actions=performance_audit["top_10_slowest_actions"],
+            total_seconds=performance_audit["total_seconds"],
         )
         return [dict(row) for row in cached]
 
+    audit = ActionEvPerformanceAudit()
+    audit_token = _ACTIVE_ACTION_EV_AUDIT.set(audit)
     rows: list[dict[str, float | str]] = []
     random_efficiency_by_set: dict[str, tuple[float, ...]] = {}
     base_fixed_efficiency_by_target: dict[tuple[str, str], tuple[float, ...]] = {}
@@ -3967,7 +4114,11 @@ def position_strategy_efficiency_rows(
     random_specs = [
         spec for spec in generation_specs if spec.strategy == "随机位置"
     ]
-    upgrade_specs = _upgrade_action_specs(inventory_rows, game)
+    upgrade_specs = (
+        _upgrade_action_specs(inventory_rows, game)
+        if action_mode == ACTION_EV_EXACT_MODE
+        else []
+    )
     base_specs = [
         *base_fixed_specs,
         *random_specs,
@@ -3994,6 +4145,7 @@ def position_strategy_efficiency_rows(
         progress_callback,
         "start",
         phase="action_ev",
+        action_mode=action_mode,
         completed=0,
         total=total_units,
         label=f"准备计算 {len(specs)} 个基础 action",
@@ -4027,6 +4179,7 @@ def position_strategy_efficiency_rows(
             spec_total=len(specs),
             action_strategy=spec.strategy,
             action_set=spec.set_label,
+            action_mode=action_mode,
             dp_states=dp_states,
             dp_steps=dp_steps,
             memo_hits=memo_hits,
@@ -4141,6 +4294,7 @@ def position_strategy_efficiency_rows(
             spec_total=len(specs),
             action_strategy=spec.strategy,
             action_set=spec.set_label,
+            action_mode=action_mode,
             dp_states=dp_states,
             dp_steps=dp_steps,
             memo_hits=memo_hits,
@@ -4216,6 +4370,7 @@ def position_strategy_efficiency_rows(
             spec_total=len(specs),
             action_strategy=spec.strategy,
             action_set=spec.set_label,
+            action_mode=action_mode,
             dp_states=dp_states,
             dp_steps=dp_steps,
             memo_hits=memo_hits,
@@ -4257,6 +4412,8 @@ def position_strategy_efficiency_rows(
         derive_random_from_fixed_positions: bool = False,
         defer_fixed_random_comparison: bool = False,
     ) -> dict[str, float | str]:
+        action_started_at = time.monotonic()
+        action_snapshot = audit.snapshot()
         immediate_action_value = None
         if horizon > 1:
             if derive_random_from_fixed_positions:
@@ -4388,6 +4545,25 @@ def position_strategy_efficiency_rows(
             "相对随机": relative,
             "比较口径": _comparison_scope_label(spec, relative, game),
         }
+        timing = audit.record_action(
+            spec=spec,
+            game=game,
+            spec_index=spec_index,
+            seconds=time.monotonic() - action_started_at,
+            delta=audit.delta_since(action_snapshot),
+        )
+        _emit_progress(
+            progress_callback,
+            "action_perf",
+            phase="action_ev",
+            action_mode=action_mode,
+            completed=completed_units,
+            total=total_units,
+            label=timing["label"],
+            spec_index=spec_index,
+            spec_total=len(specs),
+            action_timing=timing,
+        )
         rows.append(row)
         return row
 
@@ -4447,6 +4623,7 @@ def position_strategy_efficiency_rows(
             progress_callback,
             "refinement_start",
             phase="action_ev",
+            action_mode=action_mode,
             completed=completed_units,
             total=total_units,
             label=f"固定位置优于随机，继续计算 {len(fixed_main_specs)} 个锁主属性 action",
@@ -4471,8 +4648,9 @@ def position_strategy_efficiency_rows(
                 winning_fixed_main_specs.append(spec)
 
     fixed_substat_specs: list[ActionSpec] = []
-    for spec in winning_fixed_main_specs:
-        fixed_substat_specs.extend(_fixed_substat_refinement_action_specs(game, character, spec))
+    if action_mode == ACTION_EV_EXACT_MODE:
+        for spec in winning_fixed_main_specs:
+            fixed_substat_specs.extend(_fixed_substat_refinement_action_specs(game, character, spec))
     fixed_substat_specs = _dedupe_action_specs(fixed_substat_specs)
     if fixed_substat_specs:
         specs = [*base_specs, *fixed_main_specs, *fixed_substat_specs]
@@ -4481,6 +4659,7 @@ def position_strategy_efficiency_rows(
             progress_callback,
             "refinement_start",
             phase="action_ev",
+            action_mode=action_mode,
             completed=completed_units,
             total=total_units,
             label=f"锁主属性优于固定位置，继续计算 {len(fixed_substat_specs)} 个锁副属性 action",
@@ -4498,14 +4677,29 @@ def position_strategy_efficiency_rows(
         ):
             append_row(spec, spec_index)
 
+    audit.total_seconds = time.monotonic() - audit.started_at
+    performance_audit = audit.summary()
+    _ACTIVE_ACTION_EV_AUDIT.reset(audit_token)
     _lru_set(_ACTION_EV_ROWS_CACHE, cache_key, [dict(row) for row in rows], ACTION_EV_ROWS_CACHE_MAX_SIZE)
     _emit_progress(
         progress_callback,
         "complete",
         phase="action_ev",
+        action_mode=action_mode,
         completed=total_units,
         total=total_units,
         label="Action EV 计算完成",
+        performance_audit=performance_audit,
+        action_count=performance_audit["action_count"],
+        raw_outcome_count=performance_audit["raw_outcome_count"],
+        aggregated_outcome_count=performance_audit["aggregated_outcome_count"],
+        best_loadout_value_calls=performance_audit["best_loadout_value_calls"],
+        best_loadout_cache_hits=performance_audit["best_loadout_cache_hits"],
+        best_loadout_cache_misses=performance_audit["best_loadout_cache_misses"],
+        outcome_cache_hits=performance_audit["outcome_cache_hits"],
+        outcome_cache_misses=performance_audit["outcome_cache_misses"],
+        top_10_slowest_actions=performance_audit["top_10_slowest_actions"],
+        total_seconds=performance_audit["total_seconds"],
         dp_states=dp_states,
         dp_steps=dp_steps,
         memo_hits=memo_hits,
@@ -4888,6 +5082,174 @@ def recommended_action_ev_row(
         candidates,
         key=_row_sort_vector,
     )
+
+
+_ACTION_EV_ENGINE_COMPARE_CORE_COLUMNS = (
+    "策略",
+    "目标套装",
+    "位置",
+    "主属性",
+    "固定副属性",
+    "horizon",
+    "期望提升",
+    "质量提升",
+    "有效提升",
+    "质量/母盘",
+    "有效/母盘",
+    "母盘/次",
+    "校音器/次",
+    "共鸣核/次",
+    "高级素材/次",
+    "相对随机",
+    "套装约束",
+)
+
+
+def _action_ev_row_identity(row: dict[str, Any] | None) -> str:
+    if not row:
+        return "-"
+    return " | ".join(
+        str(row.get(key) or "-")
+        for key in ("策略", "目标套装", "位置", "主属性", "固定副属性")
+    )
+
+
+def _action_ev_compare_value(value: object) -> object:
+    if isinstance(value, float):
+        return round(value, 9)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, (list, tuple)):
+        return tuple(_action_ev_compare_value(item) for item in value)
+    return value
+
+
+def _action_ev_core_snapshot(row: dict[str, Any]) -> dict[str, object]:
+    return {
+        key: _action_ev_compare_value(row.get(key))
+        for key in _ACTION_EV_ENGINE_COMPARE_CORE_COLUMNS
+        if key in row
+    }
+
+
+def compare_action_ev_engines(
+    game: GameRules,
+    character: CharacterPreset,
+    probability_model: ProbabilityModel,
+    current_analysis: CurrentGearAnalysis,
+    *,
+    inventory_pieces: list[GearPiece] | None = None,
+    horizon: int = 1,
+    action_mode: str = DEFAULT_ACTION_EV_MODE,
+    top_n: int = 10,
+) -> dict[str, object]:
+    """Run both Action EV engines and return a deterministic consistency report."""
+
+    action_mode = normalize_action_ev_mode(action_mode)
+    started = time.monotonic()
+    inventory_rows = position_strategy_efficiency_rows(
+        game,
+        character,
+        probability_model,
+        current_analysis,
+        inventory_pieces=inventory_pieces,
+        horizon=horizon,
+        use_state_dp=False,
+        action_mode=action_mode,
+    )
+    inventory_elapsed = time.monotonic() - started
+
+    started = time.monotonic()
+    state_rows = position_strategy_efficiency_rows(
+        game,
+        character,
+        probability_model,
+        current_analysis,
+        inventory_pieces=inventory_pieces,
+        horizon=horizon,
+        use_state_dp=True,
+        action_mode=action_mode,
+    )
+    state_elapsed = time.monotonic() - started
+
+    inventory_recommendation = _action_ev_row_identity(recommended_action_ev_row(inventory_rows))
+    state_recommendation = _action_ev_row_identity(recommended_action_ev_row(state_rows))
+    inventory_top = [_action_ev_row_identity(row) for row in inventory_rows[:top_n]]
+    state_top = [_action_ev_row_identity(row) for row in state_rows[:top_n]]
+    recommendation_consistent = inventory_recommendation == state_recommendation
+    top_order_consistent = inventory_top == state_top
+
+    core_diffs: list[dict[str, object]] = []
+    inventory_by_id = {_action_ev_row_identity(row): row for row in inventory_rows}
+    state_by_id = {_action_ev_row_identity(row): row for row in state_rows}
+    for identity in sorted(set(inventory_by_id) | set(state_by_id)):
+        inventory_row = inventory_by_id.get(identity)
+        state_row = state_by_id.get(identity)
+        if inventory_row is None or state_row is None:
+            core_diffs.append(
+                {
+                    "action": identity,
+                    "inventory_recursive": "missing" if inventory_row is None else "present",
+                    "state_dp": "missing" if state_row is None else "present",
+                }
+            )
+            continue
+        inventory_snapshot = _action_ev_core_snapshot(inventory_row)
+        state_snapshot = _action_ev_core_snapshot(state_row)
+        if inventory_snapshot != state_snapshot:
+            changed = {
+                key: {
+                    "inventory_recursive": inventory_snapshot.get(key),
+                    "state_dp": state_snapshot.get(key),
+                }
+                for key in sorted(set(inventory_snapshot) | set(state_snapshot))
+                if inventory_snapshot.get(key) != state_snapshot.get(key)
+            }
+            core_diffs.append({"action": identity, "columns": changed})
+
+    core_ev_consistent = not core_diffs
+    report_lines = [
+        f"row_count inventory_recursive={len(inventory_rows)}, state_dp={len(state_rows)}",
+        f"elapsed inventory_recursive={inventory_elapsed:.6f}s, state_dp={state_elapsed:.6f}s",
+        f"recommendation inventory_recursive={inventory_recommendation}",
+        f"recommendation state_dp={state_recommendation}",
+    ]
+    if not recommendation_consistent:
+        report_lines.append("DIFF recommendation mismatch")
+    if not top_order_consistent:
+        report_lines.append("DIFF top_10 ordering mismatch")
+    if core_diffs:
+        report_lines.append(f"DIFF core EV mismatches={len(core_diffs)}")
+        for diff in core_diffs[:10]:
+            report_lines.append(json.dumps(diff, ensure_ascii=False, sort_keys=True))
+    else:
+        report_lines.append("core EV values match")
+
+    return {
+        "consistent": recommendation_consistent and top_order_consistent and core_ev_consistent,
+        "recommendation_consistent": recommendation_consistent,
+        "top_10_order_consistent": top_order_consistent,
+        "core_ev_consistent": core_ev_consistent,
+        "row_counts": {
+            "inventory_recursive": len(inventory_rows),
+            "state_dp": len(state_rows),
+        },
+        "elapsed_seconds": {
+            "inventory_recursive": round(inventory_elapsed, 6),
+            "state_dp": round(state_elapsed, 6),
+        },
+        "elapsed_delta_seconds": round(state_elapsed - inventory_elapsed, 6),
+        "recommendations": {
+            "inventory_recursive": inventory_recommendation,
+            "state_dp": state_recommendation,
+        },
+        "top_10": {
+            "inventory_recursive": inventory_top,
+            "state_dp": state_top,
+        },
+        "core_diffs": core_diffs,
+        "diff_report": "\n".join(report_lines),
+    }
 
 
 def _brief_recommended_action_row(

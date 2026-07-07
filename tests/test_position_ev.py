@@ -322,7 +322,12 @@ def _tiny_lock_context():
     return game, character, probability_model, analysis, inventory
 
 
-def _position_rows_with_fake_action_values(monkeypatch, increments: dict[str, float]):
+def _position_rows_with_fake_action_values(
+    monkeypatch,
+    increments: dict[str, float],
+    *,
+    action_mode: str = position_ev.DEFAULT_ACTION_EV_MODE,
+):
     game, character, probability_model, analysis, inventory = _tiny_lock_context()
     current_value = best_loadout_value(
         inventory,
@@ -348,7 +353,13 @@ def _position_rows_with_fake_action_values(monkeypatch, increments: dict[str, fl
 
     position_ev._ACTION_EV_ROWS_CACHE.clear()
     monkeypatch.setattr(position_ev, "_expected_action_value", fake_expected_action_value)
-    rows = position_strategy_efficiency_rows(game, character, probability_model, analysis)
+    rows = position_strategy_efficiency_rows(
+        game,
+        character,
+        probability_model,
+        analysis,
+        action_mode=action_mode,
+    )
     position_ev._ACTION_EV_ROWS_CACHE.clear()
     return rows, calls
 
@@ -1066,6 +1077,7 @@ def test_locked_position_cannot_be_replaced_by_inventory_or_upgraded_candidate()
         probability_model,
         analysis,
         inventory_pieces=[*inventory, unfinished_same_position],
+        action_mode=position_ev.ACTION_EV_EXACT_MODE,
     )
     upgrade_rows = [row for row in rows if row["策略"] == "强化库存胚子"]
     assert upgrade_rows
@@ -1291,9 +1303,24 @@ def test_action_ev_cache_key_includes_engine_and_config_fingerprints():
             use_state_dp=True,
         )
     )
+    exact_key = json.loads(
+        position_ev._action_ev_cache_key(
+            game,
+            character,
+            probability_model,
+            analysis,
+            inventory_rows=inventory_rows,
+            horizon=1,
+            use_state_dp=False,
+            action_mode=position_ev.ACTION_EV_EXACT_MODE,
+        )
+    )
 
     assert inventory_key["engine"] == "inventory_recursive"
     assert state_key["engine"] == "state_dp"
+    assert inventory_key["action_mode"] == position_ev.DEFAULT_ACTION_EV_MODE
+    assert exact_key["action_mode"] == position_ev.ACTION_EV_EXACT_MODE
+    assert exact_key != inventory_key
     assert inventory_key["fingerprints"]["game"][0] == game.id
     assert inventory_key["fingerprints"]["character"][0] == character.id
     assert inventory_key["fingerprints"]["probability_model"][0] == probability_model.id
@@ -1345,6 +1372,54 @@ def test_action_ev_progress_calculates_fixed_positions_before_random(monkeypatch
 
     first_unit = next(event for event in events if event.get("event") == "unit_start")
     assert first_unit["action_strategy"] == "固定位置"
+
+
+def test_action_ev_progress_emits_performance_audit(monkeypatch):
+    game, character, probability_model, analysis, inventory = _tiny_lock_context()
+    current_value = best_loadout_value(
+        inventory,
+        game,
+        character,
+        current_count=len(inventory),
+    )
+    events = []
+
+    def fake_expected_action_value(
+        _inventory_rows,
+        _game,
+        _character,
+        _probability_model,
+        spec,
+        *_args,
+        **_kwargs,
+    ):
+        return (*current_value[:-1], current_value[-1] + (1.0 if spec.target_position == 1 else 0.5))
+
+    position_ev._ACTION_EV_ROWS_CACHE.clear()
+    monkeypatch.setattr(position_ev, "_expected_action_value", fake_expected_action_value)
+    rows = position_strategy_efficiency_rows(
+        game,
+        character,
+        probability_model,
+        analysis,
+        progress_callback=events.append,
+    )
+    position_ev._ACTION_EV_ROWS_CACHE.clear()
+
+    complete = next(event for event in events if event.get("event") == "complete")
+    audit = complete["performance_audit"]
+    assert audit["action_count"] == len(rows)
+    assert "raw_outcome_count" in audit
+    assert "aggregated_outcome_count" in audit
+    assert "best_loadout_value_calls" in audit
+    assert "best_loadout_cache_hits" in audit
+    assert "best_loadout_cache_misses" in audit
+    assert "outcome_cache_hits" in audit
+    assert "outcome_cache_misses" in audit
+    assert isinstance(audit["top_10_slowest_actions"], list)
+    assert isinstance(audit["action_timings"], list)
+    assert audit["total_seconds"] >= 0
+    assert any(event.get("event") == "action_perf" for event in events)
 
 
 def test_random_position_ev_is_weighted_average_of_fixed_positions(monkeypatch):
@@ -1488,7 +1563,13 @@ def test_hsr_position_rows_expand_fixed_main_without_random_baseline(monkeypatch
 
     position_ev._ACTION_EV_ROWS_CACHE.clear()
     monkeypatch.setattr(position_ev, "_expected_action_value", fake_expected_action_value)
-    rows = position_strategy_efficiency_rows(game, character, probability_model, analysis)
+    rows = position_strategy_efficiency_rows(
+        game,
+        character,
+        probability_model,
+        analysis,
+        action_mode=position_ev.ACTION_EV_EXACT_MODE,
+    )
     position_ev._ACTION_EV_ROWS_CACHE.clear()
 
     assert not any(row["策略"] == "随机位置" for row in rows)
@@ -1522,6 +1603,7 @@ def test_fixed_substat_rows_wait_until_fixed_main_beats_fixed_position(monkeypat
             "固定位置 + 固定主属性": 2.0,
             "固定位置 + 固定主属性 + 固定副属性": 99.0,
         },
+        action_mode=position_ev.ACTION_EV_EXACT_MODE,
     )
 
     assert any(row["策略"] == "固定位置 + 固定主属性" for row in rows)
@@ -1539,6 +1621,7 @@ def test_fixed_substat_rows_expand_after_fixed_main_beats_fixed_position(monkeyp
             "固定位置 + 固定主属性": 3.0,
             "固定位置 + 固定主属性 + 固定副属性": 4.0,
         },
+        action_mode=position_ev.ACTION_EV_EXACT_MODE,
     )
 
     assert any(
@@ -1554,6 +1637,38 @@ def test_fixed_substat_rows_expand_after_fixed_main_beats_fixed_position(monkeyp
     assert "固定位置 + 固定主属性 + 固定副属性" in calls
 
 
+def test_action_ev_fast_mode_skips_fixed_substat_expansion(monkeypatch):
+    rows, calls = _position_rows_with_fake_action_values(
+        monkeypatch,
+        {
+            "固定位置:1": 2.0,
+            "固定位置:2": 0.0,
+            "固定位置 + 固定主属性": 3.0,
+            "固定位置 + 固定主属性 + 固定副属性": 4.0,
+        },
+    )
+
+    assert any(row["策略"] == "固定位置 + 固定主属性" for row in rows)
+    assert not any(row["策略"] == "固定位置 + 固定主属性 + 固定副属性" for row in rows)
+    assert "固定位置 + 固定主属性 + 固定副属性" not in calls
+
+
+def test_action_ev_fast_mode_skips_upgrade_rows():
+    game, character, probability_model, analysis = _billy_context()
+    inventory = [
+        *load_current_example("examples/zzz_billy_current.yaml"),
+        load_candidate_example("examples/zzz_candidate_slot5.yaml"),
+    ]
+    real_rows = position_strategy_efficiency_rows(
+        game,
+        character,
+        probability_model,
+        analysis,
+        inventory_pieces=inventory,
+    )
+    assert not any(row["策略"] == "强化库存胚子" for row in real_rows)
+
+
 def test_lookahead_action_space_includes_fixed_main_and_fixed_substats(monkeypatch):
     rows, _calls = _position_rows_with_fake_action_values(
         monkeypatch,
@@ -1563,6 +1678,7 @@ def test_lookahead_action_space_includes_fixed_main_and_fixed_substats(monkeypat
             "固定位置 + 固定主属性": 3.0,
             "固定位置 + 固定主属性 + 固定副属性": 4.0,
         },
+        action_mode=position_ev.ACTION_EV_EXACT_MODE,
     )
 
     assert any(row["策略"] == "固定位置 + 固定主属性" for row in rows)
@@ -1724,6 +1840,7 @@ def test_action_rows_include_upgrading_existing_inventory_candidate():
         probability_model,
         analysis,
         inventory_pieces=inventory,
+        action_mode=position_ev.ACTION_EV_EXACT_MODE,
     )
     upgrade_rows = [row for row in rows if row["策略"] == "强化库存胚子"]
 
