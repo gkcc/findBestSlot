@@ -3770,8 +3770,8 @@ class OptimizerWindow(QMainWindow):
         dialog.resize(860, 680)
         root = QVBoxLayout(dialog)
         note = QLabel(
-            "Phase 1 仅做 H=1 审计：多选代理人后，用当前输入盘面和库存评估同一个 action 的互补收益；"
-            "不替换现有单角色调律推荐，也不做同队装备互斥精确分配。"
+            "Phase 1 仅做 H=1 BOX 调律审计：主 EV 只看进入更优 best_loadout 的成型收益；"
+            "建设方向单独审计，不参与排序；不替换现有单角色调律推荐，也不做同队装备互斥精确分配。"
         )
         note.setWordWrap(True)
         note.setObjectName("MutedText")
@@ -5043,6 +5043,18 @@ class OptimizerWindow(QMainWindow):
             return None
         return pieces
 
+    def _collect_current_partial_or_warn(self) -> list[GearPiece] | None:
+        game = self.selected_game()
+        pieces, warnings = self.current_table.collect_pieces()
+        try:
+            validate_current_gear_against_game(pieces, game, require_complete=False)
+        except Exception as exc:
+            warnings.append(str(exc))
+        if warnings:
+            self._show_warning("当前装备快照还不能用于 BOX 审计", warnings)
+            return None
+        return pieces
+
     def _collect_current_template_or_warn(self) -> list[GearPiece] | None:
         pieces, warnings = self.current_table.collect_pieces()
         if warnings:
@@ -5736,8 +5748,8 @@ class OptimizerWindow(QMainWindow):
         self._refresh_overview()
 
     def run_portfolio_audit(self) -> None:
-        current_pieces = self._collect_current_or_warn()
-        if current_pieces is None or not self._ensure_current_still_confirmed(current_pieces):
+        current_pieces = self._collect_current_partial_or_warn()
+        if current_pieces is None:
             return
         inventory_pieces = self._collect_inventory_or_warn()
         if inventory_pieces is None:
@@ -5760,6 +5772,7 @@ class OptimizerWindow(QMainWindow):
                 inventory_pieces,
                 mode=mode,
                 horizon=1,
+                action_scope="tuning",
             )
         except Exception as exc:
             self.progress_label.setText("BOX 多代理人审计失败。")
@@ -5774,8 +5787,9 @@ class OptimizerWindow(QMainWindow):
         self.portfolio_status_label.setText(
             f"BOX H=1 审计完成：{len(rows)} 个 action；模式={mode.label}；"
             f"目标代理人={target_names}。\n"
-            "说明：Portfolio EV 使用 outcome 加入库存后 best_loadout_value 的正 delta 聚合，"
-            "不按主属性/副词条粗判；"
+            "说明：Portfolio EV 只统计进入更优 best_loadout 的成型收益；"
+            "建设审计单独展示，不参与主 EV 排序；"
+            "本表为 BOX 调律审计，不混入库存强化；"
             "Phase 1 不做 H=2，不做同队装备互斥精确分配，不替换单角色推荐。"
         )
         self.progress_label.setText("BOX 多代理人审计已计算完成。")

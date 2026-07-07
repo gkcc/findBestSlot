@@ -676,10 +676,12 @@ def test_portfolio_audit_button_renders_box_decision_rows(monkeypatch, tmp_path)
                 "调律策略/动作": "固定位置 / A / 2号位",
                 "portfolio EV": 1.0,
                 "EV/母盘": 0.1667,
-                "至少一人有用概率": "100.0%",
+                "至少一人成型收益概率": "100.0%",
+                "建设方向推进概率": "0.0%",
                 "最佳受益代理人": "测试代理",
                 "受益代理人数": 1,
-                "每代理人 gain 明细": "测试代理+1.000(p=100.0%,w=1)",
+                "每代理人 gain 明细": "测试代理+1.000(成型p=100.0%,建设p=0.0%,w=1)",
+                "套装进度审计": "-",
                 "模式说明": "ANY_USEFUL",
             }
 
@@ -688,12 +690,8 @@ def test_portfolio_audit_button_renders_box_decision_rows(monkeypatch, tmp_path)
     try:
         game = window.selected_game()
         character = window.selected_character()
-        current_pieces = [
-            _default_piece(game, character, rule.id)
-            for rule in game.positions
-        ]
+        current_pieces = [_default_piece(game, character, game.positions[0].id)]
         window.current_table.set_context(game, character, current_pieces)
-        window.confirm_current()
         target = PortfolioTarget(
             agent_id="test_agent",
             name="测试代理",
@@ -712,6 +710,7 @@ def test_portfolio_audit_button_renders_box_decision_rows(monkeypatch, tmp_path)
             calls.append((args, kwargs))
             assert kwargs["mode"] == PortfolioMode.ANY_USEFUL
             assert kwargs["horizon"] == 1
+            assert kwargs["action_scope"] == "tuning"
             return [FakePortfolioRow()]
 
         monkeypatch.setattr(pyside6_app, "portfolio_action_rows", fake_portfolio_action_rows)
@@ -725,9 +724,11 @@ def test_portfolio_audit_button_renders_box_decision_rows(monkeypatch, tmp_path)
             for index in range(window.portfolio_table.columnCount())
         ]
         assert "portfolio EV" in headers
-        assert "至少一人有用概率" in headers
+        assert "至少一人成型收益概率" in headers
+        assert "建设方向推进概率" in headers
         assert "每代理人 gain 明细" in headers
         assert "BOX H=1 审计完成" in window.portfolio_status_label.text()
+        assert "建设审计单独展示" in window.portfolio_status_label.text()
         assert "不替换单角色推荐" in window.portfolio_status_label.text()
         assert window.result_tabs.tabText(window.result_tabs.currentIndex()) == "BOX 决策"
         assert window.progress_label.text() == "BOX 多代理人审计已计算完成。"

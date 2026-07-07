@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Sequence
+from dataclasses import dataclass
+from typing import Literal
 
-from gear_optimizer.models import CharacterPreset, GameRules, GearPiece, ProbabilityModel
+from gear_optimizer.models import CharacterPreset, GameRules, GearPiece, ProbabilityModel, position_key
 from gear_optimizer.portfolio_models import (
     PortfolioActionRow,
     PortfolioGain,
@@ -29,7 +31,9 @@ from gear_optimizer.position_ev import (
     _generation_action_specs,
     _inventory_piece_id,
     _inventory_row_signature,
+    _is_loadout_candidate,
     _normalise_inventory_rows,
+    _piece_contribution_key,
     _positive_gain,
     _replace_inventory_row,
     _roll_state_from_piece,
@@ -38,6 +42,16 @@ from gear_optimizer.position_ev import (
 )
 
 _EPSILON = 1e-9
+PortfolioActionScope = Literal["tuning", "upgrade", "all"]
+
+
+@dataclass(frozen=True)
+class BuildProgressAudit:
+    gain: float = 0.0
+    set_progress_detail: str = "-"
+    position_coverage_detail: str = "-"
+    main_stat_hit_detail: str = "-"
+    candidate_observation_detail: str = "-"
 
 
 def _portfolio_delta_scalar(gain_vector: tuple[float, ...]) -> float:
@@ -57,19 +71,42 @@ def _portfolio_action_specs(
     game: GameRules,
     targets: Sequence[PortfolioTarget],
     base_rows: list[dict],
+    action_scope: PortfolioActionScope,
 ) -> list[ActionSpec]:
     specs: list[ActionSpec] = []
-    for target in targets:
-        specs.extend(
-            _generation_action_specs(
-                game,
-                target.character,
-                include_fixed_main=True,
-                include_fixed_substats=False,
+    if action_scope in {"tuning", "all"}:
+        for target in targets:
+            specs.extend(
+                _generation_action_specs(
+                    game,
+                    target.character,
+                    include_fixed_main=True,
+                    include_fixed_substats=True,
+                )
             )
-        )
-    specs.extend(_upgrade_action_specs(base_rows, game))
+    if action_scope in {"upgrade", "all"}:
+        specs.extend(_upgrade_action_specs(base_rows, game))
     return _dedupe_action_specs(specs)
+
+
+def _target_rows_for_pool(
+    current_pieces: Sequence[GearPiece],
+    inventory_pieces: Sequence[GearPiece],
+    game: GameRules,
+    character: CharacterPreset,
+) -> list[dict]:
+    rows = []
+    for index, piece in enumerate(current_pieces):
+        row = _candidate_inventory_row(piece, game, character, source="current")
+        row["_inventory_id"] = f"current:{index}"
+        row["_piece"] = piece
+        rows.append(row)
+    for index, piece in enumerate(inventory_pieces):
+        row = _candidate_inventory_row(piece, game, character, source="inventory")
+        row["_inventory_id"] = f"inventory:{index}"
+        row["_piece"] = piece
+        rows.append(row)
+    return _normalise_inventory_rows(rows, game, character)
 
 
 def _target_rows(
@@ -173,6 +210,162 @@ def _row_enters_best_loadout(row: dict, inventory: list[dict], game: GameRules, 
     return any(_inventory_row_signature(combo_row) == signature for combo_row in combo)
 
 
+def _candidate_rows_for_position(rows: list[dict], game: GameRules, position: object) -> list[dict]:
+    key = position_key(position)
+    return [
+        row
+        for row in rows
+        if _is_loadout_candidate(row, game)
+        and position_key(row["position"]) == key
+    ]
+
+
+def _same_position_set_blocker(
+    rows: list[dict],
+    candidate_row: dict,
+    game: GameRules,
+) -> dict | None:
+    position = position_key(candidate_row["position"])
+    set_name = str(candidate_row["set_name"])
+    for row in rows:
+        if not _is_loadout_candidate(row, game):
+            continue
+        if position_key(row["position"]) != position or str(row["set_name"]) != set_name:
+            continue
+        if _piece_contribution_key(row) >= _piece_contribution_key(candidate_row):
+            return row
+    return None
+
+
+def _frontier_count_for_sets(
+    rows: list[dict],
+    game: GameRules,
+    set_names: Sequence[str],
+    required: int,
+) -> int:
+    allowed = set(set_names)
+    positions = {
+        position_key(row["position"])
+        for row in rows
+        if _is_loadout_candidate(row, game)
+        and str(row["set_name"]) in allowed
+    }
+    return min(len(positions), required)
+
+
+def _build_progress_audit(
+    rows: list[dict],
+    target: PortfolioTarget,
+    game: GameRules,
+    outcome_piece: GearPiece,
+) -> BuildProgressAudit:
+    position_name = game.position_name(outcome_piece.position)
+    try:
+        set_available = game.set_available_for_position(outcome_piece.set_name, outcome_piece.position)
+    except KeyError:
+        set_available = False
+    if not set_available:
+        detail = f"不计入进度：{outcome_piece.set_name}不可用于{position_name}"
+        return BuildProgressAudit(
+            set_progress_detail=detail,
+            position_coverage_detail=detail,
+            main_stat_hit_detail=detail,
+            candidate_observation_detail=detail,
+        )
+
+    candidate_row = _candidate_inventory_row(outcome_piece, game, target.character, source="outcome")
+    blocker = _same_position_set_blocker(rows, candidate_row, game)
+    if blocker is not None:
+        detail = f"不计入进度：{position_name}已有更优或等价的{outcome_piece.set_name}盘"
+        return BuildProgressAudit(
+            set_progress_detail=detail,
+            position_coverage_detail=f"不计入覆盖：{detail}",
+            main_stat_hit_detail=f"不计入主属性：{detail}",
+            candidate_observation_detail=f"不计入观察：{detail}",
+        )
+
+    plan = target.character.active_set_plan()
+    set_signal = False
+    set_detail = "不限套装，不计入套装进度"
+    if plan is not None and not plan.is_unrestricted:
+        matching_requirements = [
+            requirement
+            for requirement in plan.requirements
+            if outcome_piece.set_name in requirement.set_names
+        ]
+        if not matching_requirements:
+            detail = f"不计入进度：{outcome_piece.set_name}不在目标套装方案{plan.name}中"
+            return BuildProgressAudit(
+                set_progress_detail=detail,
+                position_coverage_detail=detail,
+                main_stat_hit_detail=detail,
+                candidate_observation_detail=detail,
+            )
+        next_rows = [*rows, candidate_row]
+        progress_details: list[str] = []
+        for requirement in matching_requirements:
+            before = _frontier_count_for_sets(rows, game, requirement.set_names, requirement.pieces)
+            after = _frontier_count_for_sets(next_rows, game, requirement.set_names, requirement.pieces)
+            label = " / ".join(requirement.set_names)
+            if after > before:
+                set_signal = True
+                progress_details.append(f"{label}目标{requirement.pieces}件，当前可行{before}件，加入后可行{after}件")
+            else:
+                progress_details.append(f"不计入进度：{label}目标{requirement.pieces}件仍为{before}件")
+        set_detail = "；".join(progress_details)
+
+    position_signal = not _candidate_rows_for_position(rows, game, outcome_piece.position)
+    position_detail = (
+        f"覆盖缺失位置：{position_name}"
+        if position_signal
+        else f"{position_name}已有可用候选，不计入位置覆盖"
+    )
+
+    preferred_mains = target.character.preferred_mains_for(outcome_piece.position)
+    main_signal = bool(preferred_mains and outcome_piece.main_stat in preferred_mains)
+    main_detail = (
+        f"命中目标主属性：{position_name}{outcome_piece.main_stat}"
+        if main_signal
+        else f"{position_name}主属性{outcome_piece.main_stat}未命中目标"
+        if preferred_mains
+        else f"{position_name}未配置主属性限制"
+    )
+
+    effective_stats = [
+        line.stat
+        for line in outcome_piece.substats
+        if target.character.is_effective(line.stat)
+    ]
+    observation_signal = bool(effective_stats)
+    observation_detail = (
+        "有效胚子可观察：" + "、".join(dict.fromkeys(effective_stats))
+        if observation_signal
+        else "副属性暂未命中有效词条"
+    )
+
+    gain = 1.0 if any([set_signal, position_signal, main_signal, observation_signal]) else 0.0
+    return BuildProgressAudit(
+        gain=gain,
+        set_progress_detail=set_detail,
+        position_coverage_detail=position_detail,
+        main_stat_hit_detail=main_detail,
+        candidate_observation_detail=observation_detail,
+    )
+
+
+def _summarize_details(details: Sequence[str]) -> str:
+    values = [
+        detail
+        for detail in dict.fromkeys(str(item) for item in details)
+        if detail and detail != "-"
+    ]
+    if not values:
+        return "-"
+    if len(values) <= 3:
+        return "；".join(values)
+    return "；".join(values[:3]) + f"；另{len(values) - 3}项"
+
+
 def _target_gain_for_outcome(
     rows: list[dict],
     current_value: tuple[float, ...],
@@ -244,17 +437,23 @@ def portfolio_action_rows(
     *,
     mode: PortfolioMode = PortfolioMode.ANY_USEFUL,
     horizon: int = 1,
+    action_scope: PortfolioActionScope = "tuning",
 ) -> list[PortfolioActionRow]:
     if horizon != 1:
         raise ValueError("Portfolio/BOX EV Phase 1 only supports horizon=1")
+    if action_scope not in {"tuning", "upgrade", "all"}:
+        raise ValueError("action_scope must be one of: tuning, upgrade, all")
     if not targets:
         return []
 
     inventory_pieces = inventory_pieces or []
-    all_pieces = [*current_pieces, *inventory_pieces]
-    current_count = len(current_pieces)
     rows_by_agent = {
-        target.agent_id: _target_rows(all_pieces, game, target.character, current_count)
+        target.agent_id: _target_rows_for_pool(
+            target.current_pieces if target.current_pieces is not None else current_pieces,
+            inventory_pieces,
+            game,
+            target.character,
+        )
         for target in targets
     }
     current_values = {
@@ -266,7 +465,7 @@ def portfolio_action_rows(
         for target in targets
     }
     base_rows = rows_by_agent[targets[0].agent_id]
-    specs = _portfolio_action_specs(game, targets, base_rows)
+    specs = _portfolio_action_specs(game, targets, base_rows, action_scope)
 
     result_rows: list[PortfolioActionRow] = []
     for spec in specs:
@@ -278,11 +477,25 @@ def portfolio_action_rows(
         expected_delta_by_agent: dict[str, list[float]] = {target.agent_id: [] for target in targets}
         useful_probability_by_agent = {target.agent_id: 0.0 for target in targets}
         entered_probability_by_agent = {target.agent_id: 0.0 for target in targets}
+        build_probability_by_agent = {target.agent_id: 0.0 for target in targets}
+        build_gain_by_agent = {target.agent_id: 0.0 for target in targets}
+        detail_buckets = {
+            target.agent_id: {
+                "set": [],
+                "position": [],
+                "main": [],
+                "observation": [],
+            }
+            for target in targets
+        }
         useful_probability = 0.0
+        build_progress_probability = 0.0
+        build_progress_gain = 0.0
         portfolio_ev = 0.0
 
         for outcome_piece, probability in outcomes:
             gains: list[tuple[PortfolioTarget, float]] = []
+            build_hits: list[bool] = []
             for target in targets:
                 gain, gain_vector, enters_best = _target_gain_for_outcome(
                     rows_by_agent[target.agent_id],
@@ -300,6 +513,25 @@ def portfolio_action_rows(
                 )
                 if enters_best:
                     entered_probability_by_agent[target.agent_id] += probability
+                if gain <= _EPSILON:
+                    audit = _build_progress_audit(
+                        rows_by_agent[target.agent_id],
+                        target,
+                        game,
+                        outcome_piece,
+                    )
+                    build_gain_by_agent[target.agent_id] += probability * audit.gain
+                    if audit.gain > _EPSILON:
+                        build_probability_by_agent[target.agent_id] += probability
+                        build_hits.append(True)
+                    else:
+                        build_hits.append(False)
+                    detail_buckets[target.agent_id]["set"].append(audit.set_progress_detail)
+                    detail_buckets[target.agent_id]["position"].append(audit.position_coverage_detail)
+                    detail_buckets[target.agent_id]["main"].append(audit.main_stat_hit_detail)
+                    detail_buckets[target.agent_id]["observation"].append(audit.candidate_observation_detail)
+                else:
+                    build_hits.append(False)
             for target, gain in gains:
                 positive_gain = max(gain, 0.0)
                 expected_by_agent[target.agent_id] += probability * positive_gain
@@ -309,6 +541,9 @@ def portfolio_action_rows(
             portfolio_ev += probability * outcome_portfolio_gain
             if any(gain > _EPSILON for _target, gain in gains):
                 useful_probability += probability
+            if any(build_hits):
+                build_progress_probability += probability
+                build_progress_gain += probability
 
         portfolio_gains = [
             PortfolioGain(
@@ -316,6 +551,7 @@ def portfolio_action_rows(
                 name=target.name,
                 target_template_id=target.character.id,
                 weight=target.weight,
+                immediate_gain=round(expected_by_agent[target.agent_id], 6),
                 expected_gain=round(expected_by_agent[target.agent_id], 6),
                 useful_probability=round(useful_probability_by_agent[target.agent_id], 6),
                 expected_delta_vector=[
@@ -325,6 +561,17 @@ def portfolio_action_rows(
                 entered_best_loadout_probability=round(
                     entered_probability_by_agent[target.agent_id],
                     6,
+                ),
+                build_progress_probability=round(
+                    build_probability_by_agent[target.agent_id],
+                    6,
+                ),
+                build_progress_gain=round(build_gain_by_agent[target.agent_id], 6),
+                set_progress_detail=_summarize_details(detail_buckets[target.agent_id]["set"]),
+                position_coverage_detail=_summarize_details(detail_buckets[target.agent_id]["position"]),
+                main_stat_hit_detail=_summarize_details(detail_buckets[target.agent_id]["main"]),
+                candidate_observation_detail=_summarize_details(
+                    detail_buckets[target.agent_id]["observation"]
                 ),
             )
             for target in targets
@@ -356,12 +603,27 @@ def portfolio_action_rows(
                 beneficiary_count=len(beneficiary_gains),
                 target_gains=portfolio_gains,
                 mode_note=mode.note
-                + " BOX EV 使用 outcome 加入库存后 best_loadout_value 的正 delta 聚合，不按主属性/副词条粗判。"
+                + " BOX 主 EV 使用 outcome 加入代理人盘池后 best_loadout_value 的正 delta 聚合；"
+                + "建设审计单独展示，不参与主 EV 排序。"
                 + " Phase 1：仅 H=1，不做同队装备互斥精确分配。",
                 mother_cost=mother_cost,
                 tuner_cost=tuner_cost,
                 core_cost=core_cost,
                 entered_best_loadout_summary=_entered_best_loadout_summary(portfolio_gains),
+                build_progress_probability=round(build_progress_probability, 6),
+                build_progress_gain=round(build_progress_gain, 6),
+                set_progress_detail=_summarize_details(
+                    gain.set_progress_detail for gain in portfolio_gains
+                ),
+                position_coverage_detail=_summarize_details(
+                    gain.position_coverage_detail for gain in portfolio_gains
+                ),
+                main_stat_hit_detail=_summarize_details(
+                    gain.main_stat_hit_detail for gain in portfolio_gains
+                ),
+                candidate_observation_detail=_summarize_details(
+                    gain.candidate_observation_detail for gain in portfolio_gains
+                ),
             )
         )
 
@@ -371,6 +633,10 @@ def portfolio_action_rows(
             row.ev_per_mother,
             row.portfolio_ev,
             row.useful_probability,
+            max(
+                (gain.entered_best_loadout_probability for gain in row.target_gains),
+                default=0.0,
+            ),
             row.beneficiary_count,
         ),
         reverse=True,

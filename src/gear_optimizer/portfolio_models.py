@@ -4,7 +4,7 @@ from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from gear_optimizer.models import CharacterPreset
+from gear_optimizer.models import CharacterPreset, GearPiece
 from gear_optimizer.position_ev import ActionSpec
 
 
@@ -30,6 +30,7 @@ class PortfolioTarget(BaseModel):
     name: str
     character: CharacterPreset
     weight: float = Field(default=1.0, ge=0.0)
+    current_pieces: list[GearPiece] | None = None
 
     @property
     def target_template_id(self) -> str:
@@ -41,10 +42,17 @@ class PortfolioGain(BaseModel):
     name: str
     target_template_id: str
     weight: float = 1.0
+    immediate_gain: float = 0.0
     expected_gain: float = 0.0
     useful_probability: float = 0.0
     expected_delta_vector: list[float] = Field(default_factory=list)
     entered_best_loadout_probability: float = 0.0
+    build_progress_probability: float = 0.0
+    build_progress_gain: float = 0.0
+    set_progress_detail: str = "-"
+    position_coverage_detail: str = "-"
+    main_stat_hit_detail: str = "-"
+    candidate_observation_detail: str = "-"
 
 
 class PortfolioActionRow(BaseModel):
@@ -61,6 +69,8 @@ class PortfolioActionRow(BaseModel):
     portfolio_ev: float
     ev_per_mother: float
     useful_probability: float
+    build_progress_probability: float = 0.0
+    build_progress_gain: float = 0.0
     best_beneficiary_agent: str
     beneficiary_count: int
     target_gains: list[PortfolioGain] = Field(default_factory=list)
@@ -69,11 +79,16 @@ class PortfolioActionRow(BaseModel):
     tuner_cost: float = 0.0
     core_cost: float = 0.0
     entered_best_loadout_summary: str = "-"
+    set_progress_detail: str = "-"
+    position_coverage_detail: str = "-"
+    main_stat_hit_detail: str = "-"
+    candidate_observation_detail: str = "-"
 
     def to_display_row(self) -> dict[str, object]:
         details = "；".join(
             f"{gain.name}+{gain.expected_gain:.3f}"
-            f"(有用p={gain.useful_probability:.1%},入选p={gain.entered_best_loadout_probability:.1%},w={gain.weight:g})"
+            f"(成型p={gain.useful_probability:.1%},入选p={gain.entered_best_loadout_probability:.1%},"
+            f"建设p={gain.build_progress_probability:.1%},w={gain.weight:g})"
             for gain in self.target_gains
         )
         return {
@@ -86,11 +101,17 @@ class PortfolioActionRow(BaseModel):
             "固定副属性": self.fixed_substats,
             "portfolio EV": round(self.portfolio_ev, 3),
             "EV/母盘": round(self.ev_per_mother, 4),
-            "至少一人有用概率": f"{self.useful_probability:.1%}",
+            "至少一人成型收益概率": f"{self.useful_probability:.1%}",
+            "建设方向推进概率": f"{self.build_progress_probability:.1%}",
+            "建设审计 gain": round(self.build_progress_gain, 3),
             "最佳受益代理人": self.best_beneficiary_agent or "-",
             "受益代理人数": self.beneficiary_count,
             "每代理人 gain 明细": details or "-",
             "outcome 入选更优搭配": self.entered_best_loadout_summary,
+            "套装进度审计": self.set_progress_detail,
+            "位置覆盖审计": self.position_coverage_detail,
+            "主属性命中审计": self.main_stat_hit_detail,
+            "胚子观察审计": self.candidate_observation_detail,
             "模式说明": self.mode_note,
         }
 
