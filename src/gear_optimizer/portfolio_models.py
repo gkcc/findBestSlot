@@ -84,6 +84,45 @@ class PortfolioActionRow(BaseModel):
     main_stat_hit_detail: str = "-"
     candidate_observation_detail: str = "-"
 
+    def _agent_gain_summary(self) -> str:
+        parts = [
+            f"{gain.name} +{gain.expected_gain:.3f} ({gain.useful_probability:.1%})"
+            for gain in self.target_gains
+            if gain.expected_gain > 0
+        ]
+        return "；".join(parts) if parts else "-"
+
+    def _build_hint(self) -> str:
+        if self.build_progress_probability <= 0:
+            return "-"
+        if self.portfolio_ev <= 0:
+            return f"暂不成型，建设方向命中 {self.build_progress_probability:.1%}"
+        return f"另有建设方向命中 {self.build_progress_probability:.1%}"
+
+    def _recommendation_reason(self) -> str:
+        if self.portfolio_ev > 0:
+            beneficiary = self.best_beneficiary_agent or "至少一名代理人"
+            return f"{beneficiary} 的 best_loadout 有正提升；建设审计不参与排序"
+        if self.build_progress_probability > 0:
+            return "主 EV 为 0；仅提示建设方向，不参与排序"
+        return "未进入任何选中代理人的更优搭配"
+
+    def to_recommendation_row(self) -> dict[str, object]:
+        return {
+            "调律动作": self.action_label,
+            "目标套装": self.target_set,
+            "位置": self.position,
+            "主属性": self.main_stat,
+            "主EV": round(self.portfolio_ev, 3),
+            "EV/母盘": round(self.ev_per_mother, 4),
+            "成型收益概率": f"{self.useful_probability:.1%}",
+            "主要受益人": self.best_beneficiary_agent or "-",
+            "受益人数": self.beneficiary_count,
+            "受益明细": self._agent_gain_summary(),
+            "建设提示": self._build_hint(),
+            "说明": self._recommendation_reason(),
+        }
+
     def to_display_row(self) -> dict[str, object]:
         details = "；".join(
             f"{gain.name}+{gain.expected_gain:.3f}"

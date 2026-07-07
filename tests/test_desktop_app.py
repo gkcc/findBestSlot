@@ -2,6 +2,8 @@ import json
 import os
 import subprocess
 import sys
+import threading
+import time
 import tomllib
 import types
 from pathlib import Path
@@ -11,6 +13,17 @@ from gear_optimizer import launcher
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _process_events_until(app, predicate, timeout: float = 3.0) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        app.processEvents()
+        if predicate():
+            return
+        time.sleep(0.01)
+    app.processEvents()
+    assert predicate()
 
 
 def test_parse_desktop_args_defaults_to_native_desktop_size():
@@ -149,9 +162,30 @@ def test_pyproject_declares_native_desktop_scripts_and_dependencies():
 
     assert scripts["gacha-gear-optimizer"] == "gear_optimizer.launcher:desktop_main"
     assert scripts["gacha-gear-optimizer-desktop"] == "gear_optimizer.launcher:desktop_main"
+    assert scripts["gacha-gear-optimizer-ui-smoke"] == "gear_optimizer.desktop_ui_smoke:main"
     assert not any(dependency.startswith("streamlit") for dependency in data["project"]["dependencies"])
     assert "PySide6-Essentials==6.11.1" in optional["desktop"]
     assert "PySide6-Essentials==6.11.1" in optional["packaging"]
+
+
+def test_desktop_ui_smoke_main_reports_script_result(monkeypatch, capsys, tmp_path):
+    from gear_optimizer import desktop_ui_smoke
+
+    calls = []
+
+    def fake_run_smoke(*, visible, timeout_seconds, user_data_dir):
+        calls.append((visible, timeout_seconds, user_data_dir))
+        return ["fake smoke ok"]
+
+    monkeypatch.setattr(desktop_ui_smoke, "run_smoke", fake_run_smoke)
+
+    assert desktop_ui_smoke.main(
+        ["--offscreen", "--timeout", "7", "--user-data-dir", str(tmp_path / "data")]
+    ) == 0
+    assert calls == [(False, 7.0, (tmp_path / "data").resolve())]
+    output = capsys.readouterr().out
+    assert "fake smoke ok" in output
+    assert "UI_SMOKE_OK" in output
 
 
 def test_optimizer_window_constructs_key_pyside6_components(monkeypatch, tmp_path):
@@ -246,12 +280,13 @@ def test_optimizer_window_constructs_key_pyside6_components(monkeypatch, tmp_pat
         assert window.duplicate_filter.text() == "只看重复库存"
         assert window.clear_inventory_filters_button.text() == "清除筛选"
         assert window.best_button.text() == "计算当前最优搭配（含强化期望）"
-        assert window.portfolio_button.text() == "BOX 决策/多代理人审计"
-        assert "BOX 决策" in {
+        assert window.portfolio_button.text() == "多代理人调律建议"
+        assert "多代理人调律" in {
             window.result_tabs.tabText(index)
             for index in range(window.result_tabs.count())
         }
-        assert "当前最优搭配（含强化期望）" in window.overview_guide_label.text()
+        assert "当前最优/Action EV 需要确认当前装备" in window.overview_guide_label.text()
+        assert "多代理人调律可直接使用空或部分当前盘面" in window.overview_guide_label.text()
         assert not window.clear_inventory_filters_button.isEnabled()
         assert not window.copy_inventory_button.isEnabled()
         assert not window.clear_substats_button.isEnabled()
@@ -333,7 +368,7 @@ def test_optimizer_window_constructs_key_pyside6_components(monkeypatch, tmp_pat
         assert window.result_tabs.tabText(0) == "Action EV 明细"
         assert window.result_tabs.tabText(1) == "H=2 方案"
         assert window.result_tabs.tabText(2) == "搭配结果"
-        assert window.result_tabs.tabText(3) == "BOX 决策"
+        assert window.result_tabs.tabText(3) == "多代理人调律"
         assert window.result_tabs.tabText(4) == "运行日志"
         assert not window.log.isVisible()
         assert not window.show_all_actions_button.isEnabled()
@@ -659,7 +694,7 @@ def test_transient_popup_guard_suppresses_popup_show_during_ui_rebuild(monkeypat
         app.processEvents()
 
 
-def test_portfolio_audit_button_renders_box_decision_rows(monkeypatch, tmp_path):
+def test_multi_agent_tuning_button_renders_recommendation_rows(monkeypatch, tmp_path):
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
     monkeypatch.setenv("GEAR_OPTIMIZER_USER_DATA_DIR", str(tmp_path / "user_data"))
     pytest.importorskip("PySide6")
@@ -670,19 +705,26 @@ def test_portfolio_audit_button_renders_box_decision_rows(monkeypatch, tmp_path)
     from gear_optimizer.pyside6_app import OptimizerWindow, _default_piece
 
     class FakePortfolioRow:
-        def to_display_row(self):
+        action_label = "固定位置 / A / 2号位"
+        target_set = "A"
+        portfolio_ev = 1.0
+        useful_probability = 1.0
+        best_beneficiary_agent = "测试代理"
+
+        def to_recommendation_row(self):
             return {
-                "模式": "任一代理人有用",
-                "调律策略/动作": "固定位置 / A / 2号位",
-                "portfolio EV": 1.0,
+                "调律动作": self.action_label,
+                "目标套装": self.target_set,
+                "位置": "2号位",
+                "主属性": "不固定",
+                "主EV": self.portfolio_ev,
                 "EV/母盘": 0.1667,
-                "至少一人成型收益概率": "100.0%",
-                "建设方向推进概率": "0.0%",
-                "最佳受益代理人": "测试代理",
-                "受益代理人数": 1,
-                "每代理人 gain 明细": "测试代理+1.000(成型p=100.0%,建设p=0.0%,w=1)",
-                "套装进度审计": "-",
-                "模式说明": "ANY_USEFUL",
+                "成型收益概率": "100.0%",
+                "主要受益人": self.best_beneficiary_agent,
+                "受益人数": 1,
+                "受益明细": "测试代理 +1.000 (100.0%)",
+                "建设提示": "-",
+                "说明": "测试代理 的 best_loadout 有正提升",
             }
 
     app = QApplication.instance() or QApplication([])
@@ -708,6 +750,8 @@ def test_portfolio_audit_button_renders_box_decision_rows(monkeypatch, tmp_path)
 
         def fake_portfolio_action_rows(*args, **kwargs):
             calls.append((args, kwargs))
+            assert len(args[3]) == 1
+            assert args[3][0].position == game.positions[0].id
             assert kwargs["mode"] == PortfolioMode.ANY_USEFUL
             assert kwargs["horizon"] == 1
             assert kwargs["action_scope"] == "tuning"
@@ -716,6 +760,10 @@ def test_portfolio_audit_button_renders_box_decision_rows(monkeypatch, tmp_path)
         monkeypatch.setattr(pyside6_app, "portfolio_action_rows", fake_portfolio_action_rows)
 
         window.run_portfolio_audit()
+        _process_events_until(
+            app,
+            lambda: window.portfolio_table.rowCount() == 1 and not window._action_busy(),
+        )
 
         assert calls
         assert window.portfolio_table.rowCount() == 1
@@ -723,15 +771,208 @@ def test_portfolio_audit_button_renders_box_decision_rows(monkeypatch, tmp_path)
             window.portfolio_table.horizontalHeaderItem(index).text()
             for index in range(window.portfolio_table.columnCount())
         ]
-        assert "portfolio EV" in headers
-        assert "至少一人成型收益概率" in headers
-        assert "建设方向推进概率" in headers
-        assert "每代理人 gain 明细" in headers
-        assert "BOX H=1 审计完成" in window.portfolio_status_label.text()
-        assert "建设审计单独展示" in window.portfolio_status_label.text()
-        assert "不替换单角色推荐" in window.portfolio_status_label.text()
-        assert window.result_tabs.tabText(window.result_tabs.currentIndex()) == "BOX 决策"
-        assert window.progress_label.text() == "BOX 多代理人审计已计算完成。"
+        assert "主EV" in headers
+        assert "成型收益概率" in headers
+        assert "主要受益人" in headers
+        assert "建设提示" in headers
+        assert "固定副属性" not in headers
+        assert "多代理人调律完成" in window.portfolio_status_label.text()
+        assert "本表只比较随机位置、固定位置、固定主属性" in window.portfolio_status_label.text()
+        assert window.result_tabs.tabText(window.result_tabs.currentIndex()) == "多代理人调律"
+        assert window.progress_label.text() == "多代理人调律建议已计算完成。"
+        assert "多代理人调律推荐" in window.result_recommend_title.text()
+        log_path = pyside6_app.ui_runtime_log_path()
+        log_text = log_path.read_text(encoding="utf-8")
+        assert "portfolio_compute_start" in log_text
+        assert "portfolio_compute_finished" in log_text
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_multi_agent_tuning_button_does_not_require_confirmed_full_current(monkeypatch, tmp_path):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.setenv("GEAR_OPTIMIZER_USER_DATA_DIR", str(tmp_path / "user_data"))
+    pytest.importorskip("PySide6")
+
+    from PySide6.QtWidgets import QApplication
+    from gear_optimizer.pyside6_app import OptimizerWindow, _default_piece
+
+    app = QApplication.instance() or QApplication([])
+    window = OptimizerWindow(width=1200, height=760)
+    try:
+        game = window.selected_game()
+        character = window.selected_character()
+        window.current_table.set_context(
+            game,
+            character,
+            [_default_piece(game, character, game.positions[0].id)],
+        )
+        window.current_confirmed_digest = None
+
+        window._update_action_buttons()
+
+        assert not window.best_button.isEnabled()
+        assert not window.action_button.isEnabled()
+        assert window.portfolio_button.isEnabled()
+        assert "需要先确认当前装备" in window.best_button.toolTip()
+        assert "需要先确认当前装备" in window.action_button.toolTip()
+        assert "不要求确认完整当前装备" in window.portfolio_button.toolTip()
+
+        window._update_action_buttons(busy=True)
+
+        assert not window.best_button.isEnabled()
+        assert not window.action_button.isEnabled()
+        assert not window.portfolio_button.isEnabled()
+        assert window.portfolio_button.toolTip() == "正在计算中。"
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_current_piece_card_can_unequip_to_inventory(monkeypatch, tmp_path):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.setenv("GEAR_OPTIMIZER_USER_DATA_DIR", str(tmp_path / "user_data"))
+    pytest.importorskip("PySide6")
+
+    from PySide6.QtWidgets import QApplication, QPushButton
+    import gear_optimizer.pyside6_app as pyside6_app
+    from gear_optimizer.pyside6_app import OptimizerWindow, _default_piece
+
+    app = QApplication.instance() or QApplication([])
+    window = OptimizerWindow(width=1200, height=760)
+    try:
+        game = window.selected_game()
+        character = window.selected_character()
+        current_piece = _default_piece(game, character, game.positions[0].id)
+        window.current_table.set_context(game, character, [current_piece])
+        window.inventory_table.set_context(game, character, [])
+        window._current_changed()
+
+        assert window.current_table.rowCount() == 1
+        assert window.inventory_table.rowCount() == 0
+        assert any(
+            button.text() == "卸下"
+            for button in window.current_cards[0].findChildren(QPushButton)
+        )
+
+        window.unequip_current_piece(0)
+
+        current_pieces = window._hidden_table_pieces(window.current_table)
+        inventory_pieces = window._hidden_table_pieces(window.inventory_table)
+        assert current_pieces == []
+        assert len(inventory_pieces) == 1
+        assert inventory_pieces[0].position == current_piece.position
+        assert window.current_confirmed_digest is None
+        assert "已卸下" in window.progress_label.text()
+        assert window._selected_inventory_source_row() == 0
+        assert not window.confirm_button.isEnabled()
+        assert window.portfolio_button.isEnabled()
+        assert "current_piece_unequipped" in pyside6_app.ui_runtime_log_path().read_text(encoding="utf-8")
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_portfolio_audit_runs_in_background_and_records_operations(monkeypatch, tmp_path):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.setenv("GEAR_OPTIMIZER_USER_DATA_DIR", str(tmp_path / "user_data"))
+    pytest.importorskip("PySide6")
+
+    from PySide6.QtWidgets import QApplication
+    import gear_optimizer.pyside6_app as pyside6_app
+    from gear_optimizer.portfolio_models import PortfolioMode, PortfolioTarget
+    from gear_optimizer.pyside6_app import OptimizerWindow
+
+    class FakePortfolioRow:
+        action_label = "固定位置 / A / 2号位"
+        target_set = "A"
+        portfolio_ev = 0.0
+        useful_probability = 0.0
+        best_beneficiary_agent = ""
+
+        def to_recommendation_row(self):
+            return {"主EV": 0.0, "建设提示": "暂不成型"}
+
+    entered = threading.Event()
+    release = threading.Event()
+    app = QApplication.instance() or QApplication([])
+    window = OptimizerWindow(width=1200, height=760)
+    try:
+        game = window.selected_game()
+        character = window.selected_character()
+        target = PortfolioTarget(
+            agent_id="test_agent",
+            name="测试代理",
+            character=character,
+            weight=1.0,
+        )
+        monkeypatch.setattr(
+            window,
+            "_select_portfolio_targets_dialog",
+            lambda: ([target], PortfolioMode.ANY_USEFUL),
+        )
+
+        def slow_portfolio_action_rows(*args, **kwargs):
+            entered.set()
+            assert release.wait(timeout=3.0)
+            return [FakePortfolioRow()]
+
+        monkeypatch.setattr(pyside6_app, "portfolio_action_rows", slow_portfolio_action_rows)
+
+        window.current_confirmed_digest = None
+        window.run_portfolio_audit()
+        _process_events_until(app, entered.is_set)
+
+        assert window._action_busy()
+        assert not window.portfolio_button.isEnabled()
+        assert window.progress_bar.maximum() == 0
+        assert "后台计算" in window.progress_label.text()
+
+        log_text = pyside6_app.ui_runtime_log_path().read_text(encoding="utf-8")
+        assert "portfolio_audit_clicked" in log_text
+        assert "portfolio_compute_start" in log_text
+        assert '"current_confirmed": false' in log_text
+
+        release.set()
+        _process_events_until(
+            app,
+            lambda: window.portfolio_table.rowCount() == 1 and not window._action_busy(),
+        )
+
+        assert window.progress_label.text() == "多代理人调律建议已计算完成。"
+        log_text = pyside6_app.ui_runtime_log_path().read_text(encoding="utf-8")
+        assert "portfolio_compute_finished" in log_text
+    finally:
+        release.set()
+        if window._portfolio_worker_thread is not None:
+            window._portfolio_worker_thread.quit()
+            window._portfolio_worker_thread.wait(1000)
+        window.close()
+        app.processEvents()
+
+
+def test_game_selector_is_native_combo_and_contains_zzz(monkeypatch, tmp_path):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.setenv("GEAR_OPTIMIZER_USER_DATA_DIR", str(tmp_path / "user_data"))
+    pytest.importorskip("PySide6")
+
+    from PySide6.QtWidgets import QApplication, QComboBox
+    from gear_optimizer.pyside6_app import OptimizerWindow
+
+    app = QApplication.instance() or QApplication([])
+    window = OptimizerWindow(width=1200, height=760)
+    try:
+        assert type(window.game_combo) is QComboBox
+        zzz_index = window.game_combo.findData("zzz")
+        assert zzz_index >= 0
+
+        window.game_combo.setCurrentIndex(zzz_index)
+        app.processEvents()
+        assert window.game_combo.currentData() == "zzz"
+        assert "绝区零" in window.game_combo.currentText()
+        assert "多代理人调律可直接使用空或部分当前盘面" in window.progress_label.text()
+        assert "请先确认当前装备" not in window.progress_label.text()
     finally:
         window.close()
         app.processEvents()
@@ -1210,12 +1451,12 @@ def test_user_target_template_source_restores_agent_fallback(monkeypatch, tmp_pa
         app.processEvents()
 
 
-def test_agent_storage_uses_agent_id_with_legacy_template_fallback(monkeypatch, tmp_path):
+def test_agent_storage_keeps_legacy_current_snapshot_unloaded_until_explicit_selection(monkeypatch, tmp_path):
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
     monkeypatch.setenv("GEAR_OPTIMIZER_USER_DATA_DIR", str(tmp_path / "user_data"))
     pytest.importorskip("PySide6")
 
-    from PySide6.QtWidgets import QApplication, QInputDialog, QMessageBox
+    from PySide6.QtWidgets import QApplication, QInputDialog, QMessageBox, QPushButton
     from gear_optimizer.pyside6_app import OptimizerWindow, _default_inventory_piece
     from gear_optimizer.user_current_gear import load_user_current_gears, save_user_current_gear
     from gear_optimizer.user_inventory import load_user_inventory, save_user_inventory
@@ -1270,9 +1511,21 @@ def test_agent_storage_uses_agent_id_with_legacy_template_fallback(monkeypatch, 
         assert window.selected_legacy_storage_character_id() == source_agent.character_preset_id
         assert f"数据归属：{source_agent.agent_id}" in window.agent_summary_label.text()
         assert f"目标模板来源：{source_agent.character_preset_id}" in window.overview_character_label.text()
-        assert [piece.position for piece in window._hidden_table_pieces(window.current_table)] == [current_piece.position]
+        assert window._hidden_table_pieces(window.current_table) == []
+        assert not any(
+            button.text() == "卸下"
+            for card in window.current_cards
+            for button in card.findChildren(QPushButton)
+        )
         assert [piece.position for piece in window._hidden_table_pieces(window.inventory_table)] == [inventory_piece.position]
-        assert "旧来源" in window.current_template_combo.currentText()
+        assert window.current_template_combo.currentData() == ""
+        assert "未载入快照" in window.current_template_combo.currentText()
+        assert not window.load_current_template_button.isEnabled()
+        legacy_snapshot_index = next(
+            index
+            for index in range(window.current_template_combo.count())
+            if "旧来源" in window.current_template_combo.itemText(index)
+        )
         assert f"库存来源：旧来源 {source_agent.character_preset_id}" in window.inventory_card_status_label.text()
         assert f"保存会写入 {source_agent.agent_id}" in window.inventory_card_status_label.text()
 
@@ -1289,6 +1542,8 @@ def test_agent_storage_uses_agent_id_with_legacy_template_fallback(monkeypatch, 
         assert exported["pieces"][0]["inventory_index"] == 1
         assert exported["character_id"] == source_agent.agent_id
 
+        window.current_template_combo.setCurrentIndex(legacy_snapshot_index)
+        assert window.load_current_template_button.isEnabled()
         monkeypatch.setattr(QInputDialog, "getText", lambda *args, **kwargs: ("旧模板改名", True))
         window.rename_current_template()
         legacy_items = load_user_current_gears(window.selected_game().id, source_agent.character_preset_id)
@@ -1658,7 +1913,7 @@ def test_transient_popup_suppression_hides_combo_popups(monkeypatch):
     pytest.importorskip("PySide6")
 
     from PySide6.QtWidgets import QApplication, QComboBox
-    from gear_optimizer.pyside6_app import _suppress_transient_popups
+    import gear_optimizer.pyside6_app as pyside6_app
 
     class TrackingCombo(QComboBox):
         def __init__(self) -> None:
@@ -1678,11 +1933,18 @@ def test_transient_popup_suppression_hides_combo_popups(monkeypatch):
         combo.showPopup()
         app.processEvents()
 
-        _suppress_transient_popups(0)
+        pyside6_app._suppress_transient_popups(0)
 
         assert combo.hide_popup_called
         assert not combo.view().isVisible()
+        assert not combo.view().isHidden()
+
+        pyside6_app._TRANSIENT_POPUP_SUPPRESS_UNTIL = 0
+        combo.showPopup()
+        app.processEvents()
+        assert combo.view().isVisible()
     finally:
+        pyside6_app._TRANSIENT_POPUP_SUPPRESS_UNTIL = 0
         combo.close()
         app.processEvents()
 
@@ -1692,7 +1954,7 @@ def test_transient_popup_guard_blocks_delayed_combo_popups(monkeypatch):
     pytest.importorskip("PySide6")
 
     from PySide6.QtWidgets import QApplication, QComboBox
-    from gear_optimizer.pyside6_app import _install_transient_popup_guard, _suppress_transient_popups
+    import gear_optimizer.pyside6_app as pyside6_app
 
     class TrackingCombo(QComboBox):
         def __init__(self) -> None:
@@ -1704,14 +1966,14 @@ def test_transient_popup_guard_blocks_delayed_combo_popups(monkeypatch):
             super().hidePopup()
 
     app = QApplication.instance() or QApplication([])
-    _install_transient_popup_guard()
+    pyside6_app._install_transient_popup_guard()
     combo = TrackingCombo()
     try:
         combo.addItems(["A", "B"])
         combo.show()
         app.processEvents()
 
-        _suppress_transient_popups(2000)
+        pyside6_app._suppress_transient_popups(2000)
         app.processEvents()
         combo.hide_popup_called = False
 
@@ -1720,6 +1982,80 @@ def test_transient_popup_guard_blocks_delayed_combo_popups(monkeypatch):
 
         assert combo.hide_popup_called
         assert not combo.view().isVisible()
+        assert not combo.view().isHidden()
+    finally:
+        pyside6_app._TRANSIENT_POPUP_SUPPRESS_UNTIL = 0
+        combo.close()
+        app.processEvents()
+
+
+def test_user_combo_press_clears_transient_popup_suppression(monkeypatch):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6")
+
+    from PySide6.QtCore import QEvent
+    from PySide6.QtWidgets import QApplication, QComboBox
+    import gear_optimizer.pyside6_app as pyside6_app
+
+    app = QApplication.instance() or QApplication([])
+    pyside6_app._install_transient_popup_guard()
+    combo = QComboBox()
+    try:
+        combo.addItems(["A", "B"])
+        combo.show()
+        app.processEvents()
+
+        pyside6_app._suppress_transient_popups(2000)
+        assert pyside6_app._transient_popups_suppressed()
+
+        assert pyside6_app._TRANSIENT_POPUP_GUARD is not None
+        pyside6_app._TRANSIENT_POPUP_GUARD.eventFilter(
+            combo,
+            QEvent(QEvent.Type.MouseButtonPress),
+        )
+
+        assert not pyside6_app._transient_popups_suppressed()
+    finally:
+        combo.close()
+        app.processEvents()
+
+
+def test_delayed_popup_cleanup_does_not_hide_user_opened_combo(monkeypatch):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6")
+
+    from PySide6.QtCore import QEvent
+    from PySide6.QtWidgets import QApplication, QComboBox
+    import gear_optimizer.pyside6_app as pyside6_app
+
+    class TrackingCombo(QComboBox):
+        def __init__(self) -> None:
+            super().__init__()
+            self.hide_popup_called = False
+
+        def hidePopup(self) -> None:  # noqa: N802 - Qt override name
+            self.hide_popup_called = True
+            super().hidePopup()
+
+    app = QApplication.instance() or QApplication([])
+    pyside6_app._install_transient_popup_guard()
+    combo = TrackingCombo()
+    try:
+        combo.addItems(["A", "B"])
+        combo.show()
+        app.processEvents()
+
+        pyside6_app._suppress_transient_popups(2000)
+        combo.hide_popup_called = False
+
+        assert pyside6_app._TRANSIENT_POPUP_GUARD is not None
+        pyside6_app._TRANSIENT_POPUP_GUARD.eventFilter(
+            combo,
+            QEvent(QEvent.Type.MouseButtonPress),
+        )
+        pyside6_app._hide_transient_popups_if_suppressed()
+
+        assert not combo.hide_popup_called
     finally:
         combo.close()
         app.processEvents()

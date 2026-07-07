@@ -16,6 +16,7 @@ gacha-gear-optimizer-doctor = "gear_optimizer.diagnostics:main"
 gacha-gear-optimizer-acceptance = "gear_optimizer.acceptance:main"
 gacha-gear-optimizer-verify-release = "gear_optimizer.release_manifest:main"
 gacha-gear-optimizer-readiness = "gear_optimizer.readiness:main"
+gacha-gear-optimizer-ui-smoke = "gear_optimizer.desktop_ui_smoke:main"
 
 [project.optional-dependencies]
 dev = [

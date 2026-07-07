@@ -15,6 +15,7 @@ from gear_optimizer.portfolio_models import (
 )
 from gear_optimizer.position_ev import (
     ActionSpec,
+    EvState,
     _action_costs,
     _action_main_label,
     _action_position_items,
@@ -35,7 +36,6 @@ from gear_optimizer.position_ev import (
     _normalise_inventory_rows,
     _piece_contribution_key,
     _positive_gain,
-    _replace_inventory_row,
     _roll_state_from_piece,
     _set_distribution,
     _upgrade_action_specs,
@@ -81,7 +81,7 @@ def _portfolio_action_specs(
                     game,
                     target.character,
                     include_fixed_main=True,
-                    include_fixed_substats=True,
+                    include_fixed_substats=False,
                 )
             )
     if action_scope in {"upgrade", "all"}:
@@ -201,6 +201,51 @@ def _raw_outcome_piece_distribution(
                     )
                     if probability > 0:
                         distribution.append((piece, probability))
+    return distribution
+
+
+def _coarse_outcome_piece_distribution(
+    spec: ActionSpec,
+    game: GameRules,
+    probability_model: ProbabilityModel,
+) -> list[tuple[GearPiece, float]]:
+    distribution: list[tuple[GearPiece, float]] = []
+    for position, position_probability in _action_position_items(game, spec.target_position):
+        valid_main_stats = game.main_stats_for(position)
+        main_stats = [spec.fixed_main_stat] if spec.fixed_main_stat else valid_main_stats
+        substats = [
+            {"stat": stat, "rolls": 0}
+            for stat in spec.required_substats
+            if stat in game.available_substats(str(spec.fixed_main_stat or ""), [])
+            or stat in game.sub_stats
+        ]
+        for set_name, set_probability in _set_distribution(probability_model, list(spec.set_options)):
+            if not game.set_available_for_position(set_name, position):
+                continue
+            for main_stat in main_stats:
+                if main_stat not in valid_main_stats:
+                    continue
+                main_probability = (
+                    1.0
+                    if spec.fixed_main_stat
+                    else game.main_stat_probability(position, main_stat)
+                )
+                probability = position_probability * set_probability * main_probability
+                if probability <= 0:
+                    continue
+                distribution.append(
+                    (
+                        GearPiece(
+                            position=position,
+                            set_name=set_name,
+                            main_stat=main_stat,
+                            level=game.enhancement.max_level,
+                            substats=substats,
+                            initial_substat_count=max(len(substats), 3),
+                        ),
+                        probability,
+                    )
+                )
     return distribution
 
 
@@ -368,6 +413,7 @@ def _summarize_details(details: Sequence[str]) -> str:
 
 def _target_gain_for_outcome(
     rows: list[dict],
+    state: EvState,
     current_value: tuple[float, ...],
     target: PortfolioTarget,
     game: GameRules,
@@ -391,7 +437,12 @@ def _target_gain_for_outcome(
         )
         next_row["_inventory_id"] = spec.upgrade_inventory_id
         next_row["_piece"] = outcome_piece
-        next_inventory = _replace_inventory_row(rows, spec.upgrade_inventory_id, next_row)
+        next_state = state.with_replaced_upgrade_source(
+            spec.upgrade_inventory_id,
+            next_row,
+            game,
+            target.character,
+        )
     else:
         next_row = _candidate_inventory_row(
             outcome_piece,
@@ -399,9 +450,13 @@ def _target_gain_for_outcome(
             target.character,
             source="outcome",
         )
-        next_inventory = [*rows, next_row]
+        next_state = state.with_candidate_row(next_row, game, target.character)
 
-    next_value = _cached_best_combo_value(next_inventory, game, target.character)
+    if next_state.signature == state.signature:
+        return 0.0, tuple(), False
+
+    next_inventory = next_state.to_inventory_rows()
+    next_value = next_state.best_loadout_value(game, target.character)
     gain_vector = _positive_gain(next_value, current_value)
     scalar_gain = _portfolio_delta_scalar(gain_vector)
     enters_best = scalar_gain > _EPSILON and _row_enters_best_loadout(
@@ -456,20 +511,37 @@ def portfolio_action_rows(
         )
         for target in targets
     }
-    current_values = {
-        target.agent_id: _cached_best_combo_value(
+    states_by_agent = {
+        target.agent_id: EvState.from_rows(
             rows_by_agent[target.agent_id],
             game,
             target.character,
         )
         for target in targets
     }
+    current_values = {
+        target.agent_id: states_by_agent[target.agent_id].best_loadout_value(
+            game,
+            target.character,
+        )
+        for target in targets
+    }
+    all_targets_incomplete = all(not current_values[target.agent_id] for target in targets)
     base_rows = rows_by_agent[targets[0].agent_id]
-    specs = _portfolio_action_specs(game, targets, base_rows, action_scope)
+    specs = _portfolio_action_specs(
+        game,
+        targets,
+        base_rows,
+        action_scope,
+    )
 
     result_rows: list[PortfolioActionRow] = []
     for spec in specs:
-        outcomes = _raw_outcome_piece_distribution(spec, base_rows, game, probability_model)
+        outcomes = (
+            _coarse_outcome_piece_distribution(spec, game, probability_model)
+            if all_targets_incomplete and not spec.upgrade_inventory_id
+            else _raw_outcome_piece_distribution(spec, base_rows, game, probability_model)
+        )
         if not outcomes:
             continue
 
@@ -499,6 +571,7 @@ def portfolio_action_rows(
             for target in targets:
                 gain, gain_vector, enters_best = _target_gain_for_outcome(
                     rows_by_agent[target.agent_id],
+                    states_by_agent[target.agent_id],
                     current_values[target.agent_id],
                     target,
                     game,

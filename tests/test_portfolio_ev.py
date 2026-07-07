@@ -1,5 +1,6 @@
 import pytest
 
+import gear_optimizer.portfolio_ev as portfolio_ev
 from gear_optimizer.models import (
     CharacterPreset,
     EnhancementRule,
@@ -349,7 +350,7 @@ def test_single_target_portfolio_matches_existing_horizon_one_scalar_for_same_ac
     assert row.target_gains[0].expected_gain == pytest.approx(expected_scalar)
 
 
-def test_portfolio_default_scope_excludes_inventory_upgrades_but_keeps_fixed_substats():
+def test_portfolio_default_scope_excludes_inventory_upgrades_and_fixed_substats():
     game = _upgrade_portfolio_game()
     probability = ProbabilityModel(
         id="p",
@@ -382,7 +383,8 @@ def test_portfolio_default_scope_excludes_inventory_upgrades_but_keeps_fixed_sub
 
     strategies = {row.action_spec.strategy for row in rows}
     assert "强化库存胚子" not in strategies
-    assert "固定位置 + 固定主属性 + 固定副属性" in strategies
+    assert "固定位置 + 固定主属性" in strategies
+    assert "固定位置 + 固定主属性 + 固定副属性" not in strategies
 
     upgrade_rows = portfolio_action_rows(
         game,
@@ -508,6 +510,45 @@ def test_portfolio_zero_current_incomplete_pool_reports_build_progress_only():
     assert row.build_progress_gain > 0
     assert "覆盖缺失位置" in row.position_coverage_detail
     assert "命中目标主属性" in row.main_stat_hit_detail
+    assert "当前可行1件，加入后可行2件" in row.set_progress_detail
+
+
+def test_portfolio_incomplete_pool_does_not_expand_full_substat_outcomes(monkeypatch):
+    game = _build_progress_game()
+    probability = ProbabilityModel(
+        id="p",
+        game="portfolio",
+        name="P",
+        target_set_probability=1.0,
+        initial_substat_count_probabilities={"3": 1.0, "4": 0.0},
+    )
+    character = _build_character()
+    target = PortfolioTarget(
+        agent_id="agent",
+        name="建设代理",
+        character=character,
+        current_pieces=[],
+    )
+
+    def fail_raw_distribution(*_args, **_kwargs):
+        raise AssertionError("incomplete BOX build audit should not expand full substat outcomes")
+
+    monkeypatch.setattr(portfolio_ev, "_raw_outcome_piece_distribution", fail_raw_distribution)
+
+    row = _fixed_position_row(
+        portfolio_ev.portfolio_action_rows(
+            game,
+            probability,
+            [target],
+            [],
+            [_build_piece(1)],
+            mode=PortfolioMode.ANY_USEFUL,
+        ),
+        2,
+    )
+
+    assert row.portfolio_ev == pytest.approx(0.0)
+    assert row.build_progress_gain > 0
     assert "当前可行1件，加入后可行2件" in row.set_progress_detail
 
 

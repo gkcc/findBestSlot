@@ -56,6 +56,7 @@ from gear_optimizer.game_rules import (
     validate_current_gear_against_game,
     validate_gear_piece_against_game,
 )
+from gear_optimizer.paths import app_data_root
 from gear_optimizer.agents import (
     AgentMetadata,
     UNKNOWN_LABEL,
@@ -157,6 +158,7 @@ ROLL_SPINBOX_MIN_WIDTH = 96
 ACTION_DETAIL_DISPLAY_LIMIT = 20
 ACTION_PROCESS_TEMP_PREFIX = "gear-action-ev-"
 ACTION_SUCCESSFUL_RUNS_TO_KEEP = 3
+UI_RUNTIME_LOG_NAME = "ui-runtime.log"
 SUBSTAT_CARD_MIME = "application/x-gear-substat-card"
 SUMMARY_NUMERIC_COLUMNS = {"有效", "当前有效", "期望有效", "有效/母盘"}
 _TRANSIENT_POPUP_GUARD: QObject | None = None
@@ -189,6 +191,28 @@ ACTION_VISIBLE_COLUMNS = [
     "代表分支搭配",
     "互补位",
 ]
+
+
+def ui_runtime_log_path() -> Path:
+    return app_data_root() / "logs" / UI_RUNTIME_LOG_NAME
+
+
+def append_ui_runtime_log(event: str, **fields: Any) -> None:
+    try:
+        path = ui_runtime_log_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "ts": time.strftime("%Y-%m-%d %H:%M:%S%z"),
+            "pid": os.getpid(),
+            "event": event,
+            **fields,
+        }
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, ensure_ascii=False, default=str) + "\n")
+    except Exception:
+        return
+
+
 APP_QSS = """
 QMainWindow, QWidget {
     background: #f4f6f8;
@@ -240,9 +264,23 @@ QPushButton:hover:!disabled {
 }
 QComboBox, QLineEdit, QSpinBox {
     background: #ffffff;
+    color: #202124;
     border: 1px solid #cbd3dc;
     border-radius: 6px;
     padding: 5px 8px;
+}
+QComboBox QAbstractItemView {
+    background: #ffffff;
+    color: #202124;
+    selection-background-color: #e8f0fe;
+    selection-color: #0b57d0;
+    border: 1px solid #9aa0a6;
+    outline: 0;
+}
+QComboBox QAbstractItemView::item {
+    min-height: 28px;
+    padding: 6px 8px;
+    color: #202124;
 }
 QSpinBox {
     min-height: 42px;
@@ -688,17 +726,15 @@ def _inventory_export_piece_payload(
 def _initial_current_pieces(
     game: GameRules,
     storage_id: str,
-    fallback_storage_ids: list[str] | None = None,
 ) -> list[GearPiece]:
-    for candidate_id in _unique_storage_ids(storage_id, *(fallback_storage_ids or [])):
-        try:
-            saved = load_user_current_gears(game.id, candidate_id)
-            if saved:
-                return list(saved[-1]["pieces"])
-            if current_gear_store_path(game.id, candidate_id).exists():
-                return []
-        except Exception:
-            continue
+    try:
+        saved = load_user_current_gears(game.id, storage_id)
+        if saved:
+            return list(saved[-1]["pieces"])
+        if current_gear_store_path(game.id, storage_id).exists():
+            return []
+    except Exception:
+        return []
     return []
 
 
@@ -1563,6 +1599,7 @@ class PieceCard(QFrame):
     clicked = Signal(int)
     edit_requested = Signal(int)
     equip_requested = Signal(int)
+    unequip_requested = Signal(int)
     copy_requested = Signal(int)
     clear_requested = Signal(int)
     delete_requested = Signal(int)
@@ -1572,11 +1609,13 @@ class PieceCard(QFrame):
         row_index: int,
         show_actions: bool = False,
         show_equip: bool = False,
+        show_unequip: bool = False,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self.row_index = row_index
         self.show_actions = show_actions
+        self.show_unequip = show_unequip
         self._selected = False
         self._highlighted = False
         self.setObjectName("PieceCard")
@@ -1627,30 +1666,36 @@ class PieceCard(QFrame):
         layout.addWidget(self.main_label)
         layout.addWidget(self.substat_label, 1)
 
-        if show_actions:
+        if show_actions or show_unequip:
             primary_actions = QHBoxLayout()
             primary_actions.setSpacing(6)
             if show_equip:
                 equip_button = QPushButton("装备")
                 equip_button.clicked.connect(lambda _checked=False: self.equip_requested.emit(self.row_index))
                 primary_actions.addWidget(equip_button)
-            edit_button = QPushButton("编辑")
-            edit_button.clicked.connect(lambda _checked=False: self.edit_requested.emit(self.row_index))
-            primary_actions.addWidget(edit_button)
+            if show_actions:
+                edit_button = QPushButton("编辑")
+                edit_button.clicked.connect(lambda _checked=False: self.edit_requested.emit(self.row_index))
+                primary_actions.addWidget(edit_button)
+            if show_unequip:
+                unequip_button = QPushButton("卸下")
+                unequip_button.clicked.connect(lambda _checked=False: self.unequip_requested.emit(self.row_index))
+                primary_actions.addWidget(unequip_button)
             layout.addLayout(primary_actions)
 
-            secondary_actions = QHBoxLayout()
-            secondary_actions.setSpacing(6)
-            copy_button = QPushButton("复制")
-            copy_button.clicked.connect(lambda _checked=False: self.copy_requested.emit(self.row_index))
-            clear_button = QPushButton("清空")
-            clear_button.clicked.connect(lambda _checked=False: self.clear_requested.emit(self.row_index))
-            delete_button = QPushButton("删除")
-            delete_button.clicked.connect(lambda _checked=False: self.delete_requested.emit(self.row_index))
-            secondary_actions.addWidget(copy_button)
-            secondary_actions.addWidget(clear_button)
-            secondary_actions.addWidget(delete_button)
-            layout.addLayout(secondary_actions)
+            if show_actions:
+                secondary_actions = QHBoxLayout()
+                secondary_actions.setSpacing(6)
+                copy_button = QPushButton("复制")
+                copy_button.clicked.connect(lambda _checked=False: self.copy_requested.emit(self.row_index))
+                clear_button = QPushButton("清空")
+                clear_button.clicked.connect(lambda _checked=False: self.clear_requested.emit(self.row_index))
+                delete_button = QPushButton("删除")
+                delete_button.clicked.connect(lambda _checked=False: self.delete_requested.emit(self.row_index))
+                secondary_actions.addWidget(copy_button)
+                secondary_actions.addWidget(clear_button)
+                secondary_actions.addWidget(delete_button)
+                layout.addLayout(secondary_actions)
 
     def update_piece(
         self,
@@ -2624,6 +2669,11 @@ class TargetTemplateEditDialog(QDialog):
         return answer == QMessageBox.StandardButton.Yes
 
     def _ignored_set_target_rows(self) -> list[str]:
+        if not any(
+            int(count_combo.currentData() or 0) > 0
+            for _set_edit, count_combo in self.set_requirement_rows
+        ):
+            return []
         ignored: list[str] = []
         for set_edit, count_combo in self.set_requirement_rows:
             pieces = int(count_combo.currentData() or 0)
@@ -2827,20 +2877,65 @@ class ActionEvWorker(QObject):
             self.failed.emit(traceback.format_exc())
 
 
+class PortfolioAuditWorker(QObject):
+    finished = Signal(list)
+    failed = Signal(str)
+
+    def __init__(
+        self,
+        game: GameRules,
+        probability_model: ProbabilityModel,
+        targets: list[PortfolioTarget],
+        current_pieces: list[GearPiece],
+        inventory_pieces: list[GearPiece],
+        mode: PortfolioMode,
+    ) -> None:
+        super().__init__()
+        self.game = game
+        self.probability_model = probability_model
+        self.targets = targets
+        self.current_pieces = current_pieces
+        self.inventory_pieces = inventory_pieces
+        self.mode = mode
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            rows = portfolio_action_rows(
+                self.game,
+                self.probability_model,
+                self.targets,
+                self.current_pieces,
+                self.inventory_pieces,
+                mode=self.mode,
+                horizon=1,
+                action_scope="tuning",
+            )
+            self.finished.emit(rows)
+        except Exception:
+            self.failed.emit(traceback.format_exc())
+
+
 class _TransientPopupGuard(QObject):
     def eventFilter(self, obj: QObject, event: QEvent) -> bool:
         if event.type() in {QEvent.Type.ToolTip, QEvent.Type.WhatsThis}:
             return True
         if (
+            event.type() in {QEvent.Type.MouseButtonPress, QEvent.Type.KeyPress}
+            and isinstance(obj, QComboBox)
+        ):
+            _allow_user_combo_popup()
+        if (
             _transient_popups_suppressed()
             and event.type() in {QEvent.Type.Show, QEvent.Type.ShowToParent}
             and isinstance(obj, QWidget)
+            and _is_possible_combo_popup_widget(obj)
         ):
             combo = _combo_popup_owner(obj)
             if combo is not None:
                 combo.hidePopup()
-                obj.hide()
-                QTimer.singleShot(0, _hide_transient_popups)
+                _hide_combo_popup_container(combo)
+                QTimer.singleShot(0, _hide_transient_popups_if_suppressed)
                 return True
         if (
             _transient_popups_suppressed()
@@ -2849,7 +2944,7 @@ class _TransientPopupGuard(QObject):
             and _is_transient_popup_widget(obj)
         ):
             obj.hide()
-            QTimer.singleShot(0, _hide_transient_popups)
+            QTimer.singleShot(0, _hide_transient_popups_if_suppressed)
             return True
         return super().eventFilter(obj, event)
 
@@ -2880,6 +2975,25 @@ def _transient_popups_suppressed() -> bool:
     return time.monotonic() < _TRANSIENT_POPUP_SUPPRESS_UNTIL
 
 
+def _allow_user_combo_popup() -> None:
+    global _TRANSIENT_POPUP_SUPPRESS_UNTIL
+    _TRANSIENT_POPUP_SUPPRESS_UNTIL = 0.0
+
+
+def _is_possible_combo_popup_widget(widget: QWidget) -> bool:
+    class_name = widget.metaObject().className()
+    if class_name == "QComboBoxPrivateContainer":
+        return True
+    if widget.windowType() in {Qt.WindowType.Popup, Qt.WindowType.ToolTip}:
+        return True
+    widget_window = widget.window()
+    return (
+        widget_window is not None
+        and widget_window is not widget
+        and widget_window.windowType() in {Qt.WindowType.Popup, Qt.WindowType.ToolTip}
+    )
+
+
 def _is_transient_popup_widget(widget: QWidget) -> bool:
     if isinstance(widget, (QComboBox, QDialog, QMainWindow)):
         return False
@@ -2887,6 +3001,19 @@ def _is_transient_popup_widget(widget: QWidget) -> bool:
     if class_name in _TRANSIENT_POPUP_CLASS_NAMES:
         return True
     return widget.windowType() in {Qt.WindowType.Popup, Qt.WindowType.ToolTip}
+
+
+def _hide_combo_popup_container(combo: QComboBox) -> None:
+    view = combo.view()
+    if view is None:
+        return
+    view_window = view.window()
+    if (
+        view_window is not None
+        and view_window is not combo.window()
+        and view_window.windowType() in {Qt.WindowType.Popup, Qt.WindowType.ToolTip}
+    ):
+        view_window.hide()
 
 
 def _hide_transient_popups() -> None:
@@ -2897,15 +3024,7 @@ def _hide_transient_popups() -> None:
     for widget in app.allWidgets():
         if isinstance(widget, QComboBox):
             widget.hidePopup()
-            view = widget.view()
-            if view is not None:
-                view.hide()
-                view_window = view.window()
-                if view_window is not None and view_window.windowType() in {
-                    Qt.WindowType.Popup,
-                    Qt.WindowType.ToolTip,
-                }:
-                    view_window.hide()
+            _hide_combo_popup_container(widget)
     popup = app.activePopupWidget()
     if popup is not None:
         popup.hide()
@@ -2919,6 +3038,11 @@ def _hide_transient_popups() -> None:
             widget.hide()
 
 
+def _hide_transient_popups_if_suppressed() -> None:
+    if _transient_popups_suppressed():
+        _hide_transient_popups()
+
+
 def _suppress_transient_popups(duration_ms: int = 1800) -> None:
     global _TRANSIENT_POPUP_SUPPRESS_UNTIL
     _disable_transient_popup_effects()
@@ -2927,7 +3051,7 @@ def _suppress_transient_popups(duration_ms: int = 1800) -> None:
     _hide_transient_popups()
     for delay in (0, 50, 120, 250, 600, 1000, 1400, 1800):
         if delay <= duration_ms:
-            QTimer.singleShot(delay, _hide_transient_popups)
+            QTimer.singleShot(delay, _hide_transient_popups_if_suppressed)
 
 
 def _install_transient_popup_guard() -> None:
@@ -2967,6 +3091,10 @@ class OptimizerWindow(QMainWindow):
         self._loaded_current_snapshot_storage_id = ""
         self._worker_thread: QThread | None = None
         self._worker: ActionEvWorker | None = None
+        self._portfolio_worker_thread: QThread | None = None
+        self._portfolio_worker: PortfolioAuditWorker | None = None
+        self._portfolio_context: dict[str, Any] = {}
+        self._portfolio_started_at: float | None = None
         self._action_process: QProcess | None = None
         self._action_process_cancel_requested = False
         self._action_run_dir: str | None = None
@@ -3024,7 +3152,8 @@ class OptimizerWindow(QMainWindow):
         self.overview_metric_label = QLabel("-")
         self.overview_metric_label.setWordWrap(True)
         self.overview_guide_label = QLabel(
-            "先确认目标模板（位置主属性、套装结构、副属性有效排序），再维护库存与当前装备；确认当前装备后再计算最优搭配或 Action EV。"
+            "先确认目标模板（位置主属性、套装结构、副属性有效排序），再维护库存与当前装备；"
+            "当前最优/Action EV 需要确认当前装备，多代理人调律可直接使用空或部分当前盘面。"
         )
         self.overview_guide_label.setWordWrap(True)
         self.input_audit_label = QLabel("-")
@@ -3077,7 +3206,7 @@ class OptimizerWindow(QMainWindow):
         self.inventory_detail_label.setWordWrap(True)
         self.best_button = QPushButton("计算当前最优搭配（含强化期望）")
         self.action_button = QPushButton("计算调律建议")
-        self.portfolio_button = QPushButton("BOX 决策/多代理人审计")
+        self.portfolio_button = QPushButton("多代理人调律建议")
         self.cancel_action_button = QPushButton("取消计算")
         self.cancel_action_button.setEnabled(False)
         self.horizon_combo = QComboBox()
@@ -3117,7 +3246,7 @@ class OptimizerWindow(QMainWindow):
         self.action_plan_summary_label.setWordWrap(True)
         self.action_plan_branch_table = QTableWidget()
         self.action_plan_loadout_table = QTableWidget()
-        self.portfolio_status_label = QLabel("尚无 BOX 多代理人审计结果。")
+        self.portfolio_status_label = QLabel("尚无多代理人调律建议。")
         self.portfolio_status_label.setWordWrap(True)
         self.portfolio_table = QTableWidget()
         self.action_table_status_label = QLabel("尚无 Action EV 明细。")
@@ -3129,6 +3258,11 @@ class OptimizerWindow(QMainWindow):
         self.log = QTextEdit()
         self.log.setReadOnly(True)
         self.log.setVisible(False)
+        self._log_ui_event(
+            "window_init",
+            games=[f"{game.name} ({game.id})" for game in self.games],
+            runtime_log=str(ui_runtime_log_path()),
+        )
 
         self._build_ui()
         self._connect_signals()
@@ -3329,7 +3463,7 @@ class OptimizerWindow(QMainWindow):
         portfolio_layout = QVBoxLayout(portfolio_page)
         portfolio_layout.addWidget(self.portfolio_status_label)
         portfolio_layout.addWidget(self.portfolio_table)
-        self.result_tabs.addTab(portfolio_page, "BOX 决策")
+        self.result_tabs.addTab(portfolio_page, "多代理人调律")
 
         log_page = QWidget()
         log_layout = QVBoxLayout(log_page)
@@ -3398,11 +3532,18 @@ class OptimizerWindow(QMainWindow):
         for game in self.games:
             self.game_combo.addItem(f"{game.name} ({game.id})", game.id)
         self.game_combo.blockSignals(False)
+        self._log_ui_event(
+            "games_loaded",
+            games=[f"{game.name} ({game.id})" for game in self.games],
+            count=len(self.games),
+        )
         self._reload_game_context()
 
     def _reload_game_context(self) -> None:
+        start = time.monotonic()
         _suppress_transient_popups()
         game = self.selected_game()
+        self._log_ui_event("game_reload_start", game_id=game.id, game_name=game.name)
         selected_character_id = str(self.character_combo.currentData() or "")
         self._reload_target_template_options(selected_character_id)
         self.probabilities = load_probability_models(game.id)
@@ -3412,6 +3553,14 @@ class OptimizerWindow(QMainWindow):
             self.probability_combo.addItem(f"{model.name} ({model.id})", model.id)
         self.probability_combo.blockSignals(False)
         self._reload_character_context()
+        self._log_ui_event(
+            "game_reload_finished",
+            game_id=game.id,
+            character_count=len(self.characters),
+            agent_count=len(self.agents),
+            probability_count=len(self.probabilities),
+            elapsed_seconds=round(time.monotonic() - start, 3),
+        )
 
     def _reload_target_template_options(self, selected_character_id: str | None = None) -> None:
         _suppress_transient_popups()
@@ -3574,7 +3723,9 @@ class OptimizerWindow(QMainWindow):
         if self.character_combo.currentIndex() == index:
             self._refresh_agent_selector_summary()
             self._refresh_overview()
-            self._clear_results("已切换代理人，请确认当前装备。")
+            self._clear_results(
+                "已切换代理人。当前最优/Action EV 需要确认当前装备；多代理人调律可直接使用空或部分当前盘面。"
+            )
             return
         self.character_combo.blockSignals(True)
         try:
@@ -3692,7 +3843,7 @@ class OptimizerWindow(QMainWindow):
                 self._selected_agent_id_by_game[game.id] = matching_agent.agent_id
         storage_character_id = self.selected_storage_character_id()
         fallback_storage_ids = [self.selected_legacy_storage_character_id()]
-        current_pieces = _initial_current_pieces(game, storage_character_id, fallback_storage_ids)
+        current_pieces = _initial_current_pieces(game, storage_character_id)
         inventory_pieces, inventory_source_id = _initial_inventory_with_source(
             game,
             storage_character_id,
@@ -3715,7 +3866,10 @@ class OptimizerWindow(QMainWindow):
         self._refresh_inventory_filters()
         self._refresh_inventory_view()
         self._refresh_agent_selector_summary()
-        self._clear_results("已切换代理人、目标模板或游戏，请先确认当前装备。")
+        self._clear_results(
+            "已切换游戏、代理人或目标模板。当前最优/Action EV 需要确认当前装备；"
+            "多代理人调律可直接使用空或部分当前盘面。"
+        )
         self._update_action_buttons()
 
     def _target_template_changed(self) -> None:
@@ -3743,7 +3897,10 @@ class OptimizerWindow(QMainWindow):
         self._refresh_inventory_filters()
         self._refresh_inventory_view()
         self._refresh_agent_selector_summary()
-        self._clear_results("目标模板已变化：库存和当前装备未改动，请重新确认后计算。")
+        self._clear_results(
+            "目标模板已变化：库存和当前装备未改动；当前最优/Action EV 需要重新确认当前装备，"
+            "多代理人调律可直接使用当前草稿。"
+        )
         self._update_action_buttons()
 
     def selected_game(self) -> GameRules:
@@ -3766,12 +3923,12 @@ class OptimizerWindow(QMainWindow):
     def _select_portfolio_targets_dialog(self) -> tuple[list[PortfolioTarget], PortfolioMode] | None:
         _suppress_transient_popups()
         dialog = QDialog(self)
-        dialog.setWindowTitle("BOX 决策/多代理人审计")
+        dialog.setWindowTitle("多代理人调律建议")
         dialog.resize(860, 680)
         root = QVBoxLayout(dialog)
         note = QLabel(
-            "Phase 1 仅做 H=1 BOX 调律审计：主 EV 只看进入更优 best_loadout 的成型收益；"
-            "建设方向单独审计，不参与排序；不替换现有单角色调律推荐，也不做同队装备互斥精确分配。"
+            "选择要一起考虑的代理人；系统会按这些代理人的 best_loadout 正提升，"
+            "给出 H=1 多代理人调律动作排序。建设方向只作提示，不参与主排序。"
         )
         note.setWordWrap(True)
         note.setObjectName("MutedText")
@@ -3983,11 +4140,14 @@ class OptimizerWindow(QMainWindow):
         self.overview_weakest_label.setText(self._last_weakest_label)
         self.overview_action_label.setText(self._last_recommended_action_summary)
         self.overview_metric_label.setText(self._last_main_metric_summary)
-        guide = "没有结果。先确认目标规则，再维护库存、确认当前装备，然后点击“计算当前最优搭配（含强化期望）”“计算调律建议”或“BOX 决策/多代理人审计”。"
+        guide = (
+            "没有结果。先确认目标规则，再维护库存与当前装备；"
+            "当前最优/Action EV 需要确认当前装备，多代理人调律可直接使用空或部分当前盘面。"
+        )
         if self._results_stale and self._has_calculated_once:
             guide = "装备、库存或概率模型已变化，旧结果不可作为当前结论，请重新计算。"
         elif self._has_visible_results() and not self._results_stale:
-            guide = "结果已更新，可在“计算结果”页查看 Action EV 明细、H=2 方案、搭配结果、BOX 决策和运行日志。"
+            guide = "结果已更新，可在“计算结果”页查看 Action EV 明细、H=2 方案、搭配结果、多代理人调律和运行日志。"
         self.overview_guide_label.setText(guide)
         audit_text = self._input_audit_text()
         self.input_audit_label.setText(audit_text)
@@ -4082,14 +4242,21 @@ class OptimizerWindow(QMainWindow):
         templates = self._current_template_items()
         previous_id = str(self.current_template_combo.currentData() or "")
         target_id = selected_id if selected_id is not None else previous_id
-        if not target_id and templates and not mark_unloaded:
-            target_id = str(templates[-1]["id"])
+        current_storage_id = self.selected_storage_character_id()
+        exact_templates = [
+            item
+            for item in templates
+            if str(item.get("_storage_id") or current_storage_id) == current_storage_id
+        ]
+        show_unloaded = mark_unloaded or (bool(templates) and not exact_templates)
+        if not target_id and exact_templates and not mark_unloaded:
+            target_id = str(exact_templates[-1]["id"])
 
         self.current_template_combo.blockSignals(True)
         try:
             self.current_template_combo.clear()
             if templates:
-                if mark_unloaded:
+                if show_unloaded:
                     self.current_template_combo.addItem("未载入快照", "")
                 for item in templates:
                     count = len(item.get("pieces") or [])
@@ -4100,7 +4267,7 @@ class OptimizerWindow(QMainWindow):
                 index = self.current_template_combo.findData(target_id) if target_id else -1
                 if index >= 0:
                     self.current_template_combo.setCurrentIndex(index)
-                elif mark_unloaded:
+                elif show_unloaded:
                     self.current_template_combo.setCurrentIndex(0)
                 else:
                     self.current_template_combo.setCurrentIndex(self.current_template_combo.count() - 1)
@@ -4174,9 +4341,10 @@ class OptimizerWindow(QMainWindow):
                             lambda _row=-1, target_position=position: self.edit_current_position(target_position)
                         )
                     else:
-                        card = PieceCard(source_row)
+                        card = PieceCard(source_row, show_unequip=True)
                         card.update_piece(pieces[source_row], game, character)
                         card.clicked.connect(self.edit_current_piece)
+                        card.unequip_requested.connect(self.unequip_current_piece)
                     self.current_cards.append(card)
                     self.current_card_grid.addWidget(card, row_index, column_index)
         finally:
@@ -4683,6 +4851,9 @@ class OptimizerWindow(QMainWindow):
         self._refresh_inventory_view()
         self._clear_results("库存已变化。")
 
+    def _log_ui_event(self, event: str, **fields: Any) -> None:
+        append_ui_runtime_log(event, **fields)
+
     def _set_log_visible(self, visible: bool) -> None:
         self.log.setVisible(visible)
         self.log_toggle_button.setText("隐藏运行日志" if visible else "显示运行日志")
@@ -4724,7 +4895,11 @@ class OptimizerWindow(QMainWindow):
         self._refresh_inventory_view()
 
     def _action_busy(self) -> bool:
-        return self._worker is not None or self._action_process is not None
+        return (
+            self._worker is not None
+            or self._action_process is not None
+            or self._portfolio_worker is not None
+        )
 
     def _clear_results(self, message: str = "") -> None:
         self._results_stale = True
@@ -4746,7 +4921,7 @@ class OptimizerWindow(QMainWindow):
         self.action_plan_branch_table.setColumnCount(0)
         self.action_plan_loadout_table.setRowCount(0)
         self.action_plan_loadout_table.setColumnCount(0)
-        self.portfolio_status_label.setText("尚无 BOX 多代理人审计结果。")
+        self.portfolio_status_label.setText("尚无多代理人调律建议。")
         self.portfolio_table.setRowCount(0)
         self.portfolio_table.setColumnCount(0)
         if not self._action_busy():
@@ -4804,6 +4979,38 @@ class OptimizerWindow(QMainWindow):
         self._last_action_progress_seen_at = None
         self._action_progress_current_unit_started_at = None
         self._action_progress_current_unit_key = None
+
+    def _start_portfolio_progress(self) -> None:
+        self._portfolio_started_at = time.monotonic()
+        self.progress_bar.setRange(0, 0)
+        self.progress_bar.setFormat("多代理人调律计算中")
+        self.progress_label.setText("多代理人调律建议正在后台计算。")
+        self.progress_meter_label.setText("已启动 | 主窗口可继续响应")
+        self.progress_detail_label.setText(f"维测日志：{ui_runtime_log_path()}")
+        self._progress_timer.start()
+
+    def _stop_portfolio_progress(self) -> None:
+        self._portfolio_started_at = None
+        self.progress_bar.setRange(0, 100)
+
+    def _render_portfolio_progress(self) -> None:
+        elapsed = 0.0
+        if self._portfolio_started_at is not None:
+            elapsed = time.monotonic() - self._portfolio_started_at
+        target_names = str(self._portfolio_context.get("target_names") or "")
+        target_count = int(self._portfolio_context.get("target_count") or 0)
+        current_count = int(self._portfolio_context.get("current_count") or 0)
+        inventory_count = int(self._portfolio_context.get("inventory_count") or 0)
+        self.progress_label.setText("多代理人调律建议正在后台计算。")
+        self.progress_meter_label.setText(
+            f"代理人 {target_count} | 当前 {current_count} 件 | 库存 {inventory_count} 件 | "
+            f"已耗时 {_format_duration(elapsed)}"
+        )
+        detail = "正在比较多个代理人的调律收益；窗口仍可响应，这不代表程序卡死。"
+        if target_names:
+            detail += f" 目标：{target_names}"
+        detail += f" | 维测日志：{ui_runtime_log_path()}"
+        self.progress_detail_label.setText(detail)
 
     def _raw_action_progress_percent(self, payload: dict[str, Any]) -> int:
         event = str(payload.get("event") or "")
@@ -4996,6 +5203,9 @@ class OptimizerWindow(QMainWindow):
         self.progress_detail_label.setText(" | ".join(detail_parts))
 
     def _refresh_action_progress_clock(self) -> None:
+        if self._portfolio_worker is not None:
+            self._render_portfolio_progress()
+            return
         self._poll_action_process_progress()
         if not self._action_busy():
             self._progress_timer.stop()
@@ -5005,10 +5215,23 @@ class OptimizerWindow(QMainWindow):
 
     def _update_action_buttons(self, busy: bool = False) -> None:
         busy = busy or self._action_busy()
-        enabled = self.current_confirmed_digest is not None and not busy
-        self.best_button.setEnabled(enabled)
-        self.action_button.setEnabled(enabled)
-        self.portfolio_button.setEnabled(enabled)
+        single_character_enabled = self.current_confirmed_digest is not None and not busy
+        portfolio_enabled = not busy
+        self.best_button.setEnabled(single_character_enabled)
+        self.action_button.setEnabled(single_character_enabled)
+        self.portfolio_button.setEnabled(portfolio_enabled)
+        if busy:
+            self.best_button.setToolTip("正在计算中。")
+            self.action_button.setToolTip("正在计算中。")
+            self.portfolio_button.setToolTip("正在计算中。")
+        elif self.current_confirmed_digest is None:
+            self.best_button.setToolTip("单角色当前最优需要先确认当前装备。")
+            self.action_button.setToolTip("单角色 Action EV 需要先确认当前装备。")
+            self.portfolio_button.setToolTip("多代理人调律不要求确认完整当前装备，可使用空或部分当前盘面。")
+        else:
+            self.best_button.setToolTip("用已确认当前装备作为单角色基线计算当前最优搭配。")
+            self.action_button.setToolTip("用已确认当前装备作为单角色基线计算调律建议。")
+            self.portfolio_button.setToolTip("多代理人调律可使用已确认、空或部分当前盘面。")
         self.cancel_action_button.setEnabled(self._action_process is not None)
         has_current_piece = self.current_table.rowCount() > 0
         self.confirm_button.setEnabled(not busy and has_current_piece)
@@ -5051,7 +5274,7 @@ class OptimizerWindow(QMainWindow):
         except Exception as exc:
             warnings.append(str(exc))
         if warnings:
-            self._show_warning("当前装备快照还不能用于 BOX 审计", warnings)
+            self._show_warning("当前装备快照还不能用于多代理人调律", warnings)
             return None
         return pieces
 
@@ -5252,6 +5475,42 @@ class OptimizerWindow(QMainWindow):
         self.current_table.set_context(game, character, pieces)
         self._current_changed()
 
+    def unequip_current_piece(self, source_row: int | None) -> None:
+        current_pieces = self._hidden_table_pieces(self.current_table)
+        if source_row is None or source_row < 0 or source_row >= len(current_pieces):
+            self.progress_label.setText("当前装备行已不存在，请重新选择。")
+            return
+        inventory_pieces = self._hidden_table_pieces(self.inventory_table)
+        unequipped = current_pieces.pop(source_row)
+        new_inventory_row = len(inventory_pieces)
+        inventory_pieces.append(unequipped.model_copy(deep=True))
+        game = self.selected_game()
+        character = self.selected_character()
+        self.current_table.set_context(game, character, current_pieces)
+        self.inventory_table.set_context(game, character, inventory_pieces)
+        self.current_confirmed_digest = None
+        self._selected_inventory_source_row_value = new_inventory_row
+        self._refresh_current_cards()
+        self._refresh_inventory_filters()
+        self._focus_inventory_source_row(new_inventory_row)
+        self._clear_results(
+            "已卸下当前装备。当前最优/Action EV 需要重新确认；多代理人调律可直接使用当前草稿。"
+        )
+        self._update_action_buttons()
+        self._log_ui_event(
+            "current_piece_unequipped",
+            game_id=game.id,
+            character_id=character.id,
+            position=unequipped.position,
+            inventory_row=new_inventory_row,
+            current_count=len(current_pieces),
+            inventory_count=len(inventory_pieces),
+        )
+        self.progress_label.setText(
+            f"已卸下 {game.position_name(unequipped.position)} 当前装备，放回库存 #{new_inventory_row + 1}。"
+            + self._inventory_filter_hidden_suffix(new_inventory_row, "卸下的当前装备")
+        )
+
     def add_inventory(self) -> None:
         game = self.selected_game()
         character = self.selected_character()
@@ -5412,14 +5671,20 @@ class OptimizerWindow(QMainWindow):
             self._focus_inventory_source_row(returned_inventory_row)
         else:
             self._refresh_inventory_view()
-        self._clear_results("已完成当前装备和库存互换，请重新确认当前装备。")
+        self._clear_results(
+            "已完成当前装备和库存互换。当前最优/Action EV 需要重新确认；多代理人调律可直接使用当前草稿。"
+        )
         self._update_action_buttons()
         returned_current_suffix = (
             self._inventory_filter_hidden_suffix(source_row, "换回库存的旧当前件")
             if current_index is not None
             else ""
         )
-        returned_label = f"库存 #{source_row + 1} 现在是换下来的旧当前件" if current_index is not None else ""
+        returned_label = (
+            f"原当前件已放回库存；库存 #{source_row + 1} 现在是换下来的旧当前件"
+            if current_index is not None
+            else ""
+        )
         self.progress_label.setText(
             f"已装备库存 #{source_row + 1} 到 {game.position_name(target_piece.position)}"
             + (f"；{returned_label}。" if returned_label else "；该槽位之前为空。")
@@ -5748,57 +6013,175 @@ class OptimizerWindow(QMainWindow):
         self._refresh_overview()
 
     def run_portfolio_audit(self) -> None:
+        self._log_ui_event(
+            "portfolio_audit_clicked",
+            game_id=self.selected_game().id,
+            character_id=self.selected_character().id,
+            current_confirmed=self.current_confirmed_digest is not None,
+        )
         current_pieces = self._collect_current_partial_or_warn()
         if current_pieces is None:
+            self._log_ui_event("portfolio_current_collect_failed")
             return
         inventory_pieces = self._collect_inventory_or_warn()
         if inventory_pieces is None:
+            self._log_ui_event("portfolio_inventory_collect_failed", current_count=len(current_pieces))
             return
+        self._log_ui_event(
+            "portfolio_target_dialog_open",
+            current_count=len(current_pieces),
+            inventory_count=len(inventory_pieces),
+            available_agents=len(self.agents),
+        )
         selection = self._select_portfolio_targets_dialog()
         if selection is None:
-            self.progress_label.setText("已取消 BOX 多代理人审计。")
+            self.progress_label.setText("已取消多代理人调律建议。")
+            self._log_ui_event("portfolio_target_dialog_cancelled")
             return
         targets, mode = selection
         if not targets:
-            QMessageBox.information(self, "未选择代理人", "请至少选择一个代理人参与 BOX 审计。")
-            self.progress_label.setText("BOX 审计未运行：未选择代理人。")
+            QMessageBox.information(self, "未选择代理人", "请至少选择一个代理人参与多代理人调律。")
+            self.progress_label.setText("多代理人调律未运行：未选择代理人。")
+            self._log_ui_event("portfolio_target_dialog_empty")
             return
-        try:
-            rows = portfolio_action_rows(
-                self.selected_game(),
-                self.selected_probability_model(),
-                targets,
-                current_pieces,
-                inventory_pieces,
-                mode=mode,
-                horizon=1,
-                action_scope="tuning",
-            )
-        except Exception as exc:
-            self.progress_label.setText("BOX 多代理人审计失败。")
-            self.log.append(f"BOX Portfolio EV failed: {type(exc).__name__}: {exc}")
-            self.log_toggle_button.setChecked(True)
-            self.result_tabs.setCurrentIndex(4)
-            return
-
-        display_rows = [row.to_display_row() for row in rows]
-        self._fill_table(self.portfolio_table, display_rows)
+        game = self.selected_game()
+        probability_model = self.selected_probability_model()
         target_names = "、".join(target.name for target in targets)
-        self.portfolio_status_label.setText(
-            f"BOX H=1 审计完成：{len(rows)} 个 action；模式={mode.label}；"
-            f"目标代理人={target_names}。\n"
-            "说明：Portfolio EV 只统计进入更优 best_loadout 的成型收益；"
-            "建设审计单独展示，不参与主 EV 排序；"
-            "本表为 BOX 调律审计，不混入库存强化；"
-            "Phase 1 不做 H=2，不做同队装备互斥精确分配，不替换单角色推荐。"
+        self._portfolio_context = {
+            "game_id": game.id,
+            "probability_model_id": probability_model.id,
+            "mode": mode,
+            "mode_value": mode.value,
+            "target_names": target_names,
+            "target_count": len(targets),
+            "current_count": len(current_pieces),
+            "inventory_count": len(inventory_pieces),
+            "started_at": time.monotonic(),
+        }
+        self._log_ui_event(
+            "portfolio_compute_start",
+            game_id=game.id,
+            probability_model_id=probability_model.id,
+            mode=mode.value,
+            current_count=len(current_pieces),
+            inventory_count=len(inventory_pieces),
+            target_count=len(targets),
+            targets=[
+                {
+                    "agent_id": target.agent_id,
+                    "name": target.name,
+                    "character_id": target.character.id,
+                    "weight": target.weight,
+                }
+                for target in targets
+            ],
         )
-        self.progress_label.setText("BOX 多代理人审计已计算完成。")
         self.log.append(
-            f"BOX Portfolio EV 完成：mode={mode.value}；targets={target_names}；rows={len(rows)}。"
+            f"多代理人调律开始：mode={mode.value}；targets={target_names}；"
+            f"current={len(current_pieces)}；inventory={len(inventory_pieces)}；"
+            f"维测日志：{ui_runtime_log_path()}"
         )
+        self._update_action_buttons(busy=True)
+        self._start_portfolio_progress()
+        self.result_tabs.setCurrentIndex(3)
+        self.tabs.setCurrentIndex(3)
+        self._portfolio_worker_thread = QThread(self)
+        self._portfolio_worker = PortfolioAuditWorker(
+            game,
+            probability_model,
+            targets,
+            current_pieces,
+            inventory_pieces,
+            mode,
+        )
+        self._portfolio_worker.moveToThread(self._portfolio_worker_thread)
+        self._portfolio_worker_thread.started.connect(self._portfolio_worker.run)
+        self._portfolio_worker.finished.connect(self._on_portfolio_audit_finished)
+        self._portfolio_worker.failed.connect(self._on_portfolio_audit_failed)
+        self._portfolio_worker.finished.connect(self._portfolio_worker_thread.quit)
+        self._portfolio_worker.failed.connect(self._portfolio_worker_thread.quit)
+        self._portfolio_worker_thread.finished.connect(self._portfolio_worker.deleteLater)
+        self._portfolio_worker_thread.finished.connect(self._portfolio_worker_thread.deleteLater)
+        self._portfolio_worker_thread.start()
+
+    def _on_portfolio_audit_finished(self, rows: list[Any]) -> None:
+        self._stop_portfolio_progress()
+        self._portfolio_worker = None
+        self._portfolio_worker_thread = None
+        self.progress_bar.setValue(100)
+        self.progress_bar.setFormat("多代理人调律 100%")
+
+        display_rows = [
+            row.to_recommendation_row() if hasattr(row, "to_recommendation_row") else row.to_display_row()
+            for row in rows
+        ]
+        self._fill_table(self.portfolio_table, display_rows)
+        mode = self._portfolio_context.get("mode")
+        mode_label = mode.label if isinstance(mode, PortfolioMode) else str(self._portfolio_context.get("mode_value") or "-")
+        mode_value = mode.value if isinstance(mode, PortfolioMode) else str(self._portfolio_context.get("mode_value") or "-")
+        target_names = str(self._portfolio_context.get("target_names") or "")
+        started_at = self._portfolio_context.get("started_at")
+        elapsed = time.monotonic() - float(started_at) if isinstance(started_at, float) else 0.0
+        top_row = rows[0] if rows else None
+        self.portfolio_status_label.setText(
+            f"多代理人调律完成：{len(rows)} 个动作；模式={mode_label}；目标代理人={target_names}。\n"
+            "排序只看主 EV：outcome 加入代理人盘池后 best_loadout_value 的正提升；"
+            "本表只比较随机位置、固定位置、固定主属性；建设提示不参与排序。"
+        )
+        if top_row is not None and hasattr(top_row, "action_label"):
+            top_ev = float(getattr(top_row, "portfolio_ev", 0.0) or 0.0)
+            top_prob = float(getattr(top_row, "useful_probability", 0.0) or 0.0)
+            top_beneficiary = str(getattr(top_row, "best_beneficiary_agent", "") or "-")
+            self.result_recommend_title.setText(f"多代理人调律推荐：{top_row.action_label}")
+            self.result_recommend_detail.setText(
+                f"主EV {top_ev:.3f}；成型收益概率 {top_prob:.1%}；主要受益人 {top_beneficiary}。"
+            )
+            self._set_result_recommend_icon(str(getattr(top_row, "target_set", "") or "") or None)
+        else:
+            self.result_recommend_title.setText("多代理人调律暂无可排序动作")
+            self.result_recommend_detail.setText("请检查代理人选择、目标模板、当前装备与库存。")
+        self.progress_label.setText("多代理人调律建议已计算完成。")
+        self.log.append(
+            f"多代理人调律完成：mode={mode_value}；targets={target_names}；"
+            f"rows={len(rows)}；耗时 {_format_duration(elapsed)}。"
+        )
+        self._log_ui_event(
+            "portfolio_compute_finished",
+            mode=mode_value,
+            target_count=int(self._portfolio_context.get("target_count") or 0),
+            rows=len(rows),
+            elapsed_seconds=round(elapsed, 3),
+        )
+        self._portfolio_context = {}
         self.result_tabs.setCurrentIndex(3)
         self.tabs.setCurrentIndex(3)
         self._refresh_overview()
+        self._update_action_buttons()
+
+    def _on_portfolio_audit_failed(self, traceback_text: str) -> None:
+        self._stop_portfolio_progress()
+        self._portfolio_worker = None
+        self._portfolio_worker_thread = None
+        started_at = self._portfolio_context.get("started_at")
+        elapsed = time.monotonic() - float(started_at) if isinstance(started_at, float) else 0.0
+        self.progress_bar.setValue(0)
+        self.progress_bar.setFormat("多代理人调律失败")
+        self.progress_label.setText("多代理人调律建议计算失败。")
+        self.progress_meter_label.setText(f"计算失败 | 已耗时 {_format_duration(elapsed)}")
+        self.progress_detail_label.setText(f"错误详情已写入运行日志；维测日志：{ui_runtime_log_path()}")
+        self.log.append("多代理人调律失败:\n" + traceback_text)
+        self.log_toggle_button.setChecked(True)
+        self._log_ui_event(
+            "portfolio_compute_failed",
+            elapsed_seconds=round(elapsed, 3),
+            traceback=traceback_text,
+        )
+        self._portfolio_context = {}
+        self.result_tabs.setCurrentIndex(4)
+        self.tabs.setCurrentIndex(3)
+        self._refresh_overview()
+        self._update_action_buttons()
+        QMessageBox.critical(self, "多代理人调律失败", traceback_text)
 
     def run_action_ev(self) -> None:
         current_pieces = self._collect_current_or_warn()

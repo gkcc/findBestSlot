@@ -5,6 +5,7 @@ __all__ = [
     "agents",
     "candidate_ev",
     "conclusions",
+    "desktop_ui_smoke",
     "exporting",
     "game_rules",
     "launcher",
