@@ -2,7 +2,7 @@
 
 ## Summary
 
-目标是在不改变 Action EV 计算公式、推荐排序、默认 engine、horizon 行为的前提下，新增“多代理人上下文 + 每代理人独立当前装备 + 游戏全局库存”的数据层。Agent 只负责展示与身份，CharacterPreset 继续负责计算模板、词条优先级和套装方案。
+目标是在不改变 Action EV 计算公式、推荐排序、默认 engine、horizon 行为的前提下，新增“多代理人上下文 + 每代理人独立当前装备 + 游戏全局库存”的数据层。Agent 只负责展示与身份，CharacterPreset 继续负责目标模板：每个位置期望主属性、套装结构、副属性有效排序和计算阈值。
 
 第一版只落数据结构、读写 helper、旧数据兼容和 dry-run/apply 迁移报告；不实现多代理人 UI，也不自动迁移或删除旧文件。
 
@@ -30,7 +30,7 @@ agents:
 规则：
 
 - `agent_id` 是代理人身份主键。
-- `character_preset_id` 只做“代理人 -> 计算模板”的引用，不把 Agent 与 CharacterPreset 合并。
+- `character_preset_id` 只做“代理人 -> 目标模板”的引用，不把 Agent 与 CharacterPreset 合并。
 - 图片只允许本地路径；不联网下载，不内置来源不明资源。
 - metadata 缺失时生成 fallback agent：`agent_id=fallback_{character_preset_id}`，名称取 `CharacterPreset.name`，稀有度/属性/类型显示 `未知`，图片为空并由 UI 使用默认占位。
 
@@ -146,7 +146,7 @@ loadouts:
 - exact signature 重复：dry-run 报告建议合并，apply 默认全部保留，除非用户选择去重。
 - unordered signature 重复：只提示，不默认去重。
 - metadata 缺失、图片缺失：不阻断，使用 fallback。
-- CharacterPreset 缺失：该 Agent 可展示，但计算按钮禁用并提示缺模板。
+- CharacterPreset/目标模板缺失：该 Agent 可展示，但计算按钮禁用并提示缺少位置主属性、套装结构和副属性有效排序规则。
 
 ## UI 阶段拆分
 
@@ -185,7 +185,7 @@ loadouts:
 - 不自动删除旧库存/旧当前装备文件。
 - 不默认去重。
 - 不做云同步、多设备同步。
-- 不做多套计算模板自动选择；一个 Agent 第一版只引用一个默认 CharacterPreset。
+- 不做多套目标模板自动选择；一个 Agent 第一版只引用一个默认 CharacterPreset。
 - 不做装备强化历史、来源追踪的复杂编辑。
 
 ## 测试清单

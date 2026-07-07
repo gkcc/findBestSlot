@@ -52,9 +52,17 @@ def fixed_substat_note(row: StrategyRow | None) -> str:
         for stat in row.fixed_substats
     ]
     return "、".join(
-        f"{detail['stat']}（{detail['priority']}）"
+        f"{detail['stat']}（{_fixed_substat_display_label(detail)}）"
         for detail in details
     )
+
+
+def _fixed_substat_display_label(detail: dict[str, Any]) -> str:
+    priority = str(detail.get("priority") or "")
+    rank = detail.get("priority_rank")
+    if priority in {"无效", "不可用"}:
+        return "非有效"
+    return f"有效#{rank}" if rank else "有效"
 
 
 def _expected(cost_per_attempt: float, probability: float) -> float:
@@ -434,17 +442,11 @@ def _preferred_main_summary(game: GameRules, character: CharacterPreset) -> str:
 
 
 def _substat_weight_summary(character: CharacterPreset) -> str:
-    priority = character.substat_priority
-    core_stats = priority.core if priority else character.priority_stats()
-    usable_stats = priority.usable if priority else []
-    if not core_stats and not usable_stats:
-        return "未配置"
-    parts = []
-    if core_stats:
-        parts.append(f"核心：{' > '.join(core_stats)}")
-    if usable_stats:
-        parts.append(f"可用：{' > '.join(usable_stats)}")
-    return "；".join(parts)
+    tiers = character.priority_tiers()
+    if tiers:
+        return "有效排序：" + " > ".join(" = ".join(tier) for tier in tiers)
+    stats = character.priority_stats()
+    return "有效排序：" + " > ".join(stats) if stats else "未配置"
 
 
 def _stage_label(item: dict[str, Any]) -> str:

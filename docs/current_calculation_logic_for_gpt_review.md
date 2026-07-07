@@ -8,7 +8,7 @@
 
 - 当前身上 6 件里哪件最弱。
 - 新胚子是否值得继续强化。
-- 在当前套装方案约束下，随机位置、固定位置、固定主属性、固定副属性、强化库存胚子这些 action 的理论期望收益。
+- 在当前套装方案约束下，随机位置、固定位置、固定主属性、固定副属性、库存升级机会这些 action 的理论期望收益。
 - horizon=2 时，本次 action 后再接一次最优 action 的期权价值。
 
 所有 Action EV 当前都是完整概率分布枚举的理论期望，不使用 Monte Carlo 抽样。
@@ -27,13 +27,15 @@
 - 强化规则，例如最高等级、强化事件等级、初始 3 词条何时补第 4 条。
 - 主属性概率。
 
-### 角色目标 `CharacterPreset`
+### 目标模板 `CharacterPreset`
+
+`CharacterPreset` 在当前版本表示“计算目标模板”，不是装备模板，也不保存任何装备。代理人只引用它作为计算目标来源。
 
 包含：
 
 - 当前目标套装方案，例如 4+2、2+2+2 或不限套装。
 - 各位置偏好的主属性。
-- 副属性优先级向量：`core` 和 `usable` 是有序列表，不再要求用户维护小数权重。
+- 副属性有效排序：用户侧只维护按 rank 排序的有效副属性，允许同 rank 并列，例如 `A = B > C`；内部仍用 `core/usable` 字段兼容旧配置和质量向量构造。
 - 评分线和评级线。
 
 ### 概率模型 `ProbabilityModel`
@@ -48,7 +50,7 @@
 
 库存由两部分合并：
 
-- “方案模板”工作区的身上 6 件。
+- “当前装备快照/当前装备”工作区的身上 6 件。
 - “库存”工作区“背包库存”里维护的未装备成品/胚子。
 
 勾选“把当前候选胚子纳入库存 EV”时，候选胚子也会作为库存参与计算。
@@ -57,17 +59,16 @@
 
 单件评分由 `score_piece`、`substat_quality_vector` 和 `score_quality_sort_key` 处理。
 
-当前质量向量不是单一小数分，而是按优先级展开的元组。以配置了 `core` 和 `usable` 的角色为例，单件副属性向量大致为：
+当前质量向量不是单一小数分，而是按有效排序展开的元组。用户界面不再区分“核心/可用”两档；内部为了兼容旧配置，仍可能从 `core/usable` 展开成 rank/tier。单件副属性向量大致为：
 
 ```text
 (
-  core_total,
-  core_stat_1_count,
-  core_stat_2_count,
+  effective_total,
+  rank_1_stat_1_count,
+  rank_1_stat_2_count,
   ...,
-  usable_total,
-  usable_stat_1_count,
-  usable_stat_2_count,
+  rank_2_stat_1_count,
+  rank_2_stat_2_count,
   ...
 )
 ```
@@ -85,27 +86,31 @@
 
 其中：
 
-- `main_hits` 是主属性命中角色目标的位置数量。
+- `main_hits` 是主属性命中目标模板要求的位置数量。
 - `summed_quality_vector` 是 6 件装备的优先级向量逐位相加。
 - `effective_rolls` 是有效词条总数。
 - `quality_score` 是质量分总和。
 
-比较方式是 Python 元组字典序比较，因此前面的维度优先级更高。也就是说，主属性命中、核心词条合计、核心词条内部顺位等，会按向量位置依次决定排序。
+比较方式是 Python 元组字典序比较，因此前面的维度优先级更高。也就是说，主属性命中、有效词条合计、有效词条内部 rank/tier 顺位等，会按向量位置依次决定排序。
 
 ## 4. 当前最优配装 `best_loadout`
 
 核心函数：
 
 - `_normalise_inventory_rows`
-- `_candidate_combos`
+- `_loadout_options_by_position`
+- `_best_loadout_dp`
 - `_set_plan_satisfied`
-- `_best_combo_rows`
+- `_best_combo_rows`（仅 `return_combo=True` 的组合回溯路径）
+- `_best_combo_value`（value-only DP 路径）
 - `_cached_best_combo_value`
+
+`_candidate_combos` 目前只保留为兼容/测试参考入口，不再执行完整笛卡尔积枚举。
 
 流程：
 
 1. 把所有 `GearPiece` 转成库存 row，每个 row 包含位置、套装、主属性是否命中、有效词条、质量分、质量向量。
-2. 库存归一化：未满级胚子默认只作为“强化库存胚子”action source，不进入 `Best(I)`；已满级成品按 `(位置, 套装)` 保留贡献最高的一件。
+2. 库存归一化：未满级胚子默认只作为“库存升级机会”action source，不进入 `Best(I)`；已满级成品按 `(位置, 套装)` 保留贡献最高的一件。
 3. 如果某个位置有 locked 当前件，该位置的 loadout options 只保留 locked 件，背包/新 outcome 不能替换它。
 4. best_loadout 现在用精确 DP，不再生成完整笛卡尔积。DP 每一步处理一个位置，每个状态记录套装 count-state 下的最优 value_vector。
 5. 最终优先选择满足当前套装方案的状态，例如 4+2 或 2+2+2；如果没有任何状态满足套装方案，则退回所有状态中的最优值，保持旧 fallback 语义。
@@ -122,7 +127,7 @@ action 用 `ActionSpec` 表示，主要有：
 - `固定位置`
 - `固定位置 + 固定主属性`
 - `固定位置 + 固定主属性 + 固定副属性`
-- `强化库存胚子`
+- `库存升级机会`（非调律：升级已有库存；内部策略 key 为 `强化库存胚子`）
 
 顶层策略表 `position_strategy_efficiency_rows` 当前使用 `_generation_action_specs` 枚举较完整的 action 空间，再附加 `_upgrade_action_specs`。
 
@@ -166,6 +171,7 @@ horizon 递归内部使用 `_lookahead_action_specs`。当前 hot path 使用 `_
 ```
 
 固定位置时位置概率为 1；随机位置时均分到所有位置。固定主属性时主属性概率为 1；不固定时使用游戏配置的主属性概率。固定副属性通过 `required_substats` 约束初始副属性状态。
+实现上，H=1/H=2 顶层“随机位置”不会再单独先展开一个随机位置大分布。`position_strategy_efficiency_rows` 会先计算同套装、同锁定条件下的固定位置分支，再把随机位置 action value 按 `_action_position_items` 的位置概率加权汇总；ZZZ 六个槽位时就是 1..6 各 `1/6`。随后再和当前 `Best(I)` 比较得到展示用的有效提升/质量提升。因此审计时应把随机位置理解为固定位置分支的概率混合，而不是唯一代表盘面，也不是独立于固定位置的另一套算法。
 
 新生成的盘当前按“最终满级成品”的质量向量聚合，也就是说候选分布聚合到：
 
@@ -175,7 +181,7 @@ horizon 递归内部使用 `_lookahead_action_specs`。当前 hot path 使用 `_
 
 然后生成库存 row。这样可以减少同分状态数量，因为 best_loadout 只关心位置、套装、主属性命中、质量向量、有效词条和质量分，不关心具体副属性名称之外的完整文本。
 
-## 8. 强化库存胚子分布
+## 8. 库存升级机会分布
 
 核心函数：
 
@@ -183,9 +189,11 @@ horizon 递归内部使用 `_lookahead_action_specs`。当前 hot path 使用 `_
 - `_upgrade_candidate_row_distribution`
 - `_advance_existing_roll_states`
 
-如果库存里存在未满级 `GearPiece`，会生成“强化库存胚子”action。它从当前副属性 roll 状态出发，只枚举剩余强化事件。
+如果库存里存在未满级 `GearPiece`，会生成“库存升级机会”action（UI 显示为“非调律：升级已有库存”，内部策略 key 为 `强化库存胚子`）。它从当前副属性 roll 状态出发，只枚举剩余强化事件。
 
-与新盘不同，强化库存胚子会保留 `_inventory_id`，结果通过 `_replace_inventory_row` 替换原库存项，而不是新增一件。
+星铁初始 3 词条、且还没到补第 4 副属性节点的遗器可以带 `revealed_next_substat`。该能力由游戏配置 `enhancement.revealed_next_substat_supported` 控制，当前只在 HSR 打开；不支持的游戏即使手写该字段，也会警告或校验失败，并按未知随机第 4 词条处理。当该字段合法时，补第 4 副属性事件不再使用副属性池随机抽取，而是退化为该预告词条概率 1 的条件分布；后续 roll 仍按现有强化概率展开。候选胚子评估、库存升级机会和 Best(I) 中未满级装备的满级强化期望都使用同一口径。
+
+与新盘不同，库存升级机会会保留 `_inventory_id`，结果通过 `_replace_inventory_row` 替换原库存项，而不是新增一件。它不消耗母盘，不参与主调律推荐排序；当前工具也不把强化材料折算进 Action EV 排序。
 
 ## 9. Action EV 与 horizon DP
 
@@ -222,7 +230,7 @@ V_h(I) = max(Best(I), max_a EV_h(I, a))
 - `immediate_EV`：horizon=1 的收益。
 - `horizon_EV`：用户选择 horizon 的收益。
 - `option_EV`：horizon 收益相对 immediate 收益的正向差。
-- 质量/母盘、有效/母盘、排序向量/母盘。
+- 桌面主口径展示有效/母盘和比较口径；质量/母盘和排序向量/母盘保留为审计字段，用于解释底层排序与 tie-break。
 
 固定位置类 action 会与同套装随机位置 action 的单位母盘效率比较；只有排序向量效率优于随机时，界面才提示“优于随机，才建议固定”。
 
@@ -267,24 +275,24 @@ UI 为避免误以为卡死：
 
 以下问题适合让 GPT 重点审：
 
-1. `best_loadout` 是否能从“按位置笛卡尔积 + 套装过滤”改成动态规划或分支定界。
+1. `best_loadout` 已经是 count-state DP；是否还能在同一 count-state 内做 Pareto frontier 压缩，减少被严格支配的 value_vector。
 2. `_set_plan_frontier_action_specs` 的 4+2 / 2+2+2 剪枝是否完备，是否会剪掉某些 horizon>2 下有价值的迁移路径。
-3. 顶层 `position_strategy_efficiency_rows` 是否也应该使用 frontier action，而不是完整 `_generation_action_specs`。
+3. 顶层 `position_strategy_efficiency_rows` 是否也应该使用已证明安全的 frontier action，而不是完整 `_generation_action_specs`。
 4. 新盘分布按 `(quality_score, quality_vector)` 聚合是否足够安全；在什么情况下需要保留更多状态信息。
 5. horizon DP 当前用 `V_h(I)=max(Best(I), max_a EV_h(I,a))`，是否符合“每一步都选择最优后续 action”的决策模型。
 6. 对 `EV_h(I,a)` 是否可以在 action 层做上界估计，提前跳过必然不可能超过当前最优的 action。
 7. 库存归一化按 `(位置, 套装)` 只保留满级成品最高贡献一件，是否在所有套装迁移场景下都安全。
-8. 固定副属性 action 当前只锁前 1/2 个有效副属性，是否应根据角色优先级、主属性排除、资源预算动态生成更少/更多组合。
+8. 固定副属性 action 当前只锁前 1/2 个有效副属性，是否应根据目标模板的副属性有效排序、主属性排除、资源预算动态生成更少/更多组合。
 9. `target_set_probability * len(set_options)` 合并可接受套装概率并截断到 1.0 的方式是否合理，尤其是可选 2 件套组合很多时。
 10. 是否能把 `horizon=2` 的递归期望改写成矩阵/状态转移或批量向量化，减少 Python 层循环。
 11. 是否可以为 `_aggregate_inventory_outcomes` 设计更粗但安全的 dominance pruning，例如同位置同套装下被严格支配的库存状态直接删除。
-12. 当前元组字典序排序是否符合玩家直觉；是否需要将主属性命中、核心词条、可用词条、质量分的优先级改成可解释的多目标 Pareto 比较。
+12. 当前元组字典序排序是否符合玩家直觉；是否需要将主属性命中、有效词条总量、有效词条 rank/tier、质量分的优先级改成可解释的多目标 Pareto 比较。
 
 ## 13. 需要外部 GPT 重点判断的正确性问题
 
 请重点检查：
 
-- 当前 frontier 剪枝是否一定不漏掉有正期望的 horizon=2 最优路径。
+- 当前 frontier 剪枝是否一定不漏掉有有效提升的 horizon=2 最优路径。
 - 库存归一化“同位置同套装只保留最高贡献成品”是否在 4+2 迁移中严格安全。
 - 新盘分布聚合到质量向量是否会影响后续 action 选择。
 - `option_EV` 用 horizon 收益减 immediate 收益的正向差，是否是最直观的展示口径。

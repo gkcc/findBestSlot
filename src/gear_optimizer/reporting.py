@@ -61,15 +61,11 @@ def _markdown_table(headers: list[str], rows: list[list[str]]) -> list[str]:
 
 
 def _effective_substat_priority_text(character: CharacterPreset) -> str:
-    priority = character.substat_priority
-    core = list(priority.core) if priority else character.priority_stats()
-    usable = list(priority.usable) if priority else []
-    parts = []
-    if core:
-        parts.append(f"核心：{' > '.join(core)}")
-    if usable:
-        parts.append(f"可用：{' > '.join(usable)}")
-    return "；".join(parts) if parts else "未配置"
+    tiers = character.priority_tiers()
+    if tiers:
+        return "有效排序：" + " > ".join(" = ".join(tier) for tier in tiers)
+    stats = character.priority_stats()
+    return "有效排序：" + " > ".join(stats) if stats else "未配置"
 
 
 def _strategy_conclusion_markdown(
@@ -354,8 +350,9 @@ def _action_ev_guide_text(action_ev_rows: list[dict[str, float | str]]) -> tuple
         target_parts.append(substats)
     target = " ".join(target_parts)
     reason = (
-        f"排序向量/母盘 {row.get('排序向量/母盘', '-')}，有效/母盘 {row['有效/母盘']}；"
-        f"{row['相对随机']}。"
+        f"有效/母盘 {row['有效/母盘']}；"
+        f"{row.get('比较口径', row.get('相对随机', '-'))}。"
+        f"审计排序向量/母盘 {row.get('排序向量/母盘', '-')}。"
     )
     return f"{action}：{target}", reason
 
@@ -454,6 +451,17 @@ def _probability_model_assumption_markdown(model: ProbabilityModel | None) -> li
     )
 
 
+def _effective_gain_label(row: dict[str, float | str]) -> str:
+    try:
+        effective = float(row.get("有效提升") or 0.0)
+    except (TypeError, ValueError):
+        return "-"
+    if abs(effective) <= 0.0005:
+        return "无有效提升"
+    sign = "+" if effective > 0 else ""
+    return f"有效提升 {sign}{effective:g}"
+
+
 def _position_strategy_efficiency_markdown(
     game: GameRules,
     character: CharacterPreset,
@@ -463,9 +471,19 @@ def _position_strategy_efficiency_markdown(
     if probability_model is None:
         return ["暂无概率模型，无法计算随机/固定位置收益。"]
     rows = position_strategy_efficiency_rows(game, character, probability_model, analysis)
+
+    def action_type(row: dict[str, float | str]) -> str:
+        return str(row.get("动作类型") or ("库存升级机会" if row.get("策略") == "强化库存胚子" else "调律母盘"))
+
+    def action_name(row: dict[str, float | str]) -> str:
+        if row.get("策略") == "强化库存胚子":
+            return "非调律：升级已有库存"
+        return str(row.get("策略") or "-")
+
     return _markdown_table(
         [
-            "策略",
+            "动作类型",
+            "调律策略/动作",
             "目标套装",
             "位置",
             "主属性",
@@ -474,27 +492,30 @@ def _position_strategy_efficiency_markdown(
             "immediate_EV",
             "option_EV",
             "horizon_EV",
-            "期望提升",
+            "有效期望",
+            "审计期望向量",
             "方案类型",
             "第二步策略摘要",
             "代表路径",
             "代表分支搭配",
             "互补位",
             "套装约束",
-            "质量提升",
+            "审计质量提升",
             "有效提升",
             "母盘/次",
             "校音器/次",
             "共鸣核/次",
             "高级素材/次",
-            "质量/母盘",
+            "审计质量/母盘",
             "有效/母盘",
-            "排序向量/母盘",
+            "审计排序向量/母盘",
+            "比较口径",
             "相对随机",
         ],
         [
             [
-                row["策略"],
+                action_type(row),
+                action_name(row),
                 row["目标套装"],
                 row["位置"],
                 row.get("主属性", "不固定"),
@@ -503,6 +524,7 @@ def _position_strategy_efficiency_markdown(
                 row.get("immediate_EV", row["期望提升"]),
                 row.get("option_EV", "0"),
                 row.get("horizon_EV", row["期望提升"]),
+                _effective_gain_label(row),
                 row["期望提升"],
                 row.get("方案类型", "-"),
                 row.get("第二步策略摘要", "-"),
@@ -519,6 +541,7 @@ def _position_strategy_efficiency_markdown(
                 row["质量/母盘"],
                 row["有效/母盘"],
                 row["排序向量/母盘"],
+                row.get("比较口径", row.get("相对随机", "-")),
                 row["相对随机"],
             ]
             for row in rows
@@ -730,10 +753,10 @@ def _substat_detail_label(details: list[dict]) -> str:
         if detail["priority"] == "无效":
             values.append(f"{detail['stat']}({detail['priority']})")
         else:
+            rank_label = f"#{detail['priority_rank']}" if detail.get("priority_rank") else ""
             values.append(
                 f"{detail['stat']} {detail['total_rolls']:g}次"
-                f"·{detail['priority']}"
-                f"{'#' + str(detail['priority_rank']) if detail.get('priority_rank') else ''}"
+                f"·有效{rank_label}"
             )
     return "；".join(values) if values else "-"
 
@@ -825,6 +848,33 @@ def _candidate_event_markdown(result: CandidateEvaluation) -> list[str]:
     )
 
 
+def _candidate_revealed_next_label(game: GameRules, candidate: CandidatePiece) -> str:
+    if not candidate.revealed_next_substat:
+        return "-"
+    if not game.enhancement.revealed_next_substat_supported:
+        return f"{candidate.revealed_next_substat}（当前游戏不支持，已按未知随机第 4 词条处理）"
+    line_count = max(len(candidate.substats), candidate.initial_substat_count)
+    if (
+        candidate.initial_substat_count == 3
+        and candidate.level >= game.enhancement.initial_add_level
+        and line_count < 4
+    ):
+        line_count = 4
+    if not (
+        candidate.initial_substat_count == 3
+        and candidate.level < game.enhancement.initial_add_level
+        and line_count < 4
+    ):
+        return f"{candidate.revealed_next_substat}（当前状态不适用，已忽略）"
+    available_for_add = game.available_substats(
+        candidate.main_stat,
+        [line.stat for line in candidate.substats],
+    )
+    if candidate.revealed_next_substat not in available_for_add:
+        return f"{candidate.revealed_next_substat}（不适用于当前主属性或已有副属性，已忽略）"
+    return candidate.revealed_next_substat
+
+
 def _candidate_distribution_markdown(result: CandidateEvaluation) -> list[str]:
     rows = []
     for point in result.distribution:
@@ -837,6 +887,16 @@ def _candidate_weighted_distribution_markdown(result: CandidateEvaluation) -> li
     for point in result.weighted_distribution:
         rows.append([f"{point.weighted_score:g}", f"{point.probability:.1%}"])
     return _markdown_table(["最终质量分", "概率"], rows)
+
+
+def _input_audit_markdown(input_audit_text: str | None) -> list[str]:
+    text = (input_audit_text or "").strip()
+    if not text:
+        return []
+    lines = ["## 本次输入口径", ""]
+    lines.extend(f"- {line}" for line in text.splitlines() if line.strip())
+    lines.append("")
+    return lines
 
 
 def candidate_analysis_report_markdown(
@@ -873,6 +933,7 @@ def candidate_analysis_report_markdown(
         f"- 主属性：{candidate.main_stat}",
         f"- 当前等级：+{candidate.level}",
         f"- 初始词条数：{candidate.initial_substat_count}",
+        f"- 预告第 4 副属性：{_candidate_revealed_next_label(game, candidate)}",
         f"- 当前有效词条：{result.current_effective_rolls:g}",
         f"- 当前质量分：{result.current_weighted_score:g}",
         f"- 满级有效词条期望：{result.final_expected_effective_rolls:g}",
@@ -887,7 +948,7 @@ def candidate_analysis_report_markdown(
         "",
         *_candidate_distribution_markdown(result),
         "",
-        "## 最终质量分布",
+        "## 审计质量分布",
         "",
         *_candidate_weighted_distribution_markdown(result),
         "",
@@ -1009,7 +1070,7 @@ def first_version_acceptance_report_markdown(
         "",
         "## 桌面结果区调律期望管理",
         "",
-        "按完整概率分布做理论期望，不做抽样模拟；随机/固定都会把新盘加入库存后重求当前套装约束下的最优组合；同时展示有效词条提升/母盘和质量提升/母盘；高级素材按概率模型配置折算普通合成机会成本，仅用于特殊资源表，不参与 Action EV 排序。",
+        "按完整概率分布做理论期望，不做抽样模拟；随机/固定都会把新盘加入库存后重求当前套装约束下的最优组合；随机位置行由同目标套装各固定位置 action value 按位置概率加权平均得到；主口径展示有效词条提升/母盘，质量向量和质量提升仅保留在明细表中用于审计；高级素材按概率模型配置折算普通合成机会成本，仅用于特殊资源表，不参与 Action EV 排序。",
         "",
         "### 随机 vs 固定位置收益效率",
         "",
@@ -1073,6 +1134,7 @@ def current_analysis_report_markdown(
     strategy_rows: list[StrategyRow] | None = None,
     probability_model: ProbabilityModel | None = None,
     pieces: list[GearPiece] | None = None,
+    input_audit_text: str | None = None,
 ) -> str:
     action_ev_rows = (
         position_strategy_efficiency_rows(game, character, probability_model, analysis)
@@ -1082,6 +1144,7 @@ def current_analysis_report_markdown(
     lines = [
         f"# {game.name} {character.name} 装备词条分析报告",
         "",
+        *_input_audit_markdown(input_audit_text),
         "## 攻略结论",
         "",
         *_strategy_guide_markdown(
@@ -1125,7 +1188,7 @@ def current_analysis_report_markdown(
         "",
         "## 桌面结果区调律期望管理",
         "",
-        "按完整概率分布做理论期望，不做抽样模拟；随机/固定都会把新盘加入库存后重求当前套装约束下的最优组合；同时展示有效词条提升/母盘和质量提升/母盘；高级素材按概率模型配置折算普通合成机会成本，仅用于特殊资源表，不参与 Action EV 排序。",
+        "按完整概率分布做理论期望，不做抽样模拟；随机/固定都会把新盘加入库存后重求当前套装约束下的最优组合；随机位置行由同目标套装各固定位置 action value 按位置概率加权平均得到；主口径展示有效词条提升/母盘，质量向量和质量提升仅保留在明细表中用于审计；高级素材按概率模型配置折算普通合成机会成本，仅用于特殊资源表，不参与 Action EV 排序。",
         "",
         "### 随机 vs 固定位置收益效率",
         "",
@@ -1184,7 +1247,7 @@ def current_analysis_report_markdown(
             _cost_ladder_for_target(strategy_rows, current_best)
         ),
         "",
-        "## 角色目标",
+        "## 目标模板（计算目标）",
         "",
         f"- 套装方案：{analysis.set_plan['name'] if analysis.set_plan else character.target_set}",
         f"- 有效副词条优先级：{_effective_substat_priority_text(character)}",

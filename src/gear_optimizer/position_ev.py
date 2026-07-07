@@ -102,6 +102,35 @@ def _weighted_draws(stats: list[str], weights: dict[str, float]) -> list[tuple[s
     return list(normalise_weights(stats, weights).items())
 
 
+def _add_substat_draws(
+    game: GameRules,
+    piece: GearPiece,
+    selected_stats: list[str],
+) -> list[tuple[str, float]]:
+    available = game.available_substats(piece.main_stat, selected_stats)
+    if (
+        game.enhancement.revealed_next_substat_supported
+        and piece.revealed_next_substat
+        and piece.revealed_next_substat in available
+    ):
+        return [(piece.revealed_next_substat, 1.0)]
+    return _weighted_draws(available, game.sub_stat_probabilities)
+
+
+def _effective_revealed_next_substat(piece: GearPiece, game: GameRules) -> str:
+    revealed = piece.revealed_next_substat or ""
+    if not revealed or not game.enhancement.revealed_next_substat_supported:
+        return ""
+    if not (
+        piece.initial_substat_count == 3
+        and piece.level < game.enhancement.initial_add_level
+        and len(piece.substats) == 3
+    ):
+        return ""
+    selected_stats = [line.stat for line in piece.substats]
+    return revealed if revealed in game.available_substats(piece.main_stat, selected_stats) else ""
+
+
 def _initial_stat_states(
     game: GameRules,
     main_stat: str,
@@ -348,6 +377,7 @@ def _candidate_inventory_row(
         "locked": piece.locked,
         "level": piece.level,
         "source": source,
+        "_effective_revealed_next_substat": _effective_revealed_next_substat(piece, game),
     }
 
 
@@ -377,10 +407,7 @@ def _future_roll_state_distribution(
         for state, probability in states.items():
             if is_add_event:
                 selected_stats = [stat for stat, _rolls in state]
-                draws = _weighted_draws(
-                    game.available_substats(piece.main_stat, selected_stats),
-                    game.sub_stat_probabilities,
-                )
+                draws = _add_substat_draws(game, piece, selected_stats)
                 if not draws:
                     next_states[state] += probability
                     continue
@@ -1075,6 +1102,7 @@ def _inventory_row_signature(row: dict) -> tuple:
             piece.level,
             piece.initial_substat_count,
             tuple((line.stat, line.rolls) for line in piece.substats),
+            str(row.get("_effective_revealed_next_substat") or ""),
         )
         if isinstance(piece, GearPiece)
         else tuple()
@@ -1894,10 +1922,7 @@ def _advance_existing_roll_states(
         for selected, probability in roll_states.items():
             if is_add_event:
                 selected_stats = [stat for stat, _rolls in selected]
-                draws = _weighted_draws(
-                    game.available_substats(piece.main_stat, selected_stats),
-                    game.sub_stat_probabilities,
-                )
+                draws = _add_substat_draws(game, piece, selected_stats)
                 if not draws:
                     next_states[selected] += probability
                     continue
@@ -3066,9 +3091,19 @@ def _fixed_substat_extra_resource_cost(
     return probability_model.resource_cost("core_per_fixed_substat_attempt", 1.0) * lock_count
 
 
+def _action_position_scope_label(game: GameRules) -> str:
+    keys = [position_key(rule.id) for rule in game.positions]
+    if keys and all(key.isdigit() for key in keys):
+        numbers = [int(key) for key in keys]
+        ordered = sorted(numbers)
+        if ordered == list(range(ordered[0], ordered[-1] + 1)):
+            return f"{ordered[0]}-{ordered[-1]}"
+    return " / ".join(game.position_name(rule.id) for rule in game.positions)
+
+
 def _action_position_label(spec: ActionSpec, game: GameRules) -> str:
     if spec.strategy == "随机位置":
-        return "1-6 随机"
+        return f"{_action_position_scope_label(game)} 随机"
     if spec.strategy == "强化库存胚子":
         return spec.upgrade_label or "库存胚子"
     if spec.target_position is None:
@@ -3084,7 +3119,15 @@ def _action_substat_label(spec: ActionSpec) -> str:
     return " + ".join(spec.required_substats) if spec.required_substats else "不固定"
 
 
+def _action_type_label(spec: ActionSpec) -> str:
+    if spec.strategy == "强化库存胚子":
+        return "库存升级机会"
+    return "调律母盘"
+
+
 def _action_progress_label(spec: ActionSpec, game: GameRules) -> str:
+    if spec.strategy == "强化库存胚子":
+        return f"升级已有库存（非调律） / {_action_position_label(spec, game)}"
     parts = [spec.strategy, spec.set_label]
     position = _action_position_label(spec, game)
     if position != "-":
@@ -3198,6 +3241,7 @@ def _action_ev_cache_key(
                     row["_piece"].level,
                     row["_piece"].initial_substat_count,
                     [(line.stat, line.rolls) for line in row["_piece"].substats],
+                    _effective_revealed_next_substat(row["_piece"], game),
                 )
                 if isinstance(row.get("_piece"), GearPiece)
                 else None,
@@ -3208,9 +3252,9 @@ def _action_ev_cache_key(
     return json.dumps(data, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
-def _comparison_scope_label(spec: ActionSpec, relative: str) -> str:
+def _comparison_scope_label(spec: ActionSpec, relative: str, game: GameRules) -> str:
     if spec.strategy == "随机位置":
-        return "随机混合：1-6 固定位置按概率加权；不是单一代表搭配"
+        return f"随机混合：{_action_position_scope_label(game)} 固定位置按概率加权；不是单一代表搭配"
     if spec.strategy == "固定位置":
         return f"固定位置基础行；{relative.replace('随机', '随机混合')}"
     if spec.strategy == "固定位置 + 固定主属性":
@@ -3218,7 +3262,7 @@ def _comparison_scope_label(spec: ActionSpec, relative: str) -> str:
     if spec.strategy == "固定位置 + 固定主属性 + 固定副属性":
         return f"相对同位置锁主属性；{relative}"
     if spec.strategy == "强化库存胚子":
-        return "库存强化动作；不消耗母盘，不折算强化材料"
+        return "库存升级机会；非调律母盘，不消耗母盘，不折算强化材料"
     return relative
 
 
@@ -3238,7 +3282,7 @@ def _relative_action_label(
     if spec.strategy == "随机位置":
         return "基准"
     if spec.strategy == "强化库存胚子":
-        return "库存动作"
+        return "库存升级机会"
     if spec.strategy == "固定位置 + 固定主属性":
         fixed_key = (spec.set_label, position_key(spec.target_position))
         fixed_efficiency = base_fixed_efficiency_by_target.get(fixed_key, tuple())
@@ -4308,6 +4352,7 @@ def position_strategy_efficiency_rows(
             fixed_main_efficiency_by_target,
         )
         row: dict[str, float | str] = {
+            "动作类型": _action_type_label(spec),
             "策略": spec.strategy,
             "目标套装": spec.set_label,
             "位置": _action_position_label(spec, game),
@@ -4341,7 +4386,7 @@ def position_strategy_efficiency_rows(
             "排序向量/母盘": _quality_vector_label(efficiency, character),
             "_sort_vector": efficiency,
             "相对随机": relative,
-            "比较口径": _comparison_scope_label(spec, relative),
+            "比较口径": _comparison_scope_label(spec, relative, game),
         }
         rows.append(row)
         return row
@@ -4378,7 +4423,7 @@ def position_strategy_efficiency_rows(
             random_baseline_enabled=bool(random_specs),
         )
         row["相对随机"] = relative
-        row["比较口径"] = _comparison_scope_label(spec, relative)
+        row["比较口径"] = _comparison_scope_label(spec, relative, game)
         _remember_action_efficiency(
             spec,
             efficiency,
@@ -4482,6 +4527,51 @@ def _row_sort_vector(row: dict[str, float | str]) -> tuple[float, ...]:
         float(row.get("质量/母盘") or 0.0),
         float(row.get("有效/母盘") or 0.0),
     ))
+
+
+def _row_float(row: dict[str, float | str], key: str) -> float:
+    try:
+        return float(row.get(key) or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _row_has_positive_gain(row: dict[str, float | str]) -> bool:
+    if _row_float(row, "有效提升") > _VECTOR_EPSILON:
+        return True
+    if _row_float(row, "质量提升") > _VECTOR_EPSILON:
+        return True
+    return any(value > _VECTOR_EPSILON for value in _row_sort_vector(row))
+
+
+def _row_has_effective_gain(row: dict[str, float | str]) -> bool:
+    if "有效提升" in row:
+        return _row_float(row, "有效提升") > _VECTOR_EPSILON
+    return _row_float(row, "有效/母盘") > _VECTOR_EPSILON
+
+
+def _best_upgrade_opportunity_row(
+    rows: list[dict[str, float | str]],
+    *,
+    effective_only: bool = False,
+) -> dict[str, float | str] | None:
+    candidates = [
+        row
+        for row in rows
+        if row.get("策略") == "强化库存胚子"
+        and (_row_has_effective_gain(row) if effective_only else _row_has_positive_gain(row))
+        and not str(row.get("套装约束") or "").startswith("未满足")
+    ]
+    if not candidates:
+        return None
+    return max(
+        candidates,
+        key=lambda row: (
+            _row_float(row, "有效提升"),
+            _row_float(row, "质量提升"),
+            _row_sort_vector(row),
+        ),
+    )
 
 
 def _is_recommendable_action_row(row: dict[str, float | str]) -> bool:
@@ -4800,17 +4890,74 @@ def recommended_action_ev_row(
     )
 
 
+def _brief_recommended_action_row(
+    rows: list[dict[str, float | str]],
+) -> dict[str, float | str] | None:
+    candidates = [
+        row
+        for row in rows
+        if _is_recommendable_action_row(row) and _row_has_effective_gain(row)
+    ]
+    if not candidates:
+        return None
+    return max(
+        candidates,
+        key=lambda row: (
+            _row_float(row, "有效/母盘"),
+            _row_float(row, "有效提升"),
+            _row_sort_vector(row),
+        ),
+    )
+
+
 def action_ev_brief(rows: list[dict[str, float | str]]) -> str:
-    best = recommended_action_ev_row(rows)
+    audit_best = recommended_action_ev_row(rows)
+    best = _brief_recommended_action_row(rows)
     if best is None:
+        upgrade = _best_upgrade_opportunity_row(rows, effective_only=True)
+        if upgrade is not None:
+            if audit_best is not None:
+                return (
+                    "当前 horizon 没有有效提升为正的可推荐调律 action；"
+                    "存在库存升级机会："
+                    f"{upgrade.get('目标套装', '-')} {upgrade.get('位置', '-')}，"
+                    f"有效提升 {upgrade.get('有效提升', '-')}；"
+                    "排序最高调律 action 仅有非有效收益，作为审计信息保留："
+                    f"{audit_best['策略']} {audit_best['目标套装']} {audit_best['位置']}。"
+                )
+            return (
+                "当前 horizon 没有可推荐调律 action；"
+                "存在库存升级机会："
+                f"{upgrade.get('目标套装', '-')} {upgrade.get('位置', '-')}，"
+                f"有效提升 {upgrade.get('有效提升', '-')}；"
+                "库存升级机会不参与主调律推荐排序。"
+            )
         if rows and all(str(row.get("套装约束") or "").startswith("未满足") for row in rows):
             return "当前 horizon 没有满足套装硬约束的 action；请提高 horizon 或先补齐套装缺口。"
+        if audit_best is not None:
+            comparison = str(audit_best.get("比较口径") or audit_best.get("相对随机") or "-")
+            return (
+                "当前 horizon 的排序最高调律 action 仅有非有效收益，"
+                "桌面主口径暂无有效提升 action："
+                f"{audit_best['策略']} {audit_best['目标套装']} {audit_best['位置']}，"
+                f"有效/母盘 {audit_best.get('有效/母盘', '-')}；"
+                f"{comparison}；{audit_best.get('套装约束', '-')}。"
+                f"审计排序向量/母盘 {audit_best.get('排序向量/母盘', '-')}。"
+            )
         return "暂无 action EV 结果。"
     loadout = str(best.get("代表分支搭配") or best.get("预期搭配") or "-")
     comparison = str(best.get("比较口径") or best.get("相对随机") or "-")
+    audit_note = ""
+    if audit_best is not None and audit_best is not best:
+        audit_note = (
+            "引擎审计排序最高为："
+            f"{audit_best['策略']} {audit_best['目标套装']} {audit_best['位置']}。"
+        )
     return (
         f"{best['策略']}：{best['目标套装']} {best['位置']}，"
-        f"排序向量/母盘 {best.get('排序向量/母盘', '-')}，"
+        f"有效提升 {best.get('有效提升', '-')}，"
         f"有效/母盘 {best['有效/母盘']}；"
         f"{comparison}；{best.get('套装约束', '-')}。代表分支搭配：{loadout}。"
+        f"审计排序向量/母盘 {best.get('排序向量/母盘', '-')}。"
+        f"{audit_note}"
     )

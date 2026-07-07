@@ -386,6 +386,8 @@ def test_first_version_acceptance_report_builder_uses_default_billy_sample():
     assert "| 3 | 继续强化候选 | 候选胚子评估 -> 下一跳止损卡 / 最终分布图 | 云岿如我 5号位 物理伤害 | 候选胚子强化 |" in report
     assert "## 桌面结果区调律期望管理" in report
     assert "### 随机 vs 固定位置收益效率" in report
+    assert "随机位置行由同目标套装各固定位置 action value 按位置概率加权平均得到" in report
+    assert "随机混合：1-6 固定位置按概率加权；不是单一代表搭配" in report
     assert "| 随机位置 | 云岿如我 | 1-6 随机 |" in report
     assert "| 固定位置 | 折枝剑歌 | 6号位 |" in report
     assert "### 固定主属性省母盘阶梯" in report
@@ -449,6 +451,8 @@ def test_acceptance_check_rows_require_business_markers_not_only_section_titles(
     assert by_id["today_action_summary"]["状态"] == "missing"
     assert "| 1 | 先刷/调律 | 先补 2 件套 |" in by_id["today_action_summary"]["缺失"]
     assert by_id["position_efficiency"]["状态"] == "missing"
+    assert "随机位置行由同目标套装各固定位置 action value 按位置概率加权平均得到" in by_id["position_efficiency"]["缺失"]
+    assert "随机混合：1-6 固定位置按概率加权；不是单一代表搭配" in by_id["position_efficiency"]["缺失"]
     assert "| 随机位置 | 云岿如我 | 1-6 随机 |" in by_id["position_efficiency"]["缺失"]
     assert by_id["fixed_main_ladder"]["状态"] == "missing"
     assert "| 6号位 | 1 | 生命值百分比 |" in by_id["fixed_main_ladder"]["缺失"]

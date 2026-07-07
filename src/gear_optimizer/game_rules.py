@@ -193,6 +193,19 @@ def validate_gear_piece_against_game(piece: GearPiece, game: GameRules) -> None:
     unknown_substats = {line.stat for line in piece.substats} - allowed_substats
     if unknown_substats:
         raise ValueError(f"Gear substats reference unknown stats: {sorted(unknown_substats)}")
+    if piece.revealed_next_substat:
+        if not game.enhancement.revealed_next_substat_supported:
+            raise ValueError("Gear revealed_next_substat is not supported for this game")
+        if piece.revealed_next_substat not in allowed_substats:
+            raise ValueError(f"Gear revealed_next_substat references unknown stat: {piece.revealed_next_substat}")
+        if not (
+            piece.initial_substat_count == 3
+            and piece.level < game.enhancement.initial_add_level
+            and len(piece.substats) == 3
+        ):
+            raise ValueError(
+                "revealed_next_substat is only valid for initial 3-line gear before the +3 add-substat event"
+            )
     if any(line.stat == piece.main_stat for line in piece.substats):
         raise ValueError("Gear substats cannot repeat the main stat")
     total_rolls = sum(line.rolls for line in piece.substats)

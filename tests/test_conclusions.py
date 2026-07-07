@@ -58,6 +58,8 @@ def test_candidate_conclusion_rows_answer_upgrade_decision():
     assert "折枝剑歌" in by_question["套装是否符合方案"]["依据"]
     assert "50.0%" in by_question["后续命中概率"]["结论"]
     assert "暴击率" in by_question["当前副词条构成"]["结论"]
+    assert "目标模板的副属性有效排序" in by_question["当前副词条构成"]["依据"]
+    assert "核心、可用" not in by_question["当前副词条构成"]["依据"]
 
 
 def test_candidate_next_step_rows_turn_checkpoint_into_stop_loss_card():
@@ -191,21 +193,21 @@ def test_candidate_outcome_rows_show_result_probabilities():
     assert set(by_target) == {
         "超过当前同位置",
         "命中套装目标并超过当前",
-        "达到角色目标线",
-        "达到质量目标线",
-        "达到 good 评级",
-        "达到 excellent 评级",
+        "达到目标模板有效线",
+        "审计：达到质量线",
+        "审计：达到 good 评级",
+        "审计：达到 excellent 评级",
     }
     assert by_target["超过当前同位置"]["概率"].endswith("%")
     assert by_target["超过当前同位置"]["概率"] == "31.2%"
     assert by_target["命中套装目标并超过当前"]["概率"] == "-"
-    assert by_target["达到角色目标线"]["概率"] == "6.2%"
-    assert by_target["达到质量目标线"]["概率"] == "6.2%"
-    assert by_target["达到 good 评级"]["概率"] == "68.8%"
+    assert by_target["达到目标模板有效线"]["概率"] == "6.2%"
+    assert by_target["审计：达到质量线"]["概率"] == "6.2%"
+    assert by_target["审计：达到 good 评级"]["概率"] == "68.8%"
     assert "当前 5号位 质量分" in by_target["超过当前同位置"]["依据"]
-    assert "最终有效词条次数" in by_target["达到角色目标线"]["依据"]
-    assert "最终质量分" in by_target["达到质量目标线"]["依据"]
-    assert "最终质量分" in by_target["达到 excellent 评级"]["依据"]
+    assert "最终有效词条次数" in by_target["达到目标模板有效线"]["依据"]
+    assert "最终质量分" in by_target["审计：达到质量线"]["依据"]
+    assert "最终质量分" in by_target["审计：达到 excellent 评级"]["依据"]
 
 
 def test_candidate_conclusion_respects_locked_current_position():

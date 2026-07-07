@@ -67,6 +67,11 @@ def test_key_main_stat_probabilities_are_explicitly_configured():
     assert hsr.main_stat_probability("rope", "能量恢复效率") == pytest.approx(0.0510204082)
 
 
+def test_only_hsr_supports_revealed_next_substat():
+    assert load_game("hsr").enhancement.revealed_next_substat_supported
+    assert not load_game("zzz").enhancement.revealed_next_substat_supported
+
+
 def test_zzz_set_icons_point_to_local_assets():
     game = load_game("zzz")
 

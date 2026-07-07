@@ -16,6 +16,7 @@ class EnhancementRule(BaseModel):
     max_level: int = 15
     step: int = 3
     initial_add_level: int = 3
+    revealed_next_substat_supported: bool = False
 
     @property
     def event_levels(self) -> list[int]:
@@ -462,6 +463,7 @@ class GearPiece(BaseModel):
     substats: list[SubstatLine] = Field(default_factory=list)
     locked: bool = False
     initial_substat_count: Literal[3, 4] = 4
+    revealed_next_substat: str | None = None
 
     @field_validator("substats")
     @classmethod
@@ -475,6 +477,11 @@ class GearPiece(BaseModel):
     def main_stat_cannot_repeat_as_substat(self) -> "GearPiece":
         if self.main_stat and any(line.stat == self.main_stat for line in self.substats):
             raise ValueError("main_stat cannot appear in substats")
+        if self.revealed_next_substat:
+            if self.revealed_next_substat == self.main_stat:
+                raise ValueError("revealed_next_substat cannot repeat the main stat")
+            if any(line.stat == self.revealed_next_substat for line in self.substats):
+                raise ValueError("revealed_next_substat cannot repeat an existing substat")
         return self
 
 

@@ -409,6 +409,73 @@ def test_migration_reports_loadout_slot_conflicts(monkeypatch, tmp_path):
     assert report.blocking_issues
 
 
+def test_migration_current_gear_loader_strips_unsupported_revealed_next_substat(tmp_path):
+    path = current_gear_store_path("zzz", "zzz_starlight_billy", tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        yaml.safe_dump(
+            {
+                "templates": [
+                    {
+                        "id": "legacy",
+                        "label": "旧盘面",
+                        "pieces": [
+                            {
+                                "position": 5,
+                                "set_name": "云岿如我",
+                                "main_stat": "物理伤害",
+                                "initial_substat_count": 3,
+                                "level": 0,
+                                "substats": [
+                                    {"stat": "暴击率", "rolls": 0},
+                                    {"stat": "暴击伤害", "rolls": 0},
+                                    {"stat": "攻击力百分比", "rolls": 0},
+                                ],
+                                "revealed_next_substat": "生命值百分比",
+                            }
+                        ],
+                    }
+                ]
+            },
+            allow_unicode=True,
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+
+    templates = agents._load_current_file_templates(path, "zzz")
+
+    assert templates[0]["pieces"][0].revealed_next_substat is None
+
+
+def test_migration_piece_signature_and_item_id_include_revealed_next_substat():
+    base = GearPiece(
+        position=1,
+        set_name="A",
+        main_stat="hp",
+        level=0,
+        initial_substat_count=3,
+        substats=[
+            SubstatLine(stat="crit", rolls=0),
+            SubstatLine(stat="dmg", rolls=0),
+            SubstatLine(stat="atk", rolls=0),
+        ],
+    )
+    speed_reveal = base.model_copy(update={"revealed_next_substat": "spd"})
+    break_reveal = base.model_copy(update={"revealed_next_substat": "break"})
+
+    assert agents._piece_signature(speed_reveal) != agents._piece_signature(break_reveal)
+    assert agents._piece_signature(speed_reveal, unordered_substats=True) != agents._piece_signature(
+        break_reveal,
+        unordered_substats=True,
+    )
+    assert agents._stable_migration_item_id("legacy.yaml", "1", speed_reveal) != agents._stable_migration_item_id(
+        "legacy.yaml",
+        "1",
+        break_reveal,
+    )
+
+
 def test_duplicate_item_id_is_rejected():
     item = new_inventory_item(
         _piece(),

@@ -91,6 +91,21 @@ def _draw_probabilities(
     return list(normalised.items())
 
 
+def _add_draw_probabilities(
+    piece: CandidatePiece,
+    game: GameRules,
+    available_stats: list[str],
+    weights: dict[str, float],
+) -> tuple[list[tuple[str | None, float]], str | None]:
+    if (
+        game.enhancement.revealed_next_substat_supported
+        and piece.revealed_next_substat
+        and piece.revealed_next_substat in available_stats
+    ):
+        return [(piece.revealed_next_substat, 1.0)], piece.revealed_next_substat
+    return _draw_probabilities(available_stats, weights), None
+
+
 def evaluate_candidate(
     piece: CandidatePiece,
     game: GameRules,
@@ -132,6 +147,12 @@ def evaluate_candidate(
     per_event_expected_weighted_gains: list[float] = []
 
     available_for_add = game.available_substats(piece.main_stat, existing_stats)
+    if piece.revealed_next_substat and not game.enhancement.revealed_next_substat_supported:
+        warnings.append("当前游戏不支持预告第 4 副属性；已按未知随机词条处理。")
+    elif piece.revealed_next_substat and not needs_add:
+        warnings.append("预告第 4 副属性只适用于初始 3 词条、+3 前、尚未显示第 4 条副属性；当前状态已忽略该字段。")
+    elif piece.revealed_next_substat and piece.revealed_next_substat not in available_for_add:
+        warnings.append("预告第 4 副属性不适用于当前主属性或已有副属性；已按未知随机词条处理。")
     desired_for_add = {
         stat for stat in available_for_add if character.is_effective(stat)
     }
@@ -140,10 +161,14 @@ def evaluate_candidate(
         desired_for_add,
         game.sub_stat_probabilities,
     )
-    add_draw_probabilities = _draw_probabilities(
+    add_draw_probabilities, revealed_add_stat = _add_draw_probabilities(
+        piece,
+        game,
         available_for_add,
         game.sub_stat_probabilities,
     )
+    if revealed_add_stat:
+        add_effective_probability = 1.0 if character.is_effective(revealed_add_stat) else 0.0
     add_expected_weighted_gain = sum(
         probability * (character.weight_for(stat) if stat else 0.0)
         for stat, probability in add_draw_probabilities
@@ -162,15 +187,22 @@ def evaluate_candidate(
         is_add_event = needs_add and index == 0
         if is_add_event:
             weighted_gain_sum = add_expected_weighted_gain
-            description = (
-                f"+{level} 先补第 4 个副属性；补出有效词条概率约 {add_effective_probability:.1%}，"
-                f"质量期望增量约 {add_expected_weighted_gain:.2f}。"
-            )
+            if revealed_add_stat:
+                description = (
+                    f"+{level} 先补第 4 个副属性；已预告为 {revealed_add_stat}，"
+                    f"有效命中概率 {add_effective_probability:.1%}，"
+                    f"质量期望增量约 {add_expected_weighted_gain:.2f}。"
+                )
+            else:
+                description = (
+                    f"+{level} 先补第 4 个副属性；补出有效词条概率约 {add_effective_probability:.1%}，"
+                    f"质量期望增量约 {add_expected_weighted_gain:.2f}。"
+                )
             event_descriptions.append(description)
             event_rows.append(
                 {
                     "level": level,
-                    "event": "补第 4 副属性",
+                    "event": "补第 4 副属性（已预告）" if revealed_add_stat else "补第 4 副属性",
                     "hit_probability": _rounded(add_effective_probability),
                     "expected_weighted_gain": _rounded(add_expected_weighted_gain),
                     "description": description,

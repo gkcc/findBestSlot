@@ -31,7 +31,7 @@ def load_user_inventory(
         data = yaml.safe_load(handle) or {}
     if not isinstance(data, dict):
         raise ValueError(f"Expected YAML mapping in {path}")
-    return current_gear_data_to_pieces(data)
+    return current_gear_data_to_pieces(data, game_id=game_id)
 
 
 def save_user_inventory(

@@ -554,3 +554,4 @@ enhancement:
   max_level: 15
   step: 3
   initial_add_level: 3
+  revealed_next_substat_supported: true

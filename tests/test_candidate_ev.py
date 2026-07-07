@@ -2,8 +2,9 @@ import pytest
 from pydantic import ValidationError
 
 from gear_optimizer.candidate_ev import evaluate_candidate
-from gear_optimizer.game_rules import load_characters, load_game
+from gear_optimizer.game_rules import load_characters, load_game, validate_gear_piece_against_game
 from gear_optimizer.models import CandidatePiece, CharacterPreset, GearPiece, SubstatLine
+from gear_optimizer.probability import probability_next_stat_in_set
 from gear_optimizer.presets import (
     list_candidate_examples,
     list_current_examples,
@@ -125,9 +126,75 @@ def test_hsr_candidate_example_runs_candidate_ev_placeholder_path():
     assert result.remaining_upgrade_events == 5
     assert result.remaining_roll_events == 4
     assert result.event_rows[0]["event"] == "补第 4 副属性"
-    assert result.event_rows[0]["hit_probability"] == pytest.approx(0.125)
+    available_for_add = game.available_substats(
+        candidate.main_stat,
+        [line.stat for line in candidate.substats],
+    )
+    desired_for_add = {stat for stat in available_for_add if character.is_effective(stat)}
+    assert result.event_rows[0]["hit_probability"] == pytest.approx(
+        probability_next_stat_in_set(
+            available_for_add,
+            desired_for_add,
+            game.sub_stat_probabilities,
+        ),
+        abs=1e-6,
+    )
     assert result.final_expected_effective_rolls > result.current_effective_rolls
     assert sum(point.probability for point in result.distribution) == pytest.approx(1.0)
+
+
+def test_hsr_revealed_next_substat_conditions_add_line_event():
+    game = load_game("hsr")
+    character = _hsr_placeholder()
+    candidate = load_candidate_example("examples/hsr_candidate_body.yaml").model_copy(
+        update={"revealed_next_substat": "速度"}
+    )
+
+    result = evaluate_candidate(candidate, game, character)
+
+    assert result.event_rows[0]["event"] == "补第 4 副属性（已预告）"
+    assert result.event_rows[0]["hit_probability"] == pytest.approx(1.0)
+    assert result.event_rows[0]["expected_weighted_gain"] == pytest.approx(1.0)
+    assert "已预告为 速度" in result.event_rows[0]["description"]
+    assert result.final_expected_effective_rolls > 2.0
+
+
+def test_hsr_revealed_next_substat_is_ignored_after_add_event():
+    game = load_game("hsr")
+    character = _hsr_placeholder()
+    candidate = load_candidate_example("examples/hsr_candidate_body.yaml").model_copy(
+        update={"level": game.enhancement.initial_add_level, "revealed_next_substat": "速度"}
+    )
+
+    result = evaluate_candidate(candidate, game, character)
+
+    assert result.event_rows[0]["event"] == "随机命中已有副属性"
+    assert not any("已预告为 速度" in str(row["description"]) for row in result.event_rows)
+    assert any("当前状态已忽略该字段" in warning for warning in result.warnings)
+
+
+def test_unsupported_game_revealed_next_substat_is_ignored():
+    game = load_game("zzz")
+    character = _billy()
+    candidate = CandidatePiece(
+        position=5,
+        set_name="云岿如我",
+        main_stat="物理伤害",
+        initial_substat_count=3,
+        level=0,
+        substats=[
+            SubstatLine(stat="暴击率", rolls=0),
+            SubstatLine(stat="暴击伤害", rolls=0),
+            SubstatLine(stat="攻击力百分比", rolls=0),
+        ],
+        revealed_next_substat="生命值百分比",
+    )
+
+    result = evaluate_candidate(candidate, game, character)
+
+    assert result.event_rows[0]["event"] == "补第 4 副属性"
+    assert result.event_rows[0]["hit_probability"] < 1.0
+    assert any("当前游戏不支持预告第 4 副属性" in warning for warning in result.warnings)
 
 
 def test_current_examples_are_filtered_by_game_and_character():
@@ -211,6 +278,75 @@ def test_gear_models_reject_main_stat_repeated_as_substat():
             initial_substat_count=3,
             substats=[SubstatLine(stat="物理伤害", rolls=0)],
         )
+
+
+def test_gear_models_reject_invalid_revealed_next_substat():
+    with pytest.raises(ValidationError, match="revealed_next_substat cannot repeat the main stat"):
+        GearPiece(
+            position="body",
+            set_name="识海迷坠的学者",
+            main_stat="暴击率",
+            initial_substat_count=3,
+            substats=[
+                SubstatLine(stat="暴击伤害", rolls=0),
+                SubstatLine(stat="攻击力百分比", rolls=0),
+                SubstatLine(stat="生命值百分比", rolls=0),
+            ],
+            revealed_next_substat="暴击率",
+        )
+
+    with pytest.raises(ValidationError, match="revealed_next_substat cannot repeat an existing substat"):
+        GearPiece(
+            position="body",
+            set_name="识海迷坠的学者",
+            main_stat="暴击率",
+            initial_substat_count=3,
+            substats=[
+                SubstatLine(stat="暴击伤害", rolls=0),
+                SubstatLine(stat="攻击力百分比", rolls=0),
+                SubstatLine(stat="生命值百分比", rolls=0),
+            ],
+            revealed_next_substat="暴击伤害",
+        )
+
+
+def test_gear_validation_revealed_next_substat_only_before_add_event():
+    game = load_game("hsr")
+    valid = GearPiece(
+        position="body",
+        set_name="识海迷坠的学者",
+        main_stat="暴击率",
+        initial_substat_count=3,
+        level=0,
+        substats=[
+            SubstatLine(stat="暴击伤害", rolls=0),
+            SubstatLine(stat="攻击力百分比", rolls=0),
+            SubstatLine(stat="生命值百分比", rolls=0),
+        ],
+        revealed_next_substat="速度",
+    )
+    validate_gear_piece_against_game(valid, game)
+
+    invalid = valid.model_copy(update={"level": 3})
+    with pytest.raises(ValueError, match="revealed_next_substat is only valid"):
+        validate_gear_piece_against_game(invalid, game)
+
+    unsupported_game = load_game("zzz")
+    unsupported = GearPiece(
+        position=6,
+        set_name="云岿如我",
+        main_stat="生命值百分比",
+        initial_substat_count=3,
+        level=0,
+        substats=[
+            SubstatLine(stat="暴击率", rolls=0),
+            SubstatLine(stat="暴击伤害", rolls=0),
+            SubstatLine(stat="攻击力百分比", rolls=0),
+        ],
+        revealed_next_substat="穿透值",
+    )
+    with pytest.raises(ValueError, match="not supported"):
+        validate_gear_piece_against_game(unsupported, unsupported_game)
 
 
 def test_gear_models_reject_duplicate_substats():

@@ -363,7 +363,12 @@ def _tiny_upgrade_expectation_context():
         sub_stats=["good", "bad"],
         main_stat_probabilities={"1": {"main": 1.0}},
         sub_stat_probabilities={"good": 1.0, "bad": 1.0},
-        enhancement=EnhancementRule(max_level=3, step=3, initial_add_level=3),
+        enhancement=EnhancementRule(
+            max_level=3,
+            step=3,
+            initial_add_level=3,
+            revealed_next_substat_supported=True,
+        ),
     )
     character = CharacterPreset(
         id="tiny_upgrade_char",
@@ -553,6 +558,50 @@ def test_random_horizon_two_condition_followup_uses_exact_helper(monkeypatch):
     assert all("exact horizon=1 lookahead" in branch["第二步原因"] for branch in branches)
 
 
+def test_horizon_two_condition_followup_hides_internal_upgrade_strategy(monkeypatch):
+    game, character, probability_model, inventory = _tiny_six_exact_context()
+    inventory_rows = inventory_rows_from_pieces(
+        inventory,
+        game,
+        character,
+        current_count=len(inventory),
+    )
+    sentinel = ActionSpec(
+        "强化库存胚子",
+        "A",
+        ("A",),
+        5,
+        upgrade_inventory_id="inv_test",
+        upgrade_label="5号位库存胚子 #inv_test",
+    )
+
+    monkeypatch.setattr(
+        position_ev,
+        "_best_followup_spec",
+        lambda *_args, **_kwargs: sentinel,
+    )
+    monkeypatch.setattr(
+        position_ev,
+        "_representative_final_loadout_after_followup",
+        lambda *_args, **_kwargs: ("代表最终搭配", "满足A 6"),
+    )
+
+    branches = position_ev._random_position_condition_branches(
+        inventory_rows,
+        game,
+        character,
+        probability_model,
+        ActionSpec("随机位置", "A", ("A",), None),
+        2,
+        {},
+        {},
+    )
+
+    assert branches
+    assert all("升级已有库存（非调律）" in branch["第二步 action"] for branch in branches)
+    assert all("强化库存胚子" not in branch["第二步 action"] for branch in branches)
+
+
 def test_single_action_plan_status_uses_inventory_complement_for_four_plus_two():
     game, character, probability_model, analysis = _billy_context()
     current = load_current_example("examples/zzz_billy_current.yaml")
@@ -691,6 +740,297 @@ def test_best_loadout_can_explicitly_rank_unfinished_inventory_by_upgrade_expect
         current_count=1,
         include_upgrade_expectation=True,
     ) > best_loadout_value([current, embryo], game, character, current_count=1)
+
+
+def test_revealed_next_substat_conditions_inventory_upgrade_expectation():
+    game = GameRules(
+        id="tiny_revealed_upgrade",
+        name="Tiny Revealed Upgrade",
+        gear_name="Relic",
+        sets=["A"],
+        positions=[PositionRule(id=1, name="1号位", main_stats=["main"])],
+        sub_stats=["good", "bad", "n1", "n2", "n3"],
+        main_stat_probabilities={"1": {"main": 1.0}},
+        sub_stat_probabilities={"good": 1.0, "bad": 1.0, "n1": 1.0, "n2": 1.0, "n3": 1.0},
+        enhancement=EnhancementRule(
+            max_level=3,
+            step=3,
+            initial_add_level=3,
+            revealed_next_substat_supported=True,
+        ),
+    )
+    character = CharacterPreset(
+        id="tiny_revealed_char",
+        game=game.id,
+        name="Tiny Revealed Char",
+        target_set="A",
+        substat_priority=SubstatPriority(core=["good"], usable=[]),
+        preferred_main_stats={"1": ["main"]},
+        set_plans=[
+            SetPlan(
+                id="a1",
+                name="A 1",
+                requirements=[SetRequirement(set_name="A", pieces=1)],
+            )
+        ],
+        default_set_plan="a1",
+    )
+    base = GearPiece(
+        position=1,
+        set_name="A",
+        main_stat="main",
+        level=0,
+        initial_substat_count=3,
+        substats=[
+            SubstatLine(stat="n1", rolls=0),
+            SubstatLine(stat="n2", rolls=0),
+            SubstatLine(stat="n3", rolls=0),
+        ],
+    )
+
+    good_piece = base.model_copy(update={"revealed_next_substat": "good"})
+    bad_piece = base.model_copy(update={"revealed_next_substat": "bad"})
+
+    good_score, _good_vector = position_ev._expected_upgrade_quality(good_piece, game, character)
+    bad_score, _bad_vector = position_ev._expected_upgrade_quality(bad_piece, game, character)
+
+    assert good_score == pytest.approx(1.0)
+    assert bad_score == pytest.approx(0.0)
+
+    good_rows = position_ev.inventory_rows_from_pieces(
+        [good_piece],
+        game,
+        character,
+        include_upgrade_expectation=True,
+    )
+    bad_rows = position_ev.inventory_rows_from_pieces(
+        [bad_piece],
+        game,
+        character,
+        include_upgrade_expectation=True,
+    )
+    assert position_ev._inventory_row_signature(good_rows[0]) != position_ev._inventory_row_signature(bad_rows[0])
+    assert position_ev.best_loadout_value(
+        [good_piece],
+        game,
+        character,
+        include_upgrade_expectation=True,
+    ) != position_ev.best_loadout_value(
+        [bad_piece],
+        game,
+        character,
+        include_upgrade_expectation=True,
+    )
+
+
+def test_revealed_next_substat_separates_state_transition_cache_for_upgrade_sources():
+    game = GameRules(
+        id="tiny_revealed_state_cache",
+        name="Tiny Revealed State Cache",
+        gear_name="Relic",
+        sets=["A"],
+        positions=[PositionRule(id=1, name="1号位", main_stats=["main"])],
+        sub_stats=["good", "bad", "n1", "n2", "n3"],
+        main_stat_probabilities={"1": {"main": 1.0}},
+        sub_stat_probabilities={"good": 1.0, "bad": 1.0, "n1": 1.0, "n2": 1.0, "n3": 1.0},
+        enhancement=EnhancementRule(
+            max_level=3,
+            step=3,
+            initial_add_level=3,
+            revealed_next_substat_supported=True,
+        ),
+    )
+    character = CharacterPreset(
+        id="tiny_revealed_state_cache_char",
+        game=game.id,
+        name="Tiny Revealed State Cache Char",
+        target_set="A",
+        substat_priority=SubstatPriority(core=["good"], usable=[]),
+        preferred_main_stats={"1": ["main"]},
+        set_plans=[
+            SetPlan(
+                id="a1",
+                name="A 1",
+                requirements=[SetRequirement(set_name="A", pieces=1)],
+            )
+        ],
+        default_set_plan="a1",
+    )
+    probability_model = ProbabilityModel(
+        id="tiny_revealed_state_cache_prob",
+        game=game.id,
+        name="Tiny Revealed State Cache Prob",
+        target_set_probability=1.0,
+        initial_substat_count_probabilities={"3": 1.0, "4": 0.0},
+    )
+    base = GearPiece(
+        position=1,
+        set_name="A",
+        main_stat="main",
+        level=0,
+        initial_substat_count=3,
+        substats=[
+            SubstatLine(stat="n1", rolls=0),
+            SubstatLine(stat="n2", rolls=0),
+            SubstatLine(stat="n3", rolls=0),
+        ],
+    )
+    spec = ActionSpec(
+        strategy="强化库存胚子",
+        set_label="A",
+        upgrade_inventory_id="piece:0",
+    )
+    good_state = position_ev.EvState.from_inventory(
+        [base.model_copy(update={"revealed_next_substat": "good"})],
+        game,
+        character,
+    )
+    bad_state = position_ev.EvState.from_inventory(
+        [base.model_copy(update={"revealed_next_substat": "bad"})],
+        game,
+        character,
+    )
+
+    position_ev._STATE_TRANSITION_CACHE.clear()
+    good_transitions = position_ev.state_transition_for_action(
+        good_state,
+        game,
+        character,
+        probability_model,
+        spec,
+    )
+    bad_transitions = position_ev.state_transition_for_action(
+        bad_state,
+        game,
+        character,
+        probability_model,
+        spec,
+    )
+
+    assert good_state.signature != bad_state.signature
+    assert len(position_ev._STATE_TRANSITION_CACHE) == 2
+    assert good_transitions[0][1] == pytest.approx(1.0)
+    assert bad_transitions[0][1] == pytest.approx(1.0)
+    assert good_transitions[0][0].best_loadout_value(game, character) > bad_transitions[0][0].best_loadout_value(
+        game,
+        character,
+    )
+
+
+def test_action_ev_cache_key_includes_revealed_next_substat_on_inventory_rows():
+    game = GameRules(
+        id="tiny_revealed_action_cache",
+        name="Tiny Revealed Action Cache",
+        gear_name="Relic",
+        sets=["A"],
+        positions=[PositionRule(id=1, name="1号位", main_stats=["main"])],
+        sub_stats=["good", "bad", "n1", "n2", "n3"],
+        main_stat_probabilities={"1": {"main": 1.0}},
+        sub_stat_probabilities={"good": 1.0, "bad": 1.0, "n1": 1.0, "n2": 1.0, "n3": 1.0},
+        enhancement=EnhancementRule(
+            max_level=3,
+            step=3,
+            initial_add_level=3,
+            revealed_next_substat_supported=True,
+        ),
+    )
+    character = CharacterPreset(
+        id="tiny_revealed_action_cache_char",
+        game=game.id,
+        name="Tiny Revealed Action Cache Char",
+        target_set="A",
+        substat_priority=SubstatPriority(core=["good"], usable=[]),
+        preferred_main_stats={"1": ["main"]},
+        set_plans=[
+            SetPlan(
+                id="a1",
+                name="A 1",
+                requirements=[SetRequirement(set_name="A", pieces=1)],
+            )
+        ],
+        default_set_plan="a1",
+    )
+    probability_model = ProbabilityModel(
+        id="tiny_revealed_action_cache_prob",
+        game=game.id,
+        name="Tiny Revealed Action Cache Prob",
+        target_set_probability=1.0,
+        initial_substat_count_probabilities={"3": 1.0, "4": 0.0},
+    )
+    base = GearPiece(
+        position=1,
+        set_name="A",
+        main_stat="main",
+        level=0,
+        initial_substat_count=3,
+        substats=[
+            SubstatLine(stat="n1", rolls=0),
+            SubstatLine(stat="n2", rolls=0),
+            SubstatLine(stat="n3", rolls=0),
+        ],
+    )
+    good_piece = base.model_copy(update={"revealed_next_substat": "good"})
+    bad_piece = base.model_copy(update={"revealed_next_substat": "bad"})
+    analysis = analyse_current_gear([good_piece], game, character)
+    good_rows = inventory_rows_from_pieces([good_piece], game, character, current_count=1)
+    bad_rows = inventory_rows_from_pieces([bad_piece], game, character, current_count=1)
+
+    good_key = position_ev._action_ev_cache_key(
+        game,
+        character,
+        probability_model,
+        analysis,
+        inventory_rows=good_rows,
+        horizon=2,
+    )
+    bad_key = position_ev._action_ev_cache_key(
+        game,
+        character,
+        probability_model,
+        analysis,
+        inventory_rows=bad_rows,
+        horizon=2,
+    )
+
+    assert good_key != bad_key
+
+    stale_revealed_piece = GearPiece(
+        position=1,
+        set_name="A",
+        main_stat="main",
+        level=3,
+        initial_substat_count=3,
+        substats=[
+            SubstatLine(stat="n1", rolls=0),
+            SubstatLine(stat="n2", rolls=0),
+            SubstatLine(stat="n3", rolls=0),
+            SubstatLine(stat="bad", rolls=0),
+        ],
+        revealed_next_substat="good",
+    )
+    stale_plain_piece = stale_revealed_piece.model_copy(update={"revealed_next_substat": None})
+    stale_analysis = analyse_current_gear([stale_plain_piece], game, character)
+    stale_revealed_rows = inventory_rows_from_pieces([stale_revealed_piece], game, character, current_count=1)
+    stale_plain_rows = inventory_rows_from_pieces([stale_plain_piece], game, character, current_count=1)
+
+    assert position_ev._inventory_row_signature(stale_revealed_rows[0]) == position_ev._inventory_row_signature(
+        stale_plain_rows[0]
+    )
+    assert position_ev._action_ev_cache_key(
+        game,
+        character,
+        probability_model,
+        stale_analysis,
+        inventory_rows=stale_revealed_rows,
+        horizon=2,
+    ) == position_ev._action_ev_cache_key(
+        game,
+        character,
+        probability_model,
+        stale_analysis,
+        inventory_rows=stale_plain_rows,
+        horizon=2,
+    )
 
 
 def test_locked_position_cannot_be_replaced_by_inventory_or_upgraded_candidate():
@@ -1025,6 +1365,47 @@ def test_random_position_ev_is_weighted_average_of_fixed_positions(monkeypatch):
     assert calls.count("随机位置") == 0
 
 
+def test_horizon_one_random_position_exact_ev_matches_weighted_fixed_positions():
+    game, character, probability_model, analysis, _inventory = _tiny_lock_context()
+    events = []
+
+    position_ev._ACTION_EV_ROWS_CACHE.clear()
+    rows = position_strategy_efficiency_rows(
+        game,
+        character,
+        probability_model,
+        analysis,
+        horizon=1,
+        progress_callback=events.append,
+    )
+    position_ev._ACTION_EV_ROWS_CACHE.clear()
+
+    random_row = next(row for row in rows if row["策略"] == "随机位置")
+    fixed_rows = [row for row in rows if row["策略"] == "固定位置"]
+    assert random_row["位置"] == "1-2 随机"
+    assert random_row["比较口径"] == "随机混合：1-2 固定位置按概率加权；不是单一代表搭配"
+    assert {row["位置"] for row in fixed_rows} == {"1号位", "2号位"}
+
+    expected_quality_gain = sum(float(row["质量提升"]) for row in fixed_rows) / len(fixed_rows)
+    expected_effective_gain = sum(float(row["有效提升"]) for row in fixed_rows) / len(fixed_rows)
+    assert random_row["质量提升"] == pytest.approx(expected_quality_gain, abs=0.001)
+    assert random_row["有效提升"] == pytest.approx(expected_effective_gain, abs=0.001)
+
+    fixed_vectors = [row["_sort_vector"] for row in fixed_rows]
+    expected_vector = tuple(
+        sum(vector[index] for vector in fixed_vectors) / len(fixed_vectors)
+        for index in range(len(fixed_vectors[0]))
+    )
+    assert random_row["_sort_vector"] == pytest.approx(expected_vector)
+    assert any(
+        event.get("event") == "unit_done"
+        and event.get("action_strategy") == "随机位置"
+        and event.get("derived_from_fixed_positions")
+        and "固定位置分支平均" in str(event.get("label"))
+        for event in events
+    )
+
+
 def test_hsr_generation_specs_do_not_include_random_position_actions():
     hsr_game, hsr_character, _probability_model, _analysis = _hsr_context()
     zzz_game, zzz_character, _zzz_probability_model, _zzz_analysis = _billy_context()
@@ -1347,6 +1728,8 @@ def test_action_rows_include_upgrading_existing_inventory_candidate():
     upgrade_rows = [row for row in rows if row["策略"] == "强化库存胚子"]
 
     assert upgrade_rows
+    assert upgrade_rows[0]["动作类型"] == "库存升级机会"
+    assert upgrade_rows[0]["第一步 action"].startswith("升级已有库存（非调律） / 5号位")
     assert upgrade_rows[0]["位置"].startswith("5号位 云岿如我 物理伤害")
     assert upgrade_rows[0]["相对随机"] == "未满足套装硬约束，不作为当前 horizon 推荐"
     assert upgrade_rows[0]["套装约束"].startswith("未满足")
@@ -1506,6 +1889,160 @@ def test_action_plan_explain_fields_do_not_affect_recommendation_sorting():
     rows[0]["条件分支"] = [{"第二步 action": "伪造高收益"}]
 
     assert recommended_action_ev_row(rows) is rows[1]
+
+
+def test_action_ev_brief_mentions_upgrade_opportunity_without_tuning_recommendation():
+    rows = [
+        {
+            "策略": "强化库存胚子",
+            "目标套装": "A",
+            "位置": "5号位",
+            "套装约束": "满足A 2",
+            "有效提升": 0.4,
+            "质量提升": 0.2,
+            "有效/母盘": 0.0,
+            "质量/母盘": 0.0,
+            "期望提升": "有效 +0.4",
+            "_sort_vector": (0.4, 0.2),
+        }
+    ]
+
+    assert recommended_action_ev_row(rows) is None
+
+    brief = position_ev.action_ev_brief(rows)
+
+    assert "没有可推荐调律 action" in brief
+    assert "库存升级机会" in brief
+    assert "有效提升 0.4" in brief
+    assert "不参与主调律推荐排序" in brief
+    assert "暂无 action EV 结果" not in brief
+
+
+def test_action_ev_brief_does_not_present_quality_only_action_as_recommendation():
+    rows = [
+        {
+            "策略": "随机位置",
+            "目标套装": "A",
+            "位置": "1-6 随机",
+            "套装约束": "满足A 6",
+            "相对随机": "随机位置是基础 action",
+            "有效提升": 0.0,
+            "质量提升": 1.0,
+            "有效/母盘": 0.0,
+            "质量/母盘": 1.0,
+            "排序向量/母盘": "(1.0, 0.0)",
+            "_sort_vector": (1.0, 0.0),
+        }
+    ]
+
+    assert recommended_action_ev_row(rows) is rows[0]
+
+    brief = position_ev.action_ev_brief(rows)
+
+    assert "暂无有效提升 action" in brief
+    assert "仅有非有效收益" in brief
+    assert "随机位置：A" not in brief
+
+
+def test_action_ev_brief_mentions_upgrade_when_tuning_is_quality_only():
+    rows = [
+        {
+            "策略": "随机位置",
+            "目标套装": "A",
+            "位置": "1-6 随机",
+            "套装约束": "满足A 6",
+            "相对随机": "随机位置是基础 action",
+            "有效提升": 0.0,
+            "质量提升": 1.0,
+            "有效/母盘": 0.0,
+            "质量/母盘": 1.0,
+            "_sort_vector": (1.0, 0.0),
+        },
+        {
+            "策略": "强化库存胚子",
+            "目标套装": "B",
+            "位置": "5号位",
+            "套装约束": "满足B 2",
+            "有效提升": 0.3,
+            "质量提升": 0.3,
+            "有效/母盘": 0.0,
+            "质量/母盘": 0.0,
+            "_sort_vector": (0.3, 0.3),
+        },
+    ]
+
+    brief = position_ev.action_ev_brief(rows)
+
+    assert "没有有效提升为正的可推荐调律 action" in brief
+    assert "库存升级机会" in brief
+    assert "有效提升 0.3" in brief
+    assert "排序最高调律 action 仅有非有效收益" in brief
+
+
+def test_action_ev_brief_uses_effective_gain_and_comparison_before_audit_vector():
+    rows = [
+        {
+            "策略": "随机位置",
+            "目标套装": "A",
+            "位置": "1-6 随机",
+            "套装约束": "满足A 6",
+            "比较口径": "随机混合：1-6 固定位置按概率加权；不是单一代表搭配",
+            "相对随机": "基准",
+            "有效提升": 0.25,
+            "质量提升": 1.0,
+            "有效/母盘": 0.08,
+            "质量/母盘": 0.2,
+            "排序向量/母盘": "(1.0, 0.25)",
+            "代表分支搭配": "混合结果，不存在唯一典型搭配",
+            "_sort_vector": (1.0, 0.25),
+        }
+    ]
+
+    brief = position_ev.action_ev_brief(rows)
+
+    assert "有效提升 0.25，有效/母盘 0.08" in brief
+    assert "随机混合：1-6 固定位置按概率加权" in brief
+    assert "审计排序向量/母盘 (1.0, 0.25)" in brief
+    assert brief.index("有效提升 0.25") < brief.index("审计排序向量/母盘")
+
+
+def test_action_ev_brief_prioritizes_effective_metric_over_audit_vector():
+    high_audit_low_effective = {
+        "策略": "随机位置",
+        "目标套装": "A",
+        "位置": "1-6 随机",
+        "套装约束": "满足A 6",
+        "比较口径": "随机混合：A",
+        "相对随机": "基准",
+        "有效提升": 0.1,
+        "质量提升": 99.0,
+        "有效/母盘": 0.1,
+        "质量/母盘": 99.0,
+        "排序向量/母盘": "(99.0, 0.1)",
+        "_sort_vector": (99.0, 0.1),
+    }
+    low_audit_high_effective = {
+        "策略": "随机位置",
+        "目标套装": "B",
+        "位置": "1-6 随机",
+        "套装约束": "满足B 6",
+        "比较口径": "随机混合：B",
+        "相对随机": "基准",
+        "有效提升": 0.2,
+        "质量提升": 1.0,
+        "有效/母盘": 0.2,
+        "质量/母盘": 1.0,
+        "排序向量/母盘": "(1.0, 0.2)",
+        "_sort_vector": (1.0, 0.2),
+    }
+
+    assert recommended_action_ev_row([high_audit_low_effective, low_audit_high_effective]) is high_audit_low_effective
+
+    brief = position_ev.action_ev_brief([high_audit_low_effective, low_audit_high_effective])
+
+    assert brief.startswith("随机位置：B 1-6 随机")
+    assert "有效提升 0.2，有效/母盘 0.2" in brief
+    assert "引擎审计排序最高为：随机位置 A 1-6 随机" in brief
 
 
 def test_recommended_action_ev_ignores_float_noise_before_real_gain():

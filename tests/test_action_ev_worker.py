@@ -9,6 +9,9 @@ from gear_optimizer.action_ev_worker import (
     main as worker_main,
 )
 from gear_optimizer.presets import load_current_example
+from gear_optimizer.game_rules import load_characters
+from gear_optimizer.user_target_templates import save_user_target_template
+from gear_optimizer.user_target_templates import target_template_store_path
 
 
 def _write_worker_input(path: Path, game_id: str = "zzz", engine: str | None = None) -> None:
@@ -21,6 +24,8 @@ def _write_worker_input(path: Path, game_id: str = "zzz", engine: str | None = N
         "current_pieces": [piece.model_dump(mode="json") for piece in pieces],
         "inventory_pieces": [],
         "horizon": 1,
+        "input_audit": "输入指纹：worker-test\n库存：0 件",
+        "input_audit_lines": ["输入指纹：worker-test", "库存：0 件"],
     }
     if engine is not None:
         payload["engine"] = engine
@@ -55,6 +60,138 @@ def test_action_ev_worker_engine_defaults_and_env_override(monkeypatch, tmp_path
     monkeypatch.setenv(ACTION_EV_ENGINE_ENV, "inventory_recursive")
     assert build_action_ev_rows_from_payload(payload) == [{"策略": "fake"}]
     assert captured[-1] is False
+
+
+def test_action_ev_worker_loads_user_target_templates(monkeypatch, tmp_path):
+    user_data = tmp_path / "user_data"
+    monkeypatch.setenv("GEAR_OPTIMIZER_USER_DATA_DIR", str(user_data))
+    base = next(character for character in load_characters("zzz") if character.id == "zzz_starlight_billy")
+    saved = save_user_target_template("zzz", base, "测试目标模板", user_data)
+    pieces = load_current_example("examples/zzz_billy_current.yaml")
+    payload = {
+        "run_id": "test-user-template",
+        "game_id": "zzz",
+        "character_id": saved.id,
+        "probability_model_id": "zzz_default",
+        "current_pieces": [piece.model_dump(mode="json") for piece in pieces],
+        "inventory_pieces": [],
+        "horizon": 1,
+    }
+    captured = []
+
+    def fake_position_strategy_efficiency_rows(_game, character, *_args, **_kwargs):
+        captured.append(character.id)
+        return [{"策略": "fake"}]
+
+    monkeypatch.setattr(
+        "gear_optimizer.action_ev_worker.position_strategy_efficiency_rows",
+        fake_position_strategy_efficiency_rows,
+    )
+
+    assert build_action_ev_rows_from_payload(payload) == [{"策略": "fake"}]
+    assert captured == [saved.id]
+
+
+def test_action_ev_worker_builtin_character_ignores_broken_user_target_templates(monkeypatch, tmp_path):
+    user_data = tmp_path / "user_data"
+    monkeypatch.setenv("GEAR_OPTIMIZER_USER_DATA_DIR", str(user_data))
+    path = target_template_store_path("zzz", user_data)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("templates: [", encoding="utf-8")
+    pieces = load_current_example("examples/zzz_billy_current.yaml")
+    payload = {
+        "run_id": "test-builtin-template",
+        "game_id": "zzz",
+        "character_id": "zzz_starlight_billy",
+        "probability_model_id": "zzz_default",
+        "current_pieces": [piece.model_dump(mode="json") for piece in pieces],
+        "inventory_pieces": [],
+        "horizon": 1,
+    }
+
+    monkeypatch.setattr(
+        "gear_optimizer.action_ev_worker.position_strategy_efficiency_rows",
+        lambda *_args, **_kwargs: [{"策略": "fake"}],
+    )
+
+    assert build_action_ev_rows_from_payload(payload) == [{"策略": "fake"}]
+
+
+def test_action_ev_worker_strips_unsupported_revealed_next_substat(monkeypatch):
+    pieces = load_current_example("examples/zzz_billy_current.yaml")
+    dirty_piece = pieces[0].model_dump(mode="json")
+    dirty_piece["initial_substat_count"] = 3
+    dirty_piece["level"] = 0
+    dirty_piece["substats"] = [
+        {"stat": "暴击率", "rolls": 0},
+        {"stat": "暴击伤害", "rolls": 0},
+        {"stat": "攻击力百分比", "rolls": 0},
+    ]
+    dirty_piece["revealed_next_substat"] = "暴击率"
+    payload = {
+        "run_id": "test-dirty-revealed-next",
+        "game_id": "zzz",
+        "character_id": "zzz_starlight_billy",
+        "probability_model_id": "zzz_default",
+        "current_pieces": [dirty_piece, *[piece.model_dump(mode="json") for piece in pieces[1:]]],
+        "inventory_pieces": [],
+        "horizon": 1,
+    }
+    captured = []
+
+    def fake_position_strategy_efficiency_rows(_game, _character, _model, analysis, **_kwargs):
+        captured.append(analysis.scores[0].position)
+        return [{"策略": "fake"}]
+
+    monkeypatch.setattr(
+        "gear_optimizer.action_ev_worker.position_strategy_efficiency_rows",
+        fake_position_strategy_efficiency_rows,
+    )
+
+    assert build_action_ev_rows_from_payload(payload) == [{"策略": "fake"}]
+    assert captured
+
+
+def test_action_ev_worker_strips_invalid_hsr_revealed_next_substat(monkeypatch):
+    dirty_current = {
+        "position": "body",
+        "set_name": "识海迷坠的学者",
+        "main_stat": "暴击率",
+        "initial_substat_count": 3,
+        "level": 0,
+        "substats": [
+            {"stat": "暴击伤害", "rolls": 0},
+            {"stat": "攻击力百分比", "rolls": 0},
+            {"stat": "生命值百分比", "rolls": 0},
+        ],
+        "revealed_next_substat": "暴击伤害",
+    }
+    dirty_inventory = {
+        **dirty_current,
+        "revealed_next_substat": "暴击率",
+    }
+    payload = {
+        "run_id": "test-invalid-hsr-revealed-next",
+        "game_id": "hsr",
+        "character_id": "hsr_placeholder",
+        "probability_model_id": "hsr_default",
+        "current_pieces": [dirty_current],
+        "inventory_pieces": [dirty_inventory],
+        "horizon": 1,
+    }
+    captured = []
+
+    def fake_position_strategy_efficiency_rows(_game, _character, _model, _analysis, **kwargs):
+        captured.append([piece.revealed_next_substat for piece in kwargs["inventory_pieces"]])
+        return [{"策略": "fake"}]
+
+    monkeypatch.setattr(
+        "gear_optimizer.action_ev_worker.position_strategy_efficiency_rows",
+        fake_position_strategy_efficiency_rows,
+    )
+
+    assert build_action_ev_rows_from_payload(payload) == [{"策略": "fake"}]
+    assert captured == [[None, None]]
 
 
 def test_action_ev_worker_writes_result_progress_and_summary(tmp_path):
@@ -98,10 +235,14 @@ def test_action_ev_worker_writes_result_progress_and_summary(tmp_path):
     assert result["run_id"] == "test-run"
     assert result["engine"] == "inventory_recursive"
     assert result["execution_mode"] == "worker_process"
+    assert result["input_audit"] == "输入指纹：worker-test\n库存：0 件"
+    assert result["input_audit_lines"] == ["输入指纹：worker-test", "库存：0 件"]
     assert result["rows"]
     assert summary["status"] == "ok"
     assert summary["engine"] == "inventory_recursive"
     assert summary["execution_mode"] == "worker_process"
+    assert summary["input_audit"] == result["input_audit"]
+    assert summary["input_audit_lines"] == result["input_audit_lines"]
     assert summary["rows"] == len(result["rows"])
     assert any(event["event"] == "worker_start" for event in progress_events)
     assert any(event.get("engine") == "inventory_recursive" for event in progress_events)
@@ -144,8 +285,12 @@ def test_action_ev_worker_writes_error_json_for_bad_input(tmp_path):
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
     assert error["status"] == "error"
     assert "missing-game" in error["message"]
+    assert error["input_audit"] == "输入指纹：worker-test\n库存：0 件"
+    assert error["input_audit_lines"] == ["输入指纹：worker-test", "库存：0 件"]
     assert "traceback" in error
     assert summary["status"] == "error"
+    assert summary["input_audit"] == error["input_audit"]
+    assert summary["input_audit_lines"] == error["input_audit_lines"]
     assert not output_path.exists()
 
 

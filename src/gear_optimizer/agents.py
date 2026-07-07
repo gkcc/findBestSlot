@@ -566,7 +566,7 @@ def _legacy_current_files(game_id: str, root: Path) -> list[Path]:
     return sorted(folder.glob("*.yaml"))
 
 
-def _load_current_file_templates(path: Path) -> list[dict[str, Any]]:
+def _load_current_file_templates(path: Path, game_id: str) -> list[dict[str, Any]]:
     data = read_yaml(path)
     templates = data.get("templates")
     if isinstance(templates, list):
@@ -576,7 +576,7 @@ def _load_current_file_templates(path: Path) -> list[dict[str, Any]]:
                 {
                     "id": str(item.get("id") or f"template_{index}"),
                     "label": str(item.get("label") or item.get("id") or f"模板 {index}"),
-                    "pieces": current_gear_data_to_pieces(item),
+                    "pieces": current_gear_data_to_pieces(item, game_id=game_id),
                 }
             )
         return values
@@ -584,7 +584,7 @@ def _load_current_file_templates(path: Path) -> list[dict[str, Any]]:
         {
             "id": DEFAULT_LOADOUT_ID,
             "label": str(data.get("label") or "当前装备"),
-            "pieces": current_gear_data_to_pieces(data),
+            "pieces": current_gear_data_to_pieces(data, game_id=game_id),
         }
     ]
 
@@ -695,7 +695,7 @@ def dry_run_multi_agent_migration(
             agent.agent_id,
             AgentLoadoutStore(game=game_id, agent_id=agent.agent_id),
         )
-        templates = _load_current_file_templates(path)
+        templates = _load_current_file_templates(path, game_id)
         for template in templates:
             loadout_id = DEFAULT_LOADOUT_ID if len(templates) == 1 else str(template["id"])
             slot_items: dict[str, str | None] = {}

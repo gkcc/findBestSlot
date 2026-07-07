@@ -407,9 +407,13 @@ def candidate_conclusion_rows(
         {
             "问题": "当前副词条构成",
             "结论": _candidate_substat_summary(candidate, character),
-            "依据": "核心、可用、无效由当前角色副词条优先级决定；未配置可用词条时只显示核心和无效。",
+            "依据": "有效/无效由目标模板的副属性有效排序决定；同 rank 表示并列，高 rank 优先。",
         },
     ]
+
+
+def _is_add_substat_event(event: str) -> bool:
+    return event.startswith("补第 4 副属性")
 
 
 def candidate_next_step_rows(result: CandidateEvaluation) -> list[dict[str, str]]:
@@ -429,7 +433,7 @@ def candidate_next_step_rows(result: CandidateEvaluation) -> list[dict[str, str]
     expected_weighted_gain = float(first["expected_weighted_gain"])
     event_label = (
         "补第 4 个副属性"
-        if event == "补第 4 副属性"
+        if _is_add_substat_event(event)
         else "随机命中已有副属性"
     )
 
@@ -568,16 +572,16 @@ def high_priority_closure_rows() -> list[dict[str, str]]:
         },
         {
             "编号": "7",
-            "问题": "盘面模板能不能按角色保存",
+            "问题": "当前装备快照能不能按角色保存",
             "闭环状态": "已支持角色维度本地保存",
-            "验收入口": "当前装备评分 -> 盘面状态摘要下方保存当前盘面 / 盘面模板",
-            "证据": "保存入口前置；加载、删除当前盘面模板；源码模式写入 user_data，打包版写入用户数据目录。",
+            "验收入口": "当前装备评分 -> 盘面状态摘要下方保存当前盘面 / 当前装备快照",
+            "证据": "保存入口前置；加载、删除当前装备快照；源码模式写入 user_data，打包版写入用户数据目录。",
         },
         {
             "编号": "8",
             "问题": "盘面编辑校验和保存反馈不友好",
             "闭环状态": "已增加实时更新、盘面状态摘要和保存前检查",
-            "验收入口": "当前装备评分 -> 每个盘面弹窗 / 盘面状态摘要 / 盘面模板",
+            "验收入口": "当前装备评分 -> 每个盘面弹窗 / 盘面状态摘要 / 当前装备快照",
             "证据": "单盘编辑会实时写入当前会话并重新校验；等级、可见副词条、roll 预算自动约束；状态摘要显示保存就绪、自动校验和保存路径。",
         },
         {
@@ -839,7 +843,7 @@ def candidate_outcome_rows(
     weighted_target_threshold = character.weighted_target_score
     rows = [
         {
-            "目标": "达到角色目标线",
+            "目标": "达到目标模板有效线",
             "概率": _probability_label(
                 sum(
                     point.probability
@@ -850,7 +854,7 @@ def candidate_outcome_rows(
             "依据": f"最终有效词条次数达到 {target_threshold:g} 或以上。",
         },
         {
-            "目标": "达到质量目标线",
+            "目标": "审计：达到质量线",
             "概率": _probability_label(
                 sum(
                     point.probability
@@ -861,7 +865,7 @@ def candidate_outcome_rows(
             "依据": f"最终质量分达到 {weighted_target_threshold:g} 或以上。",
         },
         {
-            "目标": "达到 good 评级",
+            "目标": "审计：达到 good 评级",
             "概率": _probability_label(
                 sum(
                     point.probability
@@ -872,7 +876,7 @@ def candidate_outcome_rows(
             "依据": f"最终质量分达到 {good_threshold:g} 或以上。",
         },
         {
-            "目标": "达到 excellent 评级",
+            "目标": "审计：达到 excellent 评级",
             "概率": _probability_label(
                 sum(
                     point.probability
@@ -1273,11 +1277,11 @@ def _candidate_checkpoint_status(result: CandidateEvaluation) -> tuple[str, str]
     elif result.recommendation == "暂停":
         stop_rule = "只有命中高优先级词条才继续；歪到低优先级或无效词条就先停。"
     elif result.recommendation == "仅过渡":
-        stop_rule = "只建议低成本观察；没有命中核心词条就止损，当过渡盘处理。"
+        stop_rule = "只建议低成本观察；没有命中高优先级有效词条就止损，当过渡盘处理。"
     else:
         stop_rule = "整体期望偏低，不建议继续投入；除非只是验证一次低成本事件。"
 
-    if event == "补第 4 副属性":
+    if _is_add_substat_event(event):
         conclusion = f"+{level} 看补出的第 4 词条"
         detail = "先补第 4 个副属性"
     else:

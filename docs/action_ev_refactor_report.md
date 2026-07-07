@@ -7,7 +7,7 @@
 - 用精确 DP 替换 `_candidate_combos` / `_best_combo_rows` 原先的按位置笛卡尔积枚举。
 - value-only 路径只保存 count-state 下的最优 value，不回溯组合。
 - `return_combo=True` 路径使用 DP backpointer 回溯组合，供 `_set_plan_frontier_action_specs` 使用。
-- 拆分可装备 loadout candidates 与 upgrade sources：未满级胚子默认只作为“强化库存胚子”action source，不进入 `Best(I)`。
+- 拆分可装备 loadout candidates 与 upgrade sources：未满级胚子默认只作为“库存升级机会”action source，不进入 `Best(I)`。
 - 修复 locked 来源语义：只有当前装备来源的 locked 件会锁位置；背包件即便带 `locked=True`，也不会把该位置锁死。
 - lookahead 不再使用 frontier-only 排他剪枝；当前 action space 显式取 `dominant_generation ∪ set_plan_frontier ∪ upgrade_sources`，避免漏同 requirement 内部提质路径。
 - best_loadout 缓存键从 JSON 字符串改为 tuple，并纳入 locked、未满级 piece signature 等语义字段。
@@ -33,7 +33,7 @@ DP 状态：
 
 ### 未满级胚子
 
-未满级 `GearPiece` 仍保留在 inventory 中，但默认只会被 `_upgrade_action_specs` 作为“强化库存胚子”来源使用。除非显式设置 `_allow_unfinished_loadout=True`，否则不会进入 `Best(I)`。
+未满级 `GearPiece` 仍保留在 inventory 中，但默认只会被 `_upgrade_action_specs` 作为“库存升级机会”来源使用（UI 显示为“非调律：升级已有库存”，内部策略 key 为 `强化库存胚子`）。除非显式设置 `_allow_unfinished_loadout=True`，否则不会进入 `Best(I)`。
 
 ### locked 位置
 
@@ -56,7 +56,7 @@ DP 状态：
 
 - DP best_loadout 与旧笛卡尔积参考实现在小库存下结果一致。
 - frontier-only 会漏掉同 requirement 内部提质路径；lookahead action space 保留 dominant 以覆盖该路径。
-- 未满级胚子不进入 `Best(I)`，但仍会生成“强化库存胚子”action。
+- 未满级胚子不进入 `Best(I)`，但仍会生成“库存升级机会”action。
 - locked 位置不可被背包成品或强化后的候选替换。
 - 背包件 `locked=True` 不会锁位置，只有当前装备来源会锁。
 - 聚合 outcome 缓存不递归，二次调用命中缓存，结果与手动 `_aggregate_inventory_outcomes(_action_outcome_distribution(...))` 一致。
@@ -86,7 +86,7 @@ python -m pytest -q
 ```text
 2.667s
 最佳：固定位置 / 折枝剑歌 / 6号位
-质量提升 0.183，有效提升 0.183，质量/母盘 0.0306
+有效提升 0.183，有效/母盘 0.0306，审计质量提升 0.183
 ```
 
 重构后：
@@ -94,7 +94,7 @@ python -m pytest -q
 ```text
 2.552s
 最佳：固定位置 / 折枝剑歌 / 6号位
-质量提升 0.183，有效提升 0.183，质量/母盘 0.0306
+有效提升 0.183，有效/母盘 0.0306，审计质量提升 0.183
 ```
 
 结论未大幅变化。
@@ -103,25 +103,26 @@ python -m pytest -q
 
 同一示例盘面，horizon=2 对比：
 
-| 口径 | 时间 | DP states | 推荐 action | 质量提升 | 质量/母盘 |
-| --- | ---: | ---: | --- | ---: | ---: |
-| 旧实现 frontier-only | 57.412s | 1397 | 固定位置 / 折枝剑歌 / 6号位 | 2.509 | 0.4182 |
-| 新 best_loadout + frontier-only | 42.478s | 1397 | 固定位置 / 折枝剑歌 / 6号位 | 2.509 | 0.4182 |
-| 新 best_loadout + dominant-only | 62.341s | 1397 | 随机位置 / 折枝剑歌 / 1-6 随机 | 0.168 | 0.0561 |
-| 新 best_loadout + dominant∪frontier | 61.978s | 1397 | 随机位置 / 折枝剑歌 / 1-6 随机 | 0.168 | 0.0561 |
+| 口径 | 时间 | DP states | 推荐 action | 有效提升 | 有效/母盘 | 审计质量提升 |
+| --- | ---: | ---: | --- | ---: | ---: | ---: |
+| 旧实现 frontier-only | 57.412s | 1397 | 固定位置 / 折枝剑歌 / 6号位 | 2.509 | 0.4182 | 2.509 |
+| 新 best_loadout + frontier-only | 42.478s | 1397 | 固定位置 / 折枝剑歌 / 6号位 | 2.509 | 0.4182 | 2.509 |
+| 新 best_loadout + dominant-only | 62.341s | 1397 | 随机位置 / 折枝剑歌 / 1-6 随机 | 0.168 | 0.0561 | 0.168 |
+| 新 best_loadout + dominant∪frontier | 61.978s | 1397 | 随机位置 / 折枝剑歌 / 1-6 随机 | 0.168 | 0.0561 | 0.168 |
 
 当前 shipping 口径是 `dominant∪frontier`。该口径下，固定 6 号位并非没有收益：
 
 ```text
 固定位置 / 折枝剑歌 / 6号位
-质量提升 0.331，有效提升 0.331，质量/母盘 0.0551
+有效提升 0.331，有效/母盘 0.0551，审计质量提升 0.331
 
-随机位置 / 折枝剑歌 / 1-6随机
-质量提升 0.168，有效提升 0.168，质量/母盘 0.0561
+随机位置 / 折枝剑歌 / 1-6 随机
+有效提升 0.168，有效/母盘 0.0561，审计质量提升 0.168
 ```
 
 结论变化原因：
 
+- 随机位置行是 1-6 固定位置分支 action value 的概率加权平均，不对应唯一代表最终搭配。
 - `2.509 -> 0.168` 的主因是旧 lookahead 的 `frontier or dominant` 排他策略。新 best_loadout 但保留 frontier-only 时仍得到 2.509，说明这不是 DP 替换、未满级胚子拆分或 locked 修复导致的主变化。
 - frontier-only 在 frontier 非空时排除了 dominant action，未来策略空间被切成一条很窄的迁移路径，固定 6 号位的 option value 被抬高。
 - `dominant∪frontier` 后，后续状态会在完整主导 action 空间中按现有 `_combo_value` 的 value_vector 规则重新取最优；固定 6 号位仍有 horizon 收益，但按母盘效率略低于随机位置，因此推荐行切换为随机。

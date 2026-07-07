@@ -13,7 +13,9 @@ from typing import Any
 from gear_optimizer.game_rules import load_characters, load_game, load_probability_models
 from gear_optimizer.models import GearPiece
 from gear_optimizer.position_ev import position_strategy_efficiency_rows
+from gear_optimizer.presets import _sanitize_piece_data_for_game
 from gear_optimizer.scoring import analyse_current_gear
+from gear_optimizer.user_target_templates import load_user_target_templates
 
 ProgressCallback = Callable[[dict[str, object]], None]
 ACTION_EV_ENGINE_ENV = "GEAR_OPTIMIZER_ACTION_EV_ENGINE"
@@ -71,6 +73,18 @@ def _pick_by_id(items: list[Any], item_id: str, label: str) -> Any:
             return item
     available = ", ".join(item.id for item in items) or "-"
     raise ValueError(f"Unknown {label}: {item_id}. Available: {available}")
+
+
+def _pick_character(game_id: str, character_id: str) -> Any:
+    builtin_characters = load_characters(game_id)
+    for character in builtin_characters:
+        if character.id == character_id:
+            return character
+    return _pick_by_id(
+        [*builtin_characters, *load_user_target_templates(game_id)],
+        character_id,
+        "character",
+    )
 
 
 def _jsonable(value: Any) -> Any:
@@ -135,22 +149,18 @@ def build_action_ev_rows_from_payload(
 ) -> list[dict[str, Any]]:
     resolved_engine = normalize_action_ev_engine(engine) if engine else action_ev_engine_from_payload(payload)
     game = load_game(str(payload["game_id"]))
-    character = _pick_by_id(
-        load_characters(game.id),
-        str(payload["character_id"]),
-        "character",
-    )
+    character = _pick_character(game.id, str(payload["character_id"]))
     probability_model = _pick_by_id(
         load_probability_models(game.id),
         str(payload["probability_model_id"]),
         "probability model",
     )
     current_pieces = [
-        GearPiece.model_validate(item)
+        GearPiece.model_validate(_sanitize_piece_data_for_game(item, game.id))
         for item in payload.get("current_pieces", [])
     ]
     inventory_pieces = [
-        GearPiece.model_validate(item)
+        GearPiece.model_validate(_sanitize_piece_data_for_game(item, game.id))
         for item in payload.get("inventory_pieces", [])
     ]
     horizon = int(payload.get("horizon") or 1)
@@ -190,6 +200,10 @@ def main(argv: list[str] | None = None) -> int:
     payload = _read_json(args.input)
     run_id = str(payload.get("run_id") or Path(args.input).stem)
     raw_engine = os.environ.get(ACTION_EV_ENGINE_ENV) or payload.get("engine") or DEFAULT_ACTION_EV_ENGINE
+    input_audit = str(payload.get("input_audit") or "")
+    input_audit_lines = payload.get("input_audit_lines") or (
+        input_audit.splitlines() if input_audit else []
+    )
     summary_base = {
         "run_id": run_id,
         "input": str(args.input),
@@ -200,6 +214,8 @@ def main(argv: list[str] | None = None) -> int:
         "execution_mode": WORKER_EXECUTION_MODE,
         "started_at": started_wall,
         "horizon": int(payload.get("horizon") or 1),
+        "input_audit": input_audit,
+        "input_audit_lines": input_audit_lines,
     }
 
     try:
@@ -227,6 +243,8 @@ def main(argv: list[str] | None = None) -> int:
                     "run_id": run_id,
                     "engine": engine,
                     "execution_mode": WORKER_EXECUTION_MODE,
+                    "input_audit": input_audit,
+                    "input_audit_lines": input_audit_lines,
                     "rows": serialised_rows,
                 },
             )
@@ -264,6 +282,8 @@ def main(argv: list[str] | None = None) -> int:
                 "message": str(exc),
                 "traceback": tb,
                 "finished_at": _utc_now(),
+                "input_audit": input_audit,
+                "input_audit_lines": input_audit_lines,
             },
         )
         _write_json(

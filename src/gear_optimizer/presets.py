@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import yaml
 
-from gear_optimizer.game_rules import PROJECT_ROOT
+from gear_optimizer.game_rules import PROJECT_ROOT, load_game
 from gear_optimizer.models import CandidatePiece, CharacterPreset, GearPiece, ProbabilityModel
 
 
@@ -27,11 +28,55 @@ def load_current_example(path: str | Path) -> list[GearPiece]:
     return current_gear_data_to_pieces(data)
 
 
-def current_gear_data_to_pieces(data: dict) -> list[GearPiece]:
+def _game_supports_revealed_next_substat(game_id: str | None) -> bool:
+    if not game_id:
+        return True
+    try:
+        return load_game(game_id).enhancement.revealed_next_substat_supported
+    except Exception:
+        return True
+
+
+def _revealed_next_substat_repeats_known_stat(item: dict[str, Any]) -> bool:
+    revealed = item.get("revealed_next_substat")
+    if not revealed:
+        return False
+    if revealed == item.get("main_stat"):
+        return True
+    substats = item.get("substats") or []
+    if not isinstance(substats, list):
+        return False
+    for line in substats:
+        if isinstance(line, dict) and line.get("stat") == revealed:
+            return True
+    return False
+
+
+def _sanitize_piece_data_for_game(item: Any, game_id: str | None) -> Any:
+    if not isinstance(item, dict):
+        return item
+    if "revealed_next_substat" not in item:
+        return item
+    if _revealed_next_substat_repeats_known_stat(item):
+        sanitized = dict(item)
+        sanitized.pop("revealed_next_substat", None)
+        return sanitized
+    if _game_supports_revealed_next_substat(game_id):
+        return item
+    sanitized = dict(item)
+    sanitized.pop("revealed_next_substat", None)
+    return sanitized
+
+
+def current_gear_data_to_pieces(data: dict, game_id: str | None = None) -> list[GearPiece]:
     pieces = data.get("pieces", [])
     if not isinstance(pieces, list):
         raise ValueError("Current gear YAML must contain a pieces list")
-    return [GearPiece.model_validate(item) for item in pieces]
+    source_game_id = game_id or str(data.get("game") or "")
+    return [
+        GearPiece.model_validate(_sanitize_piece_data_for_game(item, source_game_id))
+        for item in pieces
+    ]
 
 
 def load_current_yaml_text(text: str) -> tuple[dict, list[GearPiece]]:
@@ -48,10 +93,11 @@ def load_candidate_example(path: str | Path) -> CandidatePiece:
     return candidate_data_to_piece(data)
 
 
-def candidate_data_to_piece(data: dict) -> CandidatePiece:
+def candidate_data_to_piece(data: dict, game_id: str | None = None) -> CandidatePiece:
     if not isinstance(data, dict):
         raise ValueError("Candidate YAML must be a mapping")
-    return CandidatePiece.model_validate(data)
+    source_game_id = game_id or str(data.get("game") or "")
+    return CandidatePiece.model_validate(_sanitize_piece_data_for_game(data, source_game_id))
 
 
 def load_candidate_yaml_text(text: str) -> tuple[dict, CandidatePiece]:

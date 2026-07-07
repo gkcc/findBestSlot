@@ -43,12 +43,22 @@ def test_current_analysis_report_answers_acceptance_questions():
         rows,
         probability_model=probability_model,
         pieces=pieces,
+        input_audit_text="输入指纹：abc123\n目标模板：星徽·比利\n库存：6 件",
     )
 
     assert "# 绝区零 星徽·比利 装备词条分析报告" in report
+    assert "## 本次输入口径" in report
+    assert "- 输入指纹：abc123" in report
+    assert "- 目标模板：星徽·比利" in report
+    assert "- 库存：6 件" in report
     assert "## 攻略结论" in report
     assert "| 优先级 | 主题 | 行动 | 理由 |" in report
     assert "| 1 | 母盘 |" in report
+    mother_line = next(line for line in report.splitlines() if line.startswith("| 1 | 母盘 |"))
+    assert "有效/母盘" in mother_line
+    assert "固定位置基础行" in mother_line or "随机混合" in mother_line
+    assert "审计排序向量/母盘" in mother_line
+    assert mother_line.index("有效/母盘") < mother_line.index("审计排序向量/母盘")
     assert "| 2 | 当前补弱 |" in report
     assert "最弱：6号位" in report
     assert "| 3 | 特殊资源 | 校音器先留；共鸣核先留 |" in report
@@ -77,9 +87,18 @@ def test_current_analysis_report_answers_acceptance_questions():
     assert "校音器/固定主属性" in report
     assert "## 桌面结果区调律期望管理" in report
     assert "随机/固定都会把新盘加入库存后重求当前套装约束下的最优组合" in report
+    assert "随机位置行由同目标套装各固定位置 action value 按位置概率加权平均得到" in report
+    assert "主口径展示有效词条提升/母盘" in report
+    assert "质量向量和质量提升仅保留在明细表中用于审计" in report
+    assert "同时展示有效词条提升/母盘和质量提升/母盘" not in report
     assert "### 随机 vs 固定位置收益效率" in report
-    assert "| 策略 | 目标套装 | 位置 | 主属性 | 固定副属性 | horizon | immediate_EV | option_EV | horizon_EV | 期望提升 | 方案类型 | 第二步策略摘要 | 代表路径 | 代表分支搭配 | 互补位 | 套装约束 | 质量提升 | 有效提升 | 母盘/次 | 校音器/次 | 共鸣核/次 | 高级素材/次 | 质量/母盘 | 有效/母盘 | 排序向量/母盘 | 相对随机 |" in report
+    assert "| 动作类型 | 调律策略/动作 | 目标套装 | 位置 | 主属性 | 固定副属性 | horizon | immediate_EV | option_EV | horizon_EV | 有效期望 | 审计期望向量 | 方案类型 | 第二步策略摘要 | 代表路径 | 代表分支搭配 | 互补位 | 套装约束 | 审计质量提升 | 有效提升 | 母盘/次 | 校音器/次 | 共鸣核/次 | 高级素材/次 | 审计质量/母盘 | 有效/母盘 | 审计排序向量/母盘 | 比较口径 | 相对随机 |" in report
+    assert "| 质量提升 |" not in report
+    assert "| 质量/母盘 |" not in report
+    assert "| 排序向量/母盘 |" not in report
+    assert "| 期望提升 |" not in report
     assert "| 随机位置 | 云岿如我 | 1-6 随机 |" in report
+    assert "随机混合：1-6 固定位置按概率加权；不是单一代表搭配" in report
     assert "| 固定位置 | 折枝剑歌 | 6号位 |" in report
     assert "未满足套装硬约束，不作为当前 horizon 推荐" in report
     assert "### 固定主属性省母盘阶梯" in report
@@ -102,7 +121,10 @@ def test_current_analysis_report_answers_acceptance_questions():
     assert "| 阶梯 | 策略名称 | 锁定范围 | 可接受套装 | 套装概率来源 | 候选概率 | 期望母盘 | 期望校音器 | 期望共鸣核 | 固定副词条依据 | 增量解释 |" in report
     assert "折枝剑歌" in report
     assert "单套装 100.0%" in report
-    assert "暴击率（核心）" in report
+    assert "暴击率（有效#1）" in report
+    assert "暴击率（核心）" not in report
+    assert "- 有效副词条优先级：有效排序：暴击率 > 暴击伤害 > 生命值百分比" in report
+    assert "- 有效副词条优先级：核心" not in report
     assert "| 5 | 固定位置 + 固定主属性 + 固定 2 个副属性" in report
     assert "| 位置 | 套装 | 主属性 | 保留 | 有效词条 | 质量分 | 评级 | 替换标签 | 副词条明细 |" in report
 
@@ -150,12 +172,105 @@ def test_candidate_analysis_report_answers_upgrade_questions():
     assert "## 候选结果概率" in report
     assert "| 目标 | 概率 | 依据 |" in report
     assert "超过当前同位置" in report
-    assert "达到 good 评级" in report
+    assert "审计：达到 good 评级" in report
     assert "## 强化路径" in report
     assert "| +6 | 随机命中已有副属性 | 50.0%" in report
     assert "## 最终有效词条分布" in report
-    assert "## 最终质量分布" in report
+    assert "## 审计质量分布" in report
     assert "- 建议：继续" in report
+
+
+def test_hsr_candidate_report_shows_revealed_next_substat():
+    game = load_game("hsr")
+    character = next(
+        item
+        for item in load_characters("hsr")
+        if item.id == "hsr_placeholder"
+    )
+    analysis = analyse_current_gear(
+        load_current_example("examples/hsr_placeholder_current.yaml"),
+        game,
+        character,
+    )
+    candidate = load_candidate_example("examples/hsr_candidate_body.yaml").model_copy(
+        update={"revealed_next_substat": "速度"}
+    )
+    result = evaluate_candidate(candidate, game, character)
+
+    report = candidate_analysis_report_markdown(
+        game,
+        character,
+        candidate,
+        result,
+        analysis,
+    )
+
+    assert "- 预告第 4 副属性：速度" in report
+    assert "看补出的第 4 词条" in report
+    assert "下一跳是 +3 补第 4 个副属性" in report
+    assert "| +3 | 补第 4 副属性（已预告） | 100.0% |" in report
+    assert "已预告为 速度" in report
+    assert "下一跳是 +3 随机命中已有副属性" not in report
+
+
+def test_unsupported_revealed_next_substat_is_marked_ignored_in_candidate_report():
+    game = load_game("zzz")
+    character = next(
+        item
+        for item in load_characters("zzz")
+        if item.id == "zzz_starlight_billy"
+    )
+    analysis = analyse_current_gear(
+        load_current_example("examples/zzz_billy_current.yaml"),
+        game,
+        character,
+    )
+    candidate = load_candidate_example("examples/zzz_candidate_slot5.yaml").model_copy(
+        update={"revealed_next_substat": "生命值百分比"}
+    )
+    result = evaluate_candidate(candidate, game, character)
+
+    report = candidate_analysis_report_markdown(
+        game,
+        character,
+        candidate,
+        result,
+        analysis,
+    )
+
+    assert "- 预告第 4 副属性：生命值百分比（当前游戏不支持，已按未知随机第 4 词条处理）" in report
+    assert "当前游戏不支持预告第 4 副属性；已按未知随机词条处理。" in report
+    assert "补第 4 副属性（已预告）" not in report
+
+
+def test_inapplicable_revealed_next_substat_is_marked_ignored_in_candidate_report():
+    game = load_game("hsr")
+    character = next(
+        item
+        for item in load_characters("hsr")
+        if item.id == "hsr_placeholder"
+    )
+    analysis = analyse_current_gear(
+        load_current_example("examples/hsr_placeholder_current.yaml"),
+        game,
+        character,
+    )
+    candidate = load_candidate_example("examples/hsr_candidate_body.yaml").model_copy(
+        update={"level": game.enhancement.initial_add_level, "revealed_next_substat": "速度"}
+    )
+    result = evaluate_candidate(candidate, game, character)
+
+    report = candidate_analysis_report_markdown(
+        game,
+        character,
+        candidate,
+        result,
+        analysis,
+    )
+
+    assert "- 预告第 4 副属性：速度（当前状态不适用，已忽略）" in report
+    assert "当前状态已忽略该字段" in report
+    assert "补第 4 副属性（已预告）" not in report
 
 
 def test_candidate_report_uses_locked_position_context():

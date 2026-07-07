@@ -75,22 +75,23 @@ def test_current_gear_yaml_exports_example_compatible_structure():
 
 def test_current_gear_yaml_preserves_initial_substat_count():
     piece = GearPiece(
-        position=5,
-        set_name="云岿如我",
-        main_stat="物理伤害",
+        position="body",
+        set_name="识海迷坠的学者",
+        main_stat="暴击率",
         initial_substat_count=3,
-        level=3,
+        level=0,
         substats=[
-            SubstatLine(stat="暴击率", rolls=0),
             SubstatLine(stat="暴击伤害", rolls=0),
-            SubstatLine(stat="生命值百分比", rolls=0),
             SubstatLine(stat="攻击力百分比", rolls=0),
+            SubstatLine(stat="生命值百分比", rolls=0),
         ],
+        revealed_next_substat="速度",
     )
 
-    yaml_text = current_gear_yaml("zzz", "zzz_starlight_billy", [piece])
+    yaml_text = current_gear_yaml("hsr", "hsr_placeholder", [piece])
     data = yaml.safe_load(yaml_text)
     assert data["pieces"][0]["initial_substat_count"] == 3
+    assert data["pieces"][0]["revealed_next_substat"] == "速度"
 
     _metadata, imported_pieces = load_current_yaml_text(yaml_text)
     assert imported_pieces == [piece]
@@ -126,26 +127,90 @@ def test_character_target_yaml_preserves_configurable_targets():
 
 def test_candidate_yaml_round_trips_through_candidate_loader():
     candidate = CandidatePiece(
-        position=4,
-        set_name="云岿如我",
+        position="body",
+        set_name="识海迷坠的学者",
         main_stat="暴击率",
         initial_substat_count=3,
-        level=3,
+        level=0,
         substats=[
-            SubstatLine(stat="攻击力百分比", rolls=0),
-            SubstatLine(stat="防御力百分比", rolls=0),
-            SubstatLine(stat="穿透值", rolls=0),
             SubstatLine(stat="暴击伤害", rolls=0),
+            SubstatLine(stat="攻击力百分比", rolls=0),
+            SubstatLine(stat="生命值百分比", rolls=0),
         ],
+        revealed_next_substat="速度",
     )
 
     metadata, imported_candidate = load_candidate_yaml_text(
-        candidate_yaml("zzz", candidate, "候选导出测试")
+        candidate_yaml("hsr", candidate, "候选导出测试")
     )
 
-    assert metadata["game"] == "zzz"
+    assert metadata["game"] == "hsr"
     assert metadata["label"] == "候选导出测试"
     assert imported_candidate == candidate
+
+
+def test_unsupported_revealed_next_substat_is_stripped_when_importing_candidate_yaml():
+    yaml_text = """
+game: zzz
+position: 5
+set_name: 云岿如我
+main_stat: 物理伤害
+initial_substat_count: 3
+level: 0
+substats:
+  - stat: 暴击率
+    rolls: 0
+  - stat: 暴击伤害
+    rolls: 0
+  - stat: 攻击力百分比
+    rolls: 0
+revealed_next_substat: 暴击率
+"""
+
+    metadata, imported_candidate = load_candidate_yaml_text(yaml_text)
+
+    assert metadata["game"] == "zzz"
+    assert imported_candidate.revealed_next_substat is None
+
+
+def test_repeated_revealed_next_substat_is_stripped_without_game_metadata():
+    current_yaml = """
+pieces:
+  - position: body
+    set_name: 识海迷坠的学者
+    main_stat: 暴击率
+    initial_substat_count: 3
+    level: 0
+    substats:
+      - stat: 暴击伤害
+        rolls: 0
+      - stat: 攻击力百分比
+        rolls: 0
+      - stat: 生命值百分比
+        rolls: 0
+    revealed_next_substat: 暴击伤害
+"""
+    candidate_yaml_text = """
+position: body
+set_name: 识海迷坠的学者
+main_stat: 暴击率
+initial_substat_count: 3
+level: 0
+substats:
+  - stat: 暴击伤害
+    rolls: 0
+  - stat: 攻击力百分比
+    rolls: 0
+  - stat: 生命值百分比
+    rolls: 0
+revealed_next_substat: 暴击率
+"""
+
+    _current_metadata, imported_pieces = load_current_yaml_text(current_yaml)
+    _candidate_metadata, imported_candidate = load_candidate_yaml_text(candidate_yaml_text)
+
+    assert imported_pieces[0].revealed_next_substat is None
+    assert imported_candidate.revealed_next_substat is None
 
 
 def test_probability_model_yaml_round_trips_through_probability_loader():

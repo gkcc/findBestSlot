@@ -53,7 +53,7 @@ def load_user_current_gears(
             {
                 "id": str(item.get("id") or _safe_id(str(item.get("label") or "current_gear"))),
                 "label": str(item.get("label") or item.get("id") or "未命名盘面"),
-                "pieces": current_gear_data_to_pieces(item),
+                "pieces": current_gear_data_to_pieces(item, game_id=game_id),
             }
         )
     return values
