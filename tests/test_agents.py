@@ -40,7 +40,7 @@ from gear_optimizer.agents import (
 )
 from gear_optimizer.models import CharacterPreset, GearPiece, SubstatLine, SubstatPriority
 from gear_optimizer.user_current_gear import current_gear_store_path, save_user_current_gear
-from gear_optimizer.user_inventory import save_user_inventory
+from gear_optimizer.user_inventory import save_legacy_user_inventory, save_user_inventory
 
 
 GAME_ID = "test_game"
@@ -141,6 +141,7 @@ def test_project_agent_catalogs_match_character_presets():
         assert {
             agent.character_preset_id
             for agent in catalog.agents
+            if agent.character_preset_id
         }.issubset(character_ids)
         assert len(agent_metadata_with_fallbacks(game_id, characters, catalog)) >= len(characters)
 
@@ -165,6 +166,8 @@ def test_project_agent_catalogs_match_character_presets():
     assert {agent.specialty for agent in zzz_catalog.agents}.issuperset({"强攻", "击破", "支援", "异常", "防护", "命破"})
     assert not any(agent.name == "异常代理人模板" for agent in zzz_catalog.agents)
     assert any(agent.agent_id == "zzz_starlight_billy" and agent.name == "星徽·比利" for agent in zzz_catalog.agents)
+    assert next(agent for agent in zzz_catalog.agents if agent.agent_id == "zzz_ye_shunguang").character_preset_id == ""
+    assert not any(agent.character_preset_id == "zzz_template_anomaly" for agent in zzz_catalog.agents)
     assert all(agent.portrait_path for agent in zzz_catalog.agents)
     assert all(agent.card_path for agent in zzz_catalog.agents)
     for agent in zzz_catalog.agents[:8]:
@@ -278,7 +281,7 @@ def test_dry_run_migration_reports_duplicates_and_does_not_modify_files(monkeypa
         position=1,
         substats=[SubstatLine(stat="dmg", rolls=0), SubstatLine(stat="crit", rolls=0)],
     )
-    save_user_inventory(
+    save_legacy_user_inventory(
         GAME_ID,
         CHARACTER_ID,
         [exact_piece, exact_piece, reversed_substats_piece],
@@ -310,7 +313,7 @@ def test_apply_migration_creates_global_inventory_loadouts_and_backup(monkeypatc
     _patch_migration_configs(monkeypatch)
     inventory_piece = _piece(position=1)
     current_piece = _piece(position=2)
-    save_user_inventory(GAME_ID, CHARACTER_ID, [inventory_piece], tmp_path)
+    save_legacy_user_inventory(GAME_ID, CHARACTER_ID, [inventory_piece], tmp_path)
     save_user_current_gear(GAME_ID, CHARACTER_ID, [current_piece], "当前装备", tmp_path)
     legacy_inventory_path = tmp_path / "inventory" / GAME_ID / f"{CHARACTER_ID}.yaml"
     legacy_current_path = current_gear_store_path(GAME_ID, CHARACTER_ID, tmp_path)

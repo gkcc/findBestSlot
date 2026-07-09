@@ -98,9 +98,34 @@ def test_user_target_template_id_includes_source_to_avoid_same_label_collision(t
     }
 
 
+def test_user_target_template_can_clear_stale_source_character(tmp_path):
+    saved = save_user_target_template(
+        "zzz",
+        _preset(),
+        "旧来源目标",
+        source_character_id="removed_builtin",
+        source_agent_id="agent_a",
+        root=tmp_path,
+    )
+
+    resaved = save_user_target_template(
+        "zzz",
+        saved.model_copy(update={"name": "旧来源目标"}),
+        "旧来源目标",
+        source_character_id="",
+        source_agent_id="agent_a",
+        root=tmp_path,
+    )
+
+    assert resaved.id == saved.id
+    assert load_user_target_template_sources("zzz", tmp_path) == {}
+    assert load_user_target_template_source_agents("zzz", tmp_path) == {saved.id: "agent_a"}
+
+
 def test_hidden_builtin_target_templates_survive_user_template_changes(tmp_path):
-    assert hide_builtin_target_template("zzz", "zzz_template_anomaly", tmp_path)
-    assert load_hidden_builtin_target_template_ids("zzz", tmp_path) == {"zzz_template_anomaly"}
+    hidden_id = "zzz_removed_builtin_for_test"
+    assert hide_builtin_target_template("zzz", hidden_id, tmp_path)
+    assert load_hidden_builtin_target_template_ids("zzz", tmp_path) == {hidden_id}
 
     saved = save_user_target_template(
         "zzz",
@@ -109,11 +134,11 @@ def test_hidden_builtin_target_templates_survive_user_template_changes(tmp_path)
         source_character_id="base",
         root=tmp_path,
     )
-    assert load_hidden_builtin_target_template_ids("zzz", tmp_path) == {"zzz_template_anomaly"}
+    assert load_hidden_builtin_target_template_ids("zzz", tmp_path) == {hidden_id}
 
     assert delete_user_target_template("zzz", saved.id, tmp_path)
     assert load_user_target_templates("zzz", tmp_path) == []
-    assert load_hidden_builtin_target_template_ids("zzz", tmp_path) == {"zzz_template_anomaly"}
+    assert load_hidden_builtin_target_template_ids("zzz", tmp_path) == {hidden_id}
 
-    assert unhide_builtin_target_template("zzz", "zzz_template_anomaly", tmp_path)
+    assert unhide_builtin_target_template("zzz", hidden_id, tmp_path)
     assert load_hidden_builtin_target_template_ids("zzz", tmp_path) == set()

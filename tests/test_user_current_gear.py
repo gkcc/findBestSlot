@@ -7,7 +7,13 @@ from gear_optimizer.user_current_gear import (
     load_user_current_gears,
     save_user_current_gear,
 )
-from gear_optimizer.user_inventory import load_user_inventory, save_user_inventory, user_inventory_store_path
+from gear_optimizer.user_inventory import (
+    legacy_user_inventory_store_path,
+    load_user_inventory,
+    save_legacy_user_inventory,
+    save_user_inventory,
+    user_inventory_store_path,
+)
 
 
 def _pieces() -> list[GearPiece]:
@@ -134,6 +140,34 @@ def test_hsr_revealed_next_substat_roundtrips_in_user_inventory_and_current_gear
 
     assert inventory[0].revealed_next_substat == "速度"
     assert current[0]["pieces"][0].revealed_next_substat == "速度"
+
+
+def test_user_inventory_is_game_shared_across_agents(tmp_path):
+    piece = _pieces()[0]
+
+    billy_path = save_user_inventory("zzz", "zzz_starlight_billy", [piece], tmp_path)
+    ye_path = user_inventory_store_path("zzz", "zzz_ye_shunguang", tmp_path)
+
+    assert billy_path == ye_path
+    assert billy_path.name == "_shared.yaml"
+    assert load_user_inventory("zzz", "zzz_starlight_billy", tmp_path) == [piece]
+    assert load_user_inventory("zzz", "zzz_ye_shunguang", tmp_path) == [piece]
+
+
+def test_user_inventory_merges_legacy_agent_files_until_shared_save_exists(tmp_path):
+    first = _pieces()[0]
+    second = first.model_copy(update={"position": 2})
+    save_legacy_user_inventory("zzz", "zzz_starlight_billy", [first], tmp_path)
+    save_legacy_user_inventory("zzz", "zzz_ye_shunguang", [second], tmp_path)
+
+    assert user_inventory_store_path("zzz", "zzz_starlight_billy", tmp_path).name == "_shared.yaml"
+    assert legacy_user_inventory_store_path("zzz", "zzz_starlight_billy", tmp_path).name == "zzz_starlight_billy.yaml"
+    assert load_user_inventory("zzz", "zzz_starlight_billy", tmp_path) == [first, second]
+    assert load_user_inventory("zzz", "zzz_ye_shunguang", tmp_path) == [second, first]
+
+    save_user_inventory("zzz", "zzz_starlight_billy", [first], tmp_path)
+
+    assert load_user_inventory("zzz", "zzz_ye_shunguang", tmp_path) == [first]
 
 
 def test_invalid_hsr_revealed_next_substat_is_stripped_from_legacy_user_storage(tmp_path):

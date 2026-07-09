@@ -470,11 +470,12 @@ def test_loaded_characters_validate_against_games(game_id):
     assert characters
 
 
-def test_zzz_character_targets_are_not_limited_to_starlight_billy():
+def test_zzz_builtin_character_targets_do_not_include_generic_templates():
     characters = load_characters("zzz")
     by_id = {character.id: character for character in characters}
 
-    assert {"zzz_starlight_billy", "zzz_template_anomaly"}.issubset(by_id)
+    assert "zzz_starlight_billy" in by_id
+    assert "zzz_template_anomaly" not in by_id
     billy = by_id["zzz_starlight_billy"]
     assert billy.substat_priority is not None
     assert billy.substat_priority.core == ["暴击率", "暴击伤害", "生命值百分比"]
@@ -491,13 +492,6 @@ def test_zzz_character_targets_are_not_limited_to_starlight_billy():
         if plan.id != billy.default_set_plan
     ]
     assert not any("默认长期目标" in note for note in non_default_notes)
-    anomaly = by_id["zzz_template_anomaly"]
-    assert anomaly.target_set == "自由蓝调"
-    assert anomaly.preferred_mains_for(4) == ["异常精通"]
-    assert anomaly.preferred_mains_for(6) == ["异常掌控"]
-    assert anomaly.weight_for("异常精通") == 1.0
-    assert anomaly.ordered_effective_substats() == ["异常精通", "攻击力百分比", "穿透值"]
-    assert anomaly.active_set_plan().name == "自由蓝调 4 + 摇摆爵士 2"
 
 
 def test_character_rejects_negative_effective_weights():

@@ -215,12 +215,11 @@ def save_user_target_template(
         (agent for item, _source, agent in previous_records if item.id == saved.id and agent),
         "",
     )
-    resolved_source = (
-        source_character_id
-        or previous_source
-        or (preset.id if not preset.id.startswith("user_") else "")
-    )
-    resolved_agent_source = source_agent_id or previous_agent_source
+    if source_character_id is None:
+        resolved_source = previous_source or (preset.id if not preset.id.startswith("user_") else "")
+    else:
+        resolved_source = source_character_id
+    resolved_agent_source = source_agent_id if source_agent_id is not None else previous_agent_source
     hidden_ids = load_hidden_builtin_target_template_ids(game_id, root)
     existing = [
         (item, source, agent)

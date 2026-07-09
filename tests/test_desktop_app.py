@@ -643,10 +643,15 @@ def test_optimizer_window_constructs_key_pyside6_components(monkeypatch, tmp_pat
             target_agent = next(agent for agent in window.agents if agent.name == "维琳娜")
             window._select_agent(target_agent)
             app.processEvents()
-            assert window.selected_character().id == target_agent.character_preset_id
+            assert "缺目标模板：维琳娜" in window.character_combo.currentText()
+            assert window.selected_character().id.startswith("__missing_target__:")
             assert target_agent.name in window.agent_summary_label.text()
             assert target_agent.faction in window.agent_summary_label.text()
-            assert target_agent.character_preset_id in window.agent_summary_label.text()
+            assert "缺目标模板" in window.agent_summary_label.text()
+            assert "zzz_starlight_billy" not in window.agent_summary_label.text()
+            assert "zzz_template_anomaly" not in window.agent_summary_label.text()
+            assert not window.best_button.isEnabled()
+            assert not window.action_button.isEnabled()
             unselected_card = window._agent_card_widget(target_agent, selected=False)
             card_texts = {
                 label.objectName(): label.text()
@@ -654,7 +659,7 @@ def test_optimizer_window_constructs_key_pyside6_components(monkeypatch, tmp_pat
             }
             assert card_texts["AgentCardName"] == target_agent.name
             assert target_agent.faction in card_texts["AgentCardFaction"]
-            assert target_agent.character_preset_id in card_texts["AgentCardTemplate"]
+            assert "缺目标模板" in card_texts["AgentCardTemplate"]
     finally:
         window.close()
         app.processEvents()
@@ -1189,14 +1194,10 @@ def test_target_template_switch_preserves_editing_tables(monkeypatch, tmp_path):
         inventory_piece = _default_inventory_piece(game, base, game.positions[-1].id)
         window.current_table.set_context(game, base, [current_piece])
         window.inventory_table.set_context(game, base, [inventory_piece])
-        source_agent = next(agent for agent in window.agents if agent.name == "维琳娜")
-        source_template = next(
-            character
-            for character in window.characters
-            if character.id == source_agent.character_preset_id
-        )
+        source_agent = next(agent for agent in window.agents if agent.name == "星徽·比利")
+        source_template = next(character for character in window.characters if character.id == "zzz_starlight_billy")
         source_snapshot_piece = _default_inventory_piece(game, source_template, game.positions[1].id)
-        save_user_current_gear(game.id, source_agent.agent_id, [source_snapshot_piece], "维琳娜快照")
+        save_user_current_gear(game.id, source_agent.agent_id, [source_snapshot_piece], "比利快照")
 
         saved = save_user_target_template(
             game.id,
@@ -1218,10 +1219,10 @@ def test_target_template_switch_preserves_editing_tables(monkeypatch, tmp_path):
         assert window.current_table.character.id == saved.id
         assert window.inventory_table.character.id == saved.id
         assert window.current_template_combo.currentData() == ""
-        assert "未保存快照" in window.current_template_combo.currentText()
+        assert "未载入快照" in window.current_template_combo.currentText()
         assert not window.load_current_template_button.isEnabled()
-        assert not any(
-            "维琳娜快照" in window.current_template_combo.itemText(index)
+        assert any(
+            "比利快照" in window.current_template_combo.itemText(index)
             for index in range(window.current_template_combo.count())
         )
 
@@ -1239,7 +1240,7 @@ def test_target_template_switch_preserves_editing_tables(monkeypatch, tmp_path):
         select_current_snapshot("当前代理人快照")
         assert window.current_template_combo.currentData()
         assert window.load_current_template_button.isEnabled()
-        assert f"库存归属：{current_storage_id}" in window.inventory_card_status_label.text()
+        assert "库存归属：游戏共享库存" in window.inventory_card_status_label.text()
         assert window.current_confirmed_digest is None
         assert "目标模板已变化" in window.progress_label.text()
 
@@ -1258,7 +1259,7 @@ def test_target_template_switch_preserves_editing_tables(monkeypatch, tmp_path):
             for item in load_user_current_gears(game.id, current_storage_id)
         ]
         assert default_labels == ["当前装备"]
-        assert saved_labels == ["当前代理人快照", "切换后保存"]
+        assert saved_labels == ["比利快照", "当前代理人快照", "切换后保存"]
 
         select_current_snapshot("当前代理人快照")
         window.load_current_template()
@@ -1277,7 +1278,7 @@ def test_target_template_switch_preserves_editing_tables(monkeypatch, tmp_path):
             for item in load_user_current_gears(game.id, current_storage_id)
         ]
         assert loaded_default_labels == ["当前代理人快照"]
-        assert saved_labels == ["当前代理人快照", "切换后保存", "载入后另存"]
+        assert saved_labels == ["比利快照", "当前代理人快照", "切换后保存", "载入后另存"]
 
         select_current_snapshot("当前代理人快照")
         window.current_table.set_context(game, saved, [current_piece])
@@ -1297,7 +1298,7 @@ def test_target_template_switch_preserves_editing_tables(monkeypatch, tmp_path):
             for item in load_user_current_gears(game.id, current_storage_id)
         ]
         assert edited_default_labels == ["当前装备"]
-        assert saved_labels == ["当前代理人快照", "切换后保存", "载入后另存", "手动编辑后保存"]
+        assert saved_labels == ["比利快照", "当前代理人快照", "切换后保存", "载入后另存", "手动编辑后保存"]
     finally:
         window.close()
         app.processEvents()
@@ -1473,6 +1474,7 @@ def test_hide_builtin_target_template_removes_it_from_combo(monkeypatch, tmp_pat
 
     from PySide6.QtWidgets import QApplication, QMessageBox
     from gear_optimizer.pyside6_app import OptimizerWindow
+    from gear_optimizer.user_target_templates import save_user_target_template
     from gear_optimizer.user_target_templates import load_hidden_builtin_target_template_ids
 
     app = QApplication.instance() or QApplication([])
@@ -1481,8 +1483,11 @@ def test_hide_builtin_target_template_removes_it_from_combo(monkeypatch, tmp_pat
         zzz_index = window.game_combo.findData("zzz")
         assert zzz_index >= 0
         window.game_combo.setCurrentIndex(zzz_index)
-        anomaly_id = "zzz_template_anomaly"
-        index = window.character_combo.findData(anomaly_id)
+        builtin_id = "zzz_starlight_billy"
+        base = next(character for character in window.characters if character.id == builtin_id)
+        saved = save_user_target_template(window.selected_game().id, base, "临时目标")
+        window._reload_target_template_options(builtin_id)
+        index = window.character_combo.findData(builtin_id)
         assert index >= 0
         window.character_combo.setCurrentIndex(index)
         window._target_template_changed()
@@ -1496,10 +1501,11 @@ def test_hide_builtin_target_template_removes_it_from_combo(monkeypatch, tmp_pat
         )
         window.delete_target_template()
 
-        assert window.character_combo.findData(anomaly_id) < 0
-        assert anomaly_id in load_hidden_builtin_target_template_ids(window.selected_game().id)
+        assert window.character_combo.findData(builtin_id) < 0
+        assert builtin_id in load_hidden_builtin_target_template_ids(window.selected_game().id)
         progress = window.progress_label.text()
-        assert "已隐藏内置目标模板：ZZZ 泛用异常模板" in progress
+        assert "已隐藏内置目标模板：星徽·比利" in progress
+        assert saved.name in progress
         assert "期望套装结构：" in progress
     finally:
         window.close()
@@ -1521,25 +1527,17 @@ def test_user_target_template_source_does_not_override_selected_agent_storage(mo
         zzz_index = window.game_combo.findData("zzz")
         if zzz_index >= 0:
             window.game_combo.setCurrentIndex(zzz_index)
-        source_agent = next(agent for agent in window.agents if agent.name == "维琳娜")
-        source_template = next(
-            character
-            for character in window.characters
-            if character.id == source_agent.character_preset_id
-        )
+        source_agent = next(agent for agent in window.agents if agent.name == "星徽·比利")
+        source_template = next(character for character in window.characters if character.id == "zzz_starlight_billy")
         saved = save_user_target_template(
             window.selected_game().id,
-            source_template.model_copy(update={"name": "维琳娜自定义目标"}),
-            "维琳娜自定义目标",
+            source_template.model_copy(update={"name": "比利自定义目标"}),
+            "比利自定义目标",
             source_character_id=source_agent.character_preset_id,
             source_agent_id=source_agent.agent_id,
         )
 
-        stale_agent = next(
-            agent
-            for agent in window.agents
-            if agent.character_preset_id != source_agent.character_preset_id
-        )
+        stale_agent = next(agent for agent in window.agents if agent.name == "叶瞬光")
         window._selected_agent_id_by_game[window.selected_game().id] = stale_agent.agent_id
         window._reload_target_template_options(saved.id)
 
@@ -1555,6 +1553,50 @@ def test_user_target_template_source_does_not_override_selected_agent_storage(mo
         app.processEvents()
 
 
+def test_stale_user_target_template_source_is_ignored(monkeypatch, tmp_path):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.setenv("GEAR_OPTIMIZER_USER_DATA_DIR", str(tmp_path / "user_data"))
+    pytest.importorskip("PySide6")
+
+    from PySide6.QtWidgets import QApplication
+    from gear_optimizer.pyside6_app import OptimizerWindow
+    from gear_optimizer.user_target_templates import save_user_target_template
+
+    app = QApplication.instance() or QApplication([])
+    window = OptimizerWindow(width=1000, height=720)
+    try:
+        zzz_index = window.game_combo.findData("zzz")
+        if zzz_index >= 0:
+            window.game_combo.setCurrentIndex(zzz_index)
+        game = window.selected_game()
+        stale_agent = next(agent for agent in window.agents if agent.name == "叶瞬光")
+        source_template = next(character for character in window.characters if character.id == "zzz_starlight_billy")
+        saved = save_user_target_template(
+            game.id,
+            source_template.model_copy(update={"name": "叶瞬光旧来源目标"}),
+            "叶瞬光旧来源目标",
+            source_character_id="zzz_template_anomaly",
+            source_agent_id=stale_agent.agent_id,
+        )
+
+        window._selected_agent_id_by_game[game.id] = stale_agent.agent_id
+        window._reload_target_template_options(saved.id)
+        window._target_template_changed()
+        window._refresh_agent_selector_summary()
+
+        assert window.selected_agent().agent_id == stale_agent.agent_id
+        assert window.selected_character().id == saved.id
+        assert window.selected_storage_character_id() == stale_agent.agent_id
+        assert window.selected_legacy_storage_character_id() == ""
+        assert "数据归属：zzz_ye_shunguang" in window.agent_summary_label.text()
+        assert "目标模板来源" not in window.agent_summary_label.text()
+        assert "缺目标模板" not in window.agent_summary_label.text()
+        assert "zzz_template_anomaly" not in window.agent_summary_label.text()
+    finally:
+        window.close()
+        app.processEvents()
+
+
 def test_agent_storage_does_not_expose_legacy_current_snapshot_or_inventory(monkeypatch, tmp_path):
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
     monkeypatch.setenv("GEAR_OPTIMIZER_USER_DATA_DIR", str(tmp_path / "user_data"))
@@ -1563,7 +1605,7 @@ def test_agent_storage_does_not_expose_legacy_current_snapshot_or_inventory(monk
     from PySide6.QtWidgets import QApplication, QPushButton
     from gear_optimizer.pyside6_app import OptimizerWindow, _default_inventory_piece
     from gear_optimizer.user_current_gear import load_user_current_gears, save_user_current_gear
-    from gear_optimizer.user_inventory import save_user_inventory
+    from gear_optimizer.user_inventory import save_legacy_user_inventory
 
     app = QApplication.instance() or QApplication([])
     window = OptimizerWindow(width=1000, height=720)
@@ -1571,12 +1613,8 @@ def test_agent_storage_does_not_expose_legacy_current_snapshot_or_inventory(monk
         zzz_index = window.game_combo.findData("zzz")
         if zzz_index >= 0:
             window.game_combo.setCurrentIndex(zzz_index)
-        source_agent = next(agent for agent in window.agents if agent.name == "维琳娜")
-        source_template = next(
-            character
-            for character in window.characters
-            if character.id == source_agent.character_preset_id
-        )
+        source_agent = next(agent for agent in window.agents if agent.name == "叶瞬光")
+        source_template = next(character for character in window.characters if character.id == "zzz_starlight_billy")
         current_piece = _default_inventory_piece(
             window.selected_game(),
             source_template,
@@ -1589,29 +1627,31 @@ def test_agent_storage_does_not_expose_legacy_current_snapshot_or_inventory(monk
         )
         save_user_current_gear(
             window.selected_game().id,
-            source_agent.character_preset_id,
+            source_template.id,
             [current_piece],
             "旧模板存储",
         )
-        save_user_inventory(
+        save_legacy_user_inventory(
             window.selected_game().id,
-            source_agent.character_preset_id,
+            source_template.id,
             [inventory_piece],
         )
         window._select_agent(source_agent)
 
         assert window.selected_agent().agent_id == source_agent.agent_id
         assert window.selected_storage_character_id() == source_agent.agent_id
-        assert window.selected_legacy_storage_character_id() == source_agent.character_preset_id
+        assert window.selected_legacy_storage_character_id() == ""
         assert f"数据归属：{source_agent.agent_id}" in window.agent_summary_label.text()
-        assert f"目标模板来源：{source_agent.character_preset_id}" in window.agent_summary_label.text()
+        assert "缺目标模板" in window.agent_summary_label.text()
         assert window._hidden_table_pieces(window.current_table) == []
         assert not any(
             button.text() == "卸下"
             for card in window.current_cards
             for button in card.findChildren(QPushButton)
         )
-        assert window._hidden_table_pieces(window.inventory_table) == []
+        assert [piece.position for piece in window._hidden_table_pieces(window.inventory_table)] == [
+            inventory_piece.position
+        ]
         assert window.current_template_combo.currentData() == ""
         assert "未保存快照" in window.current_template_combo.currentText()
         assert not window.load_current_template_button.isEnabled()
@@ -1620,9 +1660,10 @@ def test_agent_storage_does_not_expose_legacy_current_snapshot_or_inventory(monk
             or "旧模板存储" in window.current_template_combo.itemText(index)
             for index in range(window.current_template_combo.count())
         )
-        assert f"库存归属：{source_agent.agent_id}" in window.inventory_card_status_label.text()
+        assert "库存归属：游戏共享库存" in window.inventory_card_status_label.text()
+        assert "旧角色库存合并结果" in window.inventory_card_status_label.text()
 
-        legacy_items = load_user_current_gears(window.selected_game().id, source_agent.character_preset_id)
+        legacy_items = load_user_current_gears(window.selected_game().id, source_template.id)
         agent_items = load_user_current_gears(window.selected_game().id, source_agent.agent_id)
         assert [item["label"] for item in legacy_items] == ["旧模板存储"]
         assert agent_items == []
@@ -1651,7 +1692,8 @@ def test_same_target_template_agent_switch_isolates_current_snapshots(monkeypatc
         game = window.selected_game()
         billy_agent = next(agent for agent in window.agents if agent.name == "星徽·比利")
         ye_agent = next(agent for agent in window.agents if agent.name == "叶瞬光")
-        assert billy_agent.character_preset_id == ye_agent.character_preset_id
+        assert billy_agent.character_preset_id == "zzz_starlight_billy"
+        assert ye_agent.character_preset_id == ""
         character = next(
             item
             for item in window.characters
@@ -1678,10 +1720,17 @@ def test_same_target_template_agent_switch_isolates_current_snapshots(monkeypatc
         window._select_agent(ye_agent)
         assert window.selected_agent().agent_id == ye_agent.agent_id
         assert window.selected_storage_character_id() == ye_agent.agent_id
+        assert "缺目标模板：叶瞬光" in window.character_combo.currentText()
+        assert "zzz_starlight_billy" not in window.agent_summary_label.text()
+        assert "zzz_template_anomaly" not in window.agent_summary_label.text()
+        assert not window.best_button.isEnabled()
+        assert not window.action_button.isEnabled()
         assert [piece.position for piece in window._hidden_table_pieces(window.current_table)] == [
             ye_current.position
         ]
-        assert window._hidden_table_pieces(window.inventory_table) == []
+        assert [piece.position for piece in window._hidden_table_pieces(window.inventory_table)] == [
+            billy_inventory.position
+        ]
         labels = [
             window.current_template_combo.itemText(index)
             for index in range(window.current_template_combo.count())
@@ -2658,7 +2707,7 @@ def test_save_empty_inventory_requires_confirmation_before_clearing_saved_file(m
         app.processEvents()
 
 
-def test_save_empty_agent_inventory_does_not_mask_legacy_source(monkeypatch, tmp_path):
+def test_save_empty_shared_inventory_warns_before_masking_legacy_source(monkeypatch, tmp_path):
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
     monkeypatch.setenv("GEAR_OPTIMIZER_USER_DATA_DIR", str(tmp_path / "user_data"))
     pytest.importorskip("PySide6")
@@ -2667,7 +2716,7 @@ def test_save_empty_agent_inventory_does_not_mask_legacy_source(monkeypatch, tmp
     from gear_optimizer.pyside6_app import OptimizerWindow, _default_inventory_piece
     from gear_optimizer.user_inventory import (
         load_user_inventory,
-        save_user_inventory,
+        save_legacy_user_inventory,
         user_inventory_store_path,
     )
     from gear_optimizer.user_target_templates import save_user_target_template
@@ -2676,14 +2725,18 @@ def test_save_empty_agent_inventory_does_not_mask_legacy_source(monkeypatch, tmp
     window = OptimizerWindow(width=1200, height=760)
     try:
         game = window.selected_game()
-        source_agent = next(agent for agent in window.agents if agent.agent_id != agent.character_preset_id)
+        zzz_index = window.game_combo.findData("zzz")
+        if zzz_index >= 0:
+            window.game_combo.setCurrentIndex(zzz_index)
+            game = window.selected_game()
+        source_agent = next(agent for agent in window.agents if agent.name == "星徽·比利")
         source_template = next(
             character
             for character in window.characters
             if character.id == source_agent.character_preset_id
         )
         legacy_piece = _default_inventory_piece(game, source_template, game.positions[0].id)
-        save_user_inventory(game.id, source_agent.character_preset_id, [legacy_piece])
+        save_legacy_user_inventory(game.id, source_agent.character_preset_id, [legacy_piece])
         saved = save_user_target_template(
             game.id,
             source_template.model_copy(update={"name": "回退库存目标"}),
@@ -2697,24 +2750,39 @@ def test_save_empty_agent_inventory_does_not_mask_legacy_source(monkeypatch, tmp
         target_path = user_inventory_store_path(game.id, source_agent.agent_id)
 
         assert not target_path.exists()
-        assert window._inventory_loaded_storage_id == source_agent.agent_id
-        assert len(window._hidden_table_pieces(window.inventory_table)) == 0
+        assert window._inventory_loaded_storage_id == "legacy_merged"
+        assert [piece.position for piece in window._hidden_table_pieces(window.inventory_table)] == [
+            legacy_piece.position
+        ]
 
         window.inventory_table.set_context(game, window.selected_character(), [])
         window._inventory_changed()
         questions = []
 
-        def unexpected_empty_save_prompt(*args, **_kwargs):
+        def deny_empty_save_prompt(*args, **_kwargs):
             questions.append((args[1], args[2]))
             return QMessageBox.StandardButton.No
 
-        monkeypatch.setattr(QMessageBox, "question", unexpected_empty_save_prompt)
+        monkeypatch.setattr(QMessageBox, "question", deny_empty_save_prompt)
         window.save_inventory()
 
-        assert questions == []
+        assert questions
+        assert questions[0][0] == "保存空库存？"
+        assert "旧角色库存合并结果" in questions[0][1]
+        assert not target_path.exists()
+        assert len(load_user_inventory(game.id, source_agent.agent_id)) == 1
+        assert len(load_user_inventory(game.id, source_agent.character_preset_id)) == 1
+        assert window.progress_label.text() == "已取消保存空库存；本机库存未变化。"
+
+        monkeypatch.setattr(
+            QMessageBox,
+            "question",
+            lambda *args, **_kwargs: QMessageBox.StandardButton.Yes,
+        )
+        window.save_inventory()
+
         assert target_path.exists()
         assert load_user_inventory(game.id, source_agent.agent_id) == []
-        assert len(load_user_inventory(game.id, source_agent.character_preset_id)) == 1
         assert "已保存 0 件库存" in window.progress_label.text()
     finally:
         window.close()

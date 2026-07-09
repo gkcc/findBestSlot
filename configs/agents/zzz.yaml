@@ -11,7 +11,7 @@ agents:
   release_order: 20260617.055
   portrait_path: assets/zzz/agents/icons/zzz_pyrois.png
   card_path: assets/zzz/agents/cards/zzz_pyrois.png
-  character_preset_id: zzz_starlight_billy
+  character_preset_id: ''
 - agent_id: zzz_velina_airgid
   name: 维琳娜
   rarity: S
@@ -23,7 +23,7 @@ agents:
   release_order: 20260617.054
   portrait_path: assets/zzz/agents/icons/zzz_velina_airgid.png
   card_path: assets/zzz/agents/cards/zzz_velina_airgid.png
-  character_preset_id: zzz_template_anomaly
+  character_preset_id: ''
 - agent_id: zzz_starlight_billy
   name: 星徽·比利
   rarity: S
@@ -47,7 +47,7 @@ agents:
   release_order: 20260506.052
   portrait_path: assets/zzz/agents/icons/zzz_promeia.png
   card_path: assets/zzz/agents/cards/zzz_promeia.png
-  character_preset_id: zzz_template_anomaly
+  character_preset_id: ''
 - agent_id: zzz_cissia
   name: 希希芙
   rarity: S
@@ -59,7 +59,7 @@ agents:
   release_order: 20260415.051
   portrait_path: assets/zzz/agents/icons/zzz_cissia.png
   card_path: assets/zzz/agents/cards/zzz_cissia.png
-  character_preset_id: zzz_starlight_billy
+  character_preset_id: ''
 - agent_id: zzz_nangong_yu
   name: 南宫羽
   rarity: S
@@ -71,7 +71,7 @@ agents:
   release_order: 20260324.05
   portrait_path: assets/zzz/agents/icons/zzz_nangong_yu.png
   card_path: assets/zzz/agents/cards/zzz_nangong_yu.png
-  character_preset_id: zzz_starlight_billy
+  character_preset_id: ''
 - agent_id: zzz_aria
   name: 爱芮
   rarity: S
@@ -83,7 +83,7 @@ agents:
   release_order: 20260304.049
   portrait_path: assets/zzz/agents/icons/zzz_aria.png
   card_path: assets/zzz/agents/cards/zzz_aria.png
-  character_preset_id: zzz_template_anomaly
+  character_preset_id: ''
 - agent_id: zzz_sunna
   name: 千夏
   rarity: S
@@ -95,7 +95,7 @@ agents:
   release_order: 20260206.048
   portrait_path: assets/zzz/agents/icons/zzz_sunna.png
   card_path: assets/zzz/agents/cards/zzz_sunna.png
-  character_preset_id: zzz_starlight_billy
+  character_preset_id: ''
 - agent_id: zzz_zhao
   name: 照
   rarity: S
@@ -107,7 +107,7 @@ agents:
   release_order: 20251230.047
   portrait_path: assets/zzz/agents/icons/zzz_zhao.png
   card_path: assets/zzz/agents/cards/zzz_zhao.png
-  character_preset_id: zzz_starlight_billy
+  character_preset_id: ''
 - agent_id: zzz_ye_shunguang
   name: 叶瞬光
   rarity: S
@@ -119,7 +119,7 @@ agents:
   release_order: 20251230.046
   portrait_path: assets/zzz/agents/icons/zzz_ye_shunguang.png
   card_path: assets/zzz/agents/cards/zzz_ye_shunguang.png
-  character_preset_id: zzz_starlight_billy
+  character_preset_id: ''
 - agent_id: zzz_banyue
   name: 般岳
   rarity: S
@@ -131,7 +131,7 @@ agents:
   release_order: 20251217.045
   portrait_path: assets/zzz/agents/icons/zzz_banyue.png
   card_path: assets/zzz/agents/cards/zzz_banyue.png
-  character_preset_id: zzz_starlight_billy
+  character_preset_id: ''
 - agent_id: zzz_dialyn
   name: 琉音
   rarity: S
@@ -143,7 +143,7 @@ agents:
   release_order: 20251126.044
   portrait_path: assets/zzz/agents/icons/zzz_dialyn.png
   card_path: assets/zzz/agents/cards/zzz_dialyn.png
-  character_preset_id: zzz_starlight_billy
+  character_preset_id: ''
 - agent_id: zzz_yidhari_murphy
   name: 伊德海莉
   rarity: S
@@ -155,7 +155,7 @@ agents:
   release_order: 20251105.043
   portrait_path: assets/zzz/agents/icons/zzz_yidhari_murphy.png
   card_path: assets/zzz/agents/cards/zzz_yidhari_murphy.png
-  character_preset_id: zzz_starlight_billy
+  character_preset_id: ''
 - agent_id: zzz_lucia_elowen
   name: 卢西娅
   rarity: S
@@ -167,7 +167,7 @@ agents:
   release_order: 20251015.042
   portrait_path: assets/zzz/agents/icons/zzz_lucia_elowen.png
   card_path: assets/zzz/agents/cards/zzz_lucia_elowen.png
-  character_preset_id: zzz_starlight_billy
+  character_preset_id: ''
 - agent_id: zzz_komano_manato
   name: 真斗
   rarity: A
@@ -179,7 +179,7 @@ agents:
   release_order: 20251015.013
   portrait_path: assets/zzz/agents/icons/zzz_komano_manato.png
   card_path: assets/zzz/agents/cards/zzz_komano_manato.png
-  character_preset_id: zzz_starlight_billy
+  character_preset_id: ''
 - agent_id: zzz_orphie_magnusson_magus
   name: 奥菲丝&「鬼火」
   rarity: S
@@ -191,7 +191,7 @@ agents:
   release_order: 20250924.041
   portrait_path: assets/zzz/agents/icons/zzz_orphie_magnusson_magus.png
   card_path: assets/zzz/agents/cards/zzz_orphie_magnusson_magus.png
-  character_preset_id: zzz_starlight_billy
+  character_preset_id: ''
 - agent_id: zzz_seed
   name: 「席德」
   rarity: S
@@ -203,7 +203,7 @@ agents:
   release_order: 20250904.04
   portrait_path: assets/zzz/agents/icons/zzz_seed.png
   card_path: assets/zzz/agents/cards/zzz_seed.png
-  character_preset_id: zzz_starlight_billy
+  character_preset_id: ''
 - agent_id: zzz_alice_thymefield
   name: 爱丽丝
   rarity: S
@@ -215,7 +215,7 @@ agents:
   release_order: 20250806.039
   portrait_path: assets/zzz/agents/icons/zzz_alice_thymefield.png
   card_path: assets/zzz/agents/cards/zzz_alice_thymefield.png
-  character_preset_id: zzz_template_anomaly
+  character_preset_id: ''
 - agent_id: zzz_ukinami_yuzuha
   name: 柚叶
   rarity: S
@@ -227,7 +227,7 @@ agents:
   release_order: 20250716.038
   portrait_path: assets/zzz/agents/icons/zzz_ukinami_yuzuha.png
   card_path: assets/zzz/agents/cards/zzz_ukinami_yuzuha.png
-  character_preset_id: zzz_starlight_billy
+  character_preset_id: ''
 - agent_id: zzz_ju_fufu
   name: 橘福福
   rarity: S
@@ -239,7 +239,7 @@ agents:
   release_order: 20250625.037
   portrait_path: assets/zzz/agents/icons/zzz_ju_fufu.png
   card_path: assets/zzz/agents/cards/zzz_ju_fufu.png
-  character_preset_id: zzz_starlight_billy
+  character_preset_id: ''
 - agent_id: zzz_yixuan
   name: 仪玄
   rarity: S
@@ -251,7 +251,7 @@ agents:
   release_order: 20250606.036
   portrait_path: assets/zzz/agents/icons/zzz_yixuan.png
   card_path: assets/zzz/agents/cards/zzz_yixuan.png
-  character_preset_id: zzz_starlight_billy
+  character_preset_id: ''
 - agent_id: zzz_pan_yinhu
   name: 潘引壶
   rarity: A
@@ -263,7 +263,7 @@ agents:
   release_order: 20250606.012
   portrait_path: assets/zzz/agents/icons/zzz_pan_yinhu.png
   card_path: assets/zzz/agents/cards/zzz_pan_yinhu.png
-  character_preset_id: zzz_starlight_billy
+  character_preset_id: ''
 - agent_id: zzz_hugo
   name: 雨果
   rarity: S
@@ -275,7 +275,7 @@ agents:
   release_order: 20250514.035
   portrait_path: assets/zzz/agents/icons/zzz_hugo.png
   card_path: assets/zzz/agents/cards/zzz_hugo.png
-  character_preset_id: zzz_starlight_billy
+  character_preset_id: ''
 - agent_id: zzz_vivian_banshee
   name: 薇薇安
   rarity: S
@@ -287,7 +287,7 @@ agents:
   release_order: 20250423.034
   portrait_path: assets/zzz/agents/icons/zzz_vivian_banshee.png
   card_path: assets/zzz/agents/cards/zzz_vivian_banshee.png
-  character_preset_id: zzz_template_anomaly
+  character_preset_id: ''
 - agent_id: zzz_trigger
   name: 「扳机」
   rarity: S
@@ -299,7 +299,7 @@ agents:
   release_order: 20250402.033
   portrait_path: assets/zzz/agents/icons/zzz_trigger.png
   card_path: assets/zzz/agents/cards/zzz_trigger.png
-  character_preset_id: zzz_starlight_billy
+  character_preset_id: ''
 - agent_id: zzz_soldier_0_anby
   name: 零号·安比
   rarity: S
@@ -311,7 +311,7 @@ agents:
   release_order: 20250312.032
   portrait_path: assets/zzz/agents/icons/zzz_soldier_0_anby.png
   card_path: assets/zzz/agents/cards/zzz_soldier_0_anby.png
-  character_preset_id: zzz_starlight_billy
+  character_preset_id: ''
 - agent_id: zzz_pulchra_fellini
   name: 波可娜
   rarity: A
@@ -323,7 +323,7 @@ agents:
   release_order: 20250312.011
   portrait_path: assets/zzz/agents/icons/zzz_pulchra_fellini.png
   card_path: assets/zzz/agents/cards/zzz_pulchra_fellini.png
-  character_preset_id: zzz_starlight_billy
+  character_preset_id: ''
 - agent_id: zzz_evelyn_chevalier
   name: 伊芙琳
   rarity: S
@@ -335,7 +335,7 @@ agents:
   release_order: 20250212.031
   portrait_path: assets/zzz/agents/icons/zzz_evelyn_chevalier.png
   card_path: assets/zzz/agents/cards/zzz_evelyn_chevalier.png
-  character_preset_id: zzz_starlight_billy
+  character_preset_id: ''
 - agent_id: zzz_astra_yao
   name: 耀嘉音
   rarity: S
@@ -347,7 +347,7 @@ agents:
   release_order: 20250122.03
   portrait_path: assets/zzz/agents/icons/zzz_astra_yao.png
   card_path: assets/zzz/agents/cards/zzz_astra_yao.png
-  character_preset_id: zzz_starlight_billy
+  character_preset_id: ''
 - agent_id: zzz_hoshimi_miyabi
   name: 雅
   rarity: S
@@ -359,7 +359,7 @@ agents:
   release_order: 20241218.029
   portrait_path: assets/zzz/agents/icons/zzz_hoshimi_miyabi.png
   card_path: assets/zzz/agents/cards/zzz_hoshimi_miyabi.png
-  character_preset_id: zzz_template_anomaly
+  character_preset_id: ''
 - agent_id: zzz_asaba_harumasa
   name: 悠真
   rarity: S
@@ -371,7 +371,7 @@ agents:
   release_order: 20241218.028
   portrait_path: assets/zzz/agents/icons/zzz_asaba_harumasa.png
   card_path: assets/zzz/agents/cards/zzz_asaba_harumasa.png
-  character_preset_id: zzz_starlight_billy
+  character_preset_id: ''
 - agent_id: zzz_lighter
   name: 莱特
   rarity: S
@@ -383,7 +383,7 @@ agents:
   release_order: 20241127.027
   portrait_path: assets/zzz/agents/icons/zzz_lighter.png
   card_path: assets/zzz/agents/cards/zzz_lighter.png
-  character_preset_id: zzz_starlight_billy
+  character_preset_id: ''
 - agent_id: zzz_tsukishiro_yanagi
   name: 柳
   rarity: S
@@ -395,7 +395,7 @@ agents:
   release_order: 20241106.026
   portrait_path: assets/zzz/agents/icons/zzz_tsukishiro_yanagi.png
   card_path: assets/zzz/agents/cards/zzz_tsukishiro_yanagi.png
-  character_preset_id: zzz_template_anomaly
+  character_preset_id: ''
 - agent_id: zzz_burnice_white
   name: 柏妮思
   rarity: S
@@ -407,7 +407,7 @@ agents:
   release_order: 20241016.025
   portrait_path: assets/zzz/agents/icons/zzz_burnice_white.png
   card_path: assets/zzz/agents/cards/zzz_burnice_white.png
-  character_preset_id: zzz_template_anomaly
+  character_preset_id: ''
 - agent_id: zzz_caesar_king
   name: 凯撒
   rarity: S
@@ -419,7 +419,7 @@ agents:
   release_order: 20240925.024
   portrait_path: assets/zzz/agents/icons/zzz_caesar_king.png
   card_path: assets/zzz/agents/cards/zzz_caesar_king.png
-  character_preset_id: zzz_starlight_billy
+  character_preset_id: ''
 - agent_id: zzz_jane_doe
   name: 简
   rarity: S
@@ -431,7 +431,7 @@ agents:
   release_order: 20240904.023
   portrait_path: assets/zzz/agents/icons/zzz_jane_doe.png
   card_path: assets/zzz/agents/cards/zzz_jane_doe.png
-  character_preset_id: zzz_template_anomaly
+  character_preset_id: ''
 - agent_id: zzz_seth_lowell
   name: 赛斯
   rarity: A
@@ -443,7 +443,7 @@ agents:
   release_order: 20240904.01
   portrait_path: assets/zzz/agents/icons/zzz_seth_lowell.png
   card_path: assets/zzz/agents/cards/zzz_seth_lowell.png
-  character_preset_id: zzz_starlight_billy
+  character_preset_id: ''
 - agent_id: zzz_qingyi
   name: 青衣
   rarity: S
@@ -455,7 +455,7 @@ agents:
   release_order: 20240814.022
   portrait_path: assets/zzz/agents/icons/zzz_qingyi.png
   card_path: assets/zzz/agents/cards/zzz_qingyi.png
-  character_preset_id: zzz_starlight_billy
+  character_preset_id: ''
 - agent_id: zzz_zhu_yuan
   name: 朱鸢
   rarity: S
@@ -467,7 +467,7 @@ agents:
   release_order: 20240724.021
   portrait_path: assets/zzz/agents/icons/zzz_zhu_yuan.png
   card_path: assets/zzz/agents/cards/zzz_zhu_yuan.png
-  character_preset_id: zzz_starlight_billy
+  character_preset_id: ''
 - agent_id: zzz_soldier_11
   name: 「11号」
   rarity: S
@@ -479,7 +479,7 @@ agents:
   release_order: 20240704.02
   portrait_path: assets/zzz/agents/icons/zzz_soldier_11.png
   card_path: assets/zzz/agents/cards/zzz_soldier_11.png
-  character_preset_id: zzz_starlight_billy
+  character_preset_id: ''
 - agent_id: zzz_ellen_joe
   name: 艾莲
   rarity: S
@@ -491,7 +491,7 @@ agents:
   release_order: 20240704.019
   portrait_path: assets/zzz/agents/icons/zzz_ellen_joe.png
   card_path: assets/zzz/agents/cards/zzz_ellen_joe.png
-  character_preset_id: zzz_starlight_billy
+  character_preset_id: ''
 - agent_id: zzz_von_lycaon
   name: 莱卡恩
   rarity: S
@@ -503,7 +503,7 @@ agents:
   release_order: 20240704.018
   portrait_path: assets/zzz/agents/icons/zzz_von_lycaon.png
   card_path: assets/zzz/agents/cards/zzz_von_lycaon.png
-  character_preset_id: zzz_starlight_billy
+  character_preset_id: ''
 - agent_id: zzz_alexandrina_sebastian
   name: 丽娜
   rarity: S
@@ -515,7 +515,7 @@ agents:
   release_order: 20240704.017
   portrait_path: assets/zzz/agents/icons/zzz_alexandrina_sebastian.png
   card_path: assets/zzz/agents/cards/zzz_alexandrina_sebastian.png
-  character_preset_id: zzz_starlight_billy
+  character_preset_id: ''
 - agent_id: zzz_koleda_belobog
   name: 珂蕾妲
   rarity: S
@@ -527,7 +527,7 @@ agents:
   release_order: 20240704.016
   portrait_path: assets/zzz/agents/icons/zzz_koleda_belobog.png
   card_path: assets/zzz/agents/cards/zzz_koleda_belobog.png
-  character_preset_id: zzz_starlight_billy
+  character_preset_id: ''
 - agent_id: zzz_grace_howard
   name: 格莉丝
   rarity: S
@@ -539,7 +539,7 @@ agents:
   release_order: 20240704.015
   portrait_path: assets/zzz/agents/icons/zzz_grace_howard.png
   card_path: assets/zzz/agents/cards/zzz_grace_howard.png
-  character_preset_id: zzz_template_anomaly
+  character_preset_id: ''
 - agent_id: zzz_nekomiya_mana
   name: 猫又
   rarity: S
@@ -551,7 +551,7 @@ agents:
   release_order: 20240704.014
   portrait_path: assets/zzz/agents/icons/zzz_nekomiya_mana.png
   card_path: assets/zzz/agents/cards/zzz_nekomiya_mana.png
-  character_preset_id: zzz_starlight_billy
+  character_preset_id: ''
 - agent_id: zzz_corin_wickes
   name: 可琳
   rarity: A
@@ -563,7 +563,7 @@ agents:
   release_order: 20240704.009
   portrait_path: assets/zzz/agents/icons/zzz_corin_wickes.png
   card_path: assets/zzz/agents/cards/zzz_corin_wickes.png
-  character_preset_id: zzz_starlight_billy
+  character_preset_id: ''
 - agent_id: zzz_ben_bigger
   name: 本
   rarity: A
@@ -575,7 +575,7 @@ agents:
   release_order: 20240704.008
   portrait_path: assets/zzz/agents/icons/zzz_ben_bigger.png
   card_path: assets/zzz/agents/cards/zzz_ben_bigger.png
-  character_preset_id: zzz_starlight_billy
+  character_preset_id: ''
 - agent_id: zzz_anton_ivanov
   name: 安东
   rarity: A
@@ -587,7 +587,7 @@ agents:
   release_order: 20240704.007
   portrait_path: assets/zzz/agents/icons/zzz_anton_ivanov.png
   card_path: assets/zzz/agents/cards/zzz_anton_ivanov.png
-  character_preset_id: zzz_starlight_billy
+  character_preset_id: ''
 - agent_id: zzz_nicole_demara
   name: 妮可
   rarity: A
@@ -599,7 +599,7 @@ agents:
   release_order: 20240704.006
   portrait_path: assets/zzz/agents/icons/zzz_nicole_demara.png
   card_path: assets/zzz/agents/cards/zzz_nicole_demara.png
-  character_preset_id: zzz_starlight_billy
+  character_preset_id: ''
 - agent_id: zzz_billy_kid
   name: 比利
   rarity: A
@@ -611,7 +611,7 @@ agents:
   release_order: 20240704.005
   portrait_path: assets/zzz/agents/icons/zzz_billy_kid.png
   card_path: assets/zzz/agents/cards/zzz_billy_kid.png
-  character_preset_id: zzz_starlight_billy
+  character_preset_id: ''
 - agent_id: zzz_anby_demara
   name: 安比
   rarity: A
@@ -623,7 +623,7 @@ agents:
   release_order: 20240704.004
   portrait_path: assets/zzz/agents/icons/zzz_anby_demara.png
   card_path: assets/zzz/agents/cards/zzz_anby_demara.png
-  character_preset_id: zzz_starlight_billy
+  character_preset_id: ''
 - agent_id: zzz_soukaku
   name: 苍角
   rarity: A
@@ -635,7 +635,7 @@ agents:
   release_order: 20240704.003
   portrait_path: assets/zzz/agents/icons/zzz_soukaku.png
   card_path: assets/zzz/agents/cards/zzz_soukaku.png
-  character_preset_id: zzz_starlight_billy
+  character_preset_id: ''
 - agent_id: zzz_piper_wheel
   name: 派派
   rarity: A
@@ -647,7 +647,7 @@ agents:
   release_order: 20240704.002
   portrait_path: assets/zzz/agents/icons/zzz_piper_wheel.png
   card_path: assets/zzz/agents/cards/zzz_piper_wheel.png
-  character_preset_id: zzz_template_anomaly
+  character_preset_id: ''
 - agent_id: zzz_lucy
   name: 露西
   rarity: A
@@ -659,4 +659,4 @@ agents:
   release_order: 20240704.001
   portrait_path: assets/zzz/agents/icons/zzz_lucy.png
   card_path: assets/zzz/agents/cards/zzz_lucy.png
-  character_preset_id: zzz_starlight_billy
+  character_preset_id: ''

@@ -15,7 +15,11 @@ from gear_optimizer.game_rules import PROJECT_ROOT, load_characters, read_yaml
 from gear_optimizer.models import CharacterPreset, GearPiece, position_key
 from gear_optimizer.paths import app_data_root
 from gear_optimizer.presets import current_gear_data_to_pieces
-from gear_optimizer.user_inventory import load_user_inventory
+from gear_optimizer.user_inventory import (
+    SHARED_INVENTORY_ID,
+    load_legacy_user_inventory,
+    load_user_inventory,
+)
 
 MULTI_AGENT_SCHEMA_VERSION = 1
 DEFAULT_LOADOUT_ID = "default"
@@ -556,7 +560,8 @@ def _legacy_inventory_files(game_id: str, root: Path) -> list[Path]:
     folder = root / "inventory" / game_id
     if not folder.exists():
         return []
-    return sorted(path for path in folder.glob("*.yaml") if path.stem != "global")
+    ignored = {"global", SHARED_INVENTORY_ID}
+    return sorted(path for path in folder.glob("*.yaml") if path.stem not in ignored)
 
 
 def _legacy_current_files(game_id: str, root: Path) -> list[Path]:
@@ -675,7 +680,7 @@ def dry_run_multi_agent_migration(
 
     for path in inventory_files:
         character_id = _character_id_from_legacy_path(path)
-        for row_index, piece in enumerate(load_user_inventory(game_id, character_id, base), start=1):
+        for row_index, piece in enumerate(load_legacy_user_inventory(game_id, character_id, base), start=1):
             add_item(
                 piece,
                 path,

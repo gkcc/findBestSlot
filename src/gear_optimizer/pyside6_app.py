@@ -101,7 +101,13 @@ from gear_optimizer.user_current_gear import (
     load_user_current_gears,
     save_user_current_gear,
 )
-from gear_optimizer.user_inventory import load_user_inventory, save_user_inventory, user_inventory_store_path
+from gear_optimizer.user_inventory import (
+    SHARED_INVENTORY_ID,
+    load_user_inventory,
+    load_user_inventory_with_source,
+    save_user_inventory,
+    user_inventory_store_path,
+)
 from gear_optimizer.user_target_templates import (
     delete_user_target_template,
     hide_builtin_target_template,
@@ -170,6 +176,7 @@ ACTION_SUCCESSFUL_RUNS_TO_KEEP = 3
 UI_RUNTIME_LOG_NAME = "ui-runtime.log"
 SUBSTAT_CARD_MIME = "application/x-gear-substat-card"
 SUMMARY_NUMERIC_COLUMNS = {"有效", "当前有效", "期望有效", "收益", "效率", "有效/母盘", "主EV", "EV/母盘"}
+MISSING_TARGET_TEMPLATE_PREFIX = "__missing_target__:"
 _TRANSIENT_POPUP_GUARD: QObject | None = None
 _TRANSIENT_POPUP_SUPPRESS_UNTIL = 0.0
 _TRANSIENT_POPUP_CLASS_NAMES = {
@@ -641,6 +648,30 @@ def _unique_storage_ids(*values: str) -> list[str]:
     return list(dict.fromkeys(value for value in values if value))
 
 
+def _missing_target_template_id(agent_id: str) -> str:
+    return f"{MISSING_TARGET_TEMPLATE_PREFIX}{agent_id}"
+
+
+def _is_missing_target_template_id(template_id: str | None) -> bool:
+    return str(template_id or "").startswith(MISSING_TARGET_TEMPLATE_PREFIX)
+
+
+def _missing_target_template(game: GameRules, agent: AgentMetadata) -> CharacterPreset:
+    target_set = game.sets[0] if game.sets else ""
+    return CharacterPreset(
+        id=_missing_target_template_id(agent.agent_id),
+        game=game.id,
+        name=f"缺目标模板：{agent.name}",
+        target_set=target_set,
+        substat_priority=SubstatPriority(core=[], usable=[]),
+        preferred_main_stats={},
+        set_plans=[],
+        target_effective_rolls=0.0,
+        target_weighted_score=0.0,
+        notes="该占位仅表示代理人还没有目标模板；创建目标模板后才允许计算。",
+    )
+
+
 def _gear_piece_duplicate_signature(piece: GearPiece, *, unordered_substats: bool = False) -> str:
     data = piece.model_dump(mode="json")
     if unordered_substats:
@@ -773,14 +804,10 @@ def _initial_inventory_with_source(
     storage_id: str,
     fallback_storage_ids: list[str] | None = None,
 ) -> tuple[list[GearPiece], str]:
-    for candidate_id in _unique_storage_ids(storage_id, *(fallback_storage_ids or [])):
-        try:
-            pieces = load_user_inventory(game.id, candidate_id)
-            if pieces or user_inventory_store_path(game.id, candidate_id).exists():
-                return pieces, candidate_id
-        except Exception:
-            continue
-    return [], storage_id
+    try:
+        return load_user_inventory_with_source(game.id, storage_id)
+    except Exception:
+        return [], SHARED_INVENTORY_ID
 
 
 def _source_label(source: str | None) -> str:
@@ -2015,7 +2042,7 @@ class AgentCard(QFrame):
                 object_name="AgentCardVersion",
             )
         self.template_label = add_line(
-            f"目标模板 {agent.character_preset_id}",
+            f"目标模板 {agent.character_preset_id or '缺目标模板'}",
             style=f"background: transparent; color: {muted_color}; font-weight: 700;",
             object_name="AgentCardTemplate",
         )
@@ -3799,12 +3826,12 @@ class OptimizerWindow(QMainWindow):
         try:
             hidden_builtin_template_ids = load_hidden_builtin_target_template_ids(game.id)
             user_templates = load_user_target_templates(game.id)
-            user_template_sources = load_user_target_template_sources(game.id)
+            raw_user_template_sources = load_user_target_template_sources(game.id)
             user_template_source_agents = load_user_target_template_source_agents(game.id)
         except Exception as exc:
             hidden_builtin_template_ids = set()
             user_templates = []
-            user_template_sources = {}
+            raw_user_template_sources = {}
             user_template_source_agents = {}
             if hasattr(self, "log"):
                 self.log.append(f"用户目标模板读取失败，已退回内置目标模板：{exc}")
@@ -3821,6 +3848,23 @@ class OptimizerWindow(QMainWindow):
             if hasattr(self, "log"):
                 self.log.append("所有内置目标模板都被隐藏，已临时恢复显示以避免目标列表为空。")
         self.characters = [*visible_base_characters, *user_templates]
+        known_template_ids = {character.id for character in [*base_characters, *user_templates]}
+        user_template_sources = {
+            template_id: source_id
+            for template_id, source_id in raw_user_template_sources.items()
+            if source_id in known_template_ids
+        }
+        ignored_sources = {
+            template_id: source_id
+            for template_id, source_id in raw_user_template_sources.items()
+            if source_id not in known_template_ids
+        }
+        if ignored_sources and hasattr(self, "log"):
+            ignored_text = "、".join(
+                f"{template_id}->{source_id}"
+                for template_id, source_id in sorted(ignored_sources.items())
+            )
+            self.log.append(f"已忽略不存在的目标模板来源：{ignored_text}")
         self._target_template_source_by_id = {
             **{character.id: character.id for character in visible_base_characters},
             **user_template_sources,
@@ -3832,6 +3876,12 @@ class OptimizerWindow(QMainWindow):
         for character in self.characters:
             prefix = "自定义 · " if character.id.startswith("user_") else ""
             self.character_combo.addItem(f"{prefix}{character.name} ({character.id})", character.id)
+        selected_agent_id = self._selected_agent_id_by_game.get(game.id)
+        selected_agent = next((agent for agent in self.agents if agent.agent_id == selected_agent_id), None)
+        if selected_agent is not None and self._target_template_for_agent(selected_agent) is None:
+            missing_character = self._ensure_missing_target_template_option(selected_agent)
+            if not selected_character_id or _is_missing_target_template_id(selected_character_id):
+                selected_character_id = missing_character.id
         if selected_character_id:
             index = self.character_combo.findData(selected_character_id)
             if index >= 0:
@@ -3874,6 +3924,21 @@ class OptimizerWindow(QMainWindow):
 
     def _refresh_target_template_controls(self) -> None:
         character = self.selected_character()
+        if self._selected_character_is_missing_target():
+            self.edit_target_template_button.setText("创建目标模板")
+            self.edit_target_template_button.setToolTip("为当前代理人创建目标模板：位置主属性、套装结构和副属性有效排序。")
+            self.delete_target_template_button.setText("无可删除模板")
+            self.delete_target_template_button.setToolTip("当前代理人还没有目标模板。")
+            self.delete_target_template_button.setEnabled(False)
+            self.target_template_summary_label.setText(
+                "当前代理人还没有目标模板；不会套用比利或泛用模板。\n"
+                "请点击“创建目标模板”配置主属性目标、套装结构和副属性有效排序后再计算。"
+            )
+            return
+        self.edit_target_template_button.setText("编辑目标模板")
+        self.edit_target_template_button.setToolTip(
+            "编辑目标模板：每个位置期望主属性、4+2/2+2+2 套装结构、副属性有效排序；不保存装备。"
+        )
         is_user_template = character.id.startswith("user_")
         if is_user_template:
             self.delete_target_template_button.setText("删除自定义目标模板")
@@ -3883,6 +3948,30 @@ class OptimizerWindow(QMainWindow):
             self.delete_target_template_button.setToolTip("从本机下拉列表隐藏这个内置目标模板；不会删除内置配置、库存或当前装备快照。")
         self.delete_target_template_button.setEnabled(is_user_template or len(self.characters) > 1)
         self.target_template_summary_label.setText(self._target_template_summary_text(character))
+
+    def _selected_character_is_missing_target(self) -> bool:
+        return _is_missing_target_template_id(str(self.character_combo.currentData() or ""))
+
+    def _target_template_for_agent(self, agent: AgentMetadata) -> CharacterPreset | None:
+        explicit_id = str(agent.character_preset_id or "")
+        if explicit_id:
+            character = self._character_by_id(explicit_id)
+            if character is not None:
+                return character
+        for character in self.characters:
+            if self._target_template_source_agent_by_id.get(character.id) == agent.agent_id:
+                return character
+        return None
+
+    def _ensure_missing_target_template_option(self, agent: AgentMetadata) -> CharacterPreset:
+        missing_id = _missing_target_template_id(agent.agent_id)
+        character = self._character_by_id(missing_id)
+        if character is None:
+            character = _missing_target_template(self.selected_game(), agent)
+            self.characters.append(character)
+        if self.character_combo.findData(missing_id) < 0:
+            self.character_combo.addItem(f"缺目标模板：{agent.name} ({agent.agent_id})", missing_id)
+        return character
 
     def selected_agent(self) -> AgentMetadata | None:
         if not self.agents:
@@ -3918,21 +4007,29 @@ class OptimizerWindow(QMainWindow):
         visible = [part for part in parts if part and part != UNKNOWN_LABEL]
         label = " / ".join(visible) if visible else agent.name
         version = f" · {agent.release_version}" if agent.release_version else ""
-        return f"{label}{version} -> 目标模板 {agent.character_preset_id}"
+        character = self._target_template_for_agent(agent) if hasattr(self, "characters") else None
+        target_text = character.id if character is not None else "缺目标模板"
+        return f"{label}{version} -> 目标模板 {target_text}"
 
     def _data_scope_text(self) -> str:
         storage_id = self.selected_storage_character_id()
         legacy_id = self.selected_legacy_storage_character_id()
+        if not legacy_id:
+            agent = self.selected_agent()
+            if self._selected_character_is_missing_target() or (
+                agent is not None and self._target_template_for_agent(agent) is None
+            ):
+                return f"数据归属：{storage_id}；缺目标模板"
+            return f"数据归属：{storage_id}"
         if storage_id == legacy_id:
             return f"数据归属：{storage_id}"
         return f"数据归属：{storage_id}；目标模板来源：{legacy_id}"
 
     def _inventory_scope_text(self) -> str:
-        target_id = self.selected_storage_character_id()
-        source_id = self._inventory_loaded_storage_id or target_id
-        if source_id == target_id:
-            return f"库存归属：{target_id}"
-        return f"库存来源：旧来源 {source_id}；保存会写入 {target_id}"
+        source_id = self._inventory_loaded_storage_id or SHARED_INVENTORY_ID
+        if source_id == "legacy_merged":
+            return "库存归属：游戏共享库存；当前读取旧角色库存合并结果，保存会写入共享库存"
+        return "库存归属：游戏共享库存"
 
     def _agent_card_widget(
         self,
@@ -3956,15 +4053,11 @@ class OptimizerWindow(QMainWindow):
 
     def _select_agent(self, agent: AgentMetadata) -> None:
         _suppress_transient_popups()
-        index = self.character_combo.findData(agent.character_preset_id)
-        if index < 0:
-            QMessageBox.warning(
-                self,
-                "代理人缺少目标模板",
-                f"{agent.name} 引用的目标模板 {agent.character_preset_id} 不存在，暂不能计算；目标模板应定义位置主属性、套装结构和副属性有效排序。",
-            )
-            return
         self._selected_agent_id_by_game[self.selected_game().id] = agent.agent_id
+        character = self._target_template_for_agent(agent)
+        if character is None:
+            character = self._ensure_missing_target_template_option(agent)
+        index = self.character_combo.findData(character.id)
         if self.character_combo.currentIndex() == index:
             self._reload_character_context()
             return
@@ -4123,7 +4216,11 @@ class OptimizerWindow(QMainWindow):
         inventory_pieces = self._hidden_table_pieces(self.inventory_table)
         self.current_table.set_context(game, character, current_pieces)
         self.inventory_table.set_context(game, character, inventory_pieces)
-        self._inventory_loaded_storage_id = self.selected_storage_character_id()
+        self._inventory_loaded_storage_id = (
+            SHARED_INVENTORY_ID
+            if user_inventory_store_path(game.id, self.selected_storage_character_id()).exists()
+            else self._inventory_loaded_storage_id or SHARED_INVENTORY_ID
+        )
         self.current_confirmed_digest = None
         self._last_weakest_label = "-"
         self._last_recommended_action_summary = "尚未计算"
@@ -4194,13 +4291,13 @@ class OptimizerWindow(QMainWindow):
         current_agent = self.selected_agent()
         controls: list[tuple[AgentMetadata, QCheckBox, QDoubleSpinBox]] = []
         for row_index, agent in enumerate(self.agents, start=1):
-            character = self._character_by_id(agent.character_preset_id)
+            character = self._target_template_for_agent(agent)
             check = QCheckBox()
             check.setChecked(current_agent is not None and agent.agent_id == current_agent.agent_id)
             check.setEnabled(character is not None)
             label = QLabel(
                 f"{agent.name} / {agent.rarity} / {agent.attribute} / {agent.specialty} -> "
-                f"{agent.character_preset_id if character is not None else '缺目标模板'}"
+                f"{character.id if character is not None else '缺目标模板'}"
             )
             label.setWordWrap(True)
             weight_spin = QDoubleSpinBox()
@@ -4229,7 +4326,7 @@ class OptimizerWindow(QMainWindow):
         for agent, check, weight_spin in controls:
             if not check.isChecked():
                 continue
-            character = self._character_by_id(agent.character_preset_id)
+            character = self._target_template_for_agent(agent)
             if character is None:
                 continue
             targets.append(
@@ -4262,11 +4359,17 @@ class OptimizerWindow(QMainWindow):
 
     def selected_legacy_storage_character_id(self) -> str:
         source_character_id = self._selected_target_template_source_character_id()
-        if source_character_id:
-            return source_character_id
         agent = self.selected_agent()
         if agent is not None:
-            return agent.character_preset_id
+            if source_character_id:
+                return source_character_id
+            if agent.character_preset_id:
+                return agent.character_preset_id
+            return ""
+        if source_character_id:
+            return source_character_id
+        if self._selected_character_is_missing_target():
+            return ""
         return self.selected_character().id
 
     def selected_probability_model(self) -> ProbabilityModel:
@@ -5526,8 +5629,9 @@ class OptimizerWindow(QMainWindow):
 
     def _update_action_buttons(self, busy: bool = False) -> None:
         busy = busy or self._action_busy()
-        single_character_enabled = self.current_confirmed_digest is not None and not busy
-        portfolio_enabled = not busy
+        has_target_template = not self._selected_character_is_missing_target()
+        single_character_enabled = self.current_confirmed_digest is not None and not busy and has_target_template
+        portfolio_enabled = not busy and any(self._target_template_for_agent(agent) is not None for agent in self.agents)
         self.best_button.setEnabled(single_character_enabled)
         self.action_button.setEnabled(single_character_enabled)
         self.portfolio_button.setEnabled(portfolio_enabled)
@@ -5535,6 +5639,10 @@ class OptimizerWindow(QMainWindow):
             self.best_button.setToolTip("正在计算中。")
             self.action_button.setToolTip("正在计算中。")
             self.portfolio_button.setToolTip("正在计算中。")
+        elif not has_target_template:
+            self.best_button.setToolTip("当前代理人缺目标模板，请先创建目标模板。")
+            self.action_button.setToolTip("当前代理人缺目标模板，请先创建目标模板。")
+            self.portfolio_button.setToolTip("BOX 调律只会启用已有目标模板的代理人。")
         elif self.current_confirmed_digest is None:
             self.best_button.setToolTip("单角色当前最优需要先确认当前装备。")
             self.action_button.setToolTip("单角色 Action EV 需要先确认当前装备。")
@@ -5643,19 +5751,18 @@ class OptimizerWindow(QMainWindow):
         if pieces:
             return True
         game_id = self.selected_game().id
-        target_id = self.selected_storage_character_id()
-        source_id = self._inventory_loaded_storage_id or target_id
-        path = user_inventory_store_path(game_id, target_id)
+        source_id = self._inventory_loaded_storage_id or SHARED_INVENTORY_ID
+        path = user_inventory_store_path(game_id, self.selected_storage_character_id())
         overwrites_target = path.exists()
-        masks_source = source_id != target_id
+        masks_source = source_id == "legacy_merged"
         if not overwrites_target and not masks_source:
             return True
         risk_parts = ["当前库存为空；继续保存会写入 0 件库存。"]
         if overwrites_target:
-            risk_parts.append("这会把已保存的本机库存覆盖为空列表。")
+            risk_parts.append("这会把已保存的游戏共享库存覆盖为空列表。")
         if masks_source:
             risk_parts.append(
-                f"当前显示的库存来源是 {source_id}；保存后会优先读取 {target_id} 的空库存，旧来源库存会被遮住。"
+                "当前显示的是旧角色库存合并结果；保存空共享库存后，旧角色库存会被共享空库存遮住。"
             )
         risk_parts.extend(
             [
@@ -6021,7 +6128,7 @@ class OptimizerWindow(QMainWindow):
             self.progress_label.setText("已取消保存库存；请先处理重复装备。")
             return
         path = save_user_inventory(self.selected_game().id, self.selected_storage_character_id(), pieces)
-        self._inventory_loaded_storage_id = self.selected_storage_character_id()
+        self._inventory_loaded_storage_id = SHARED_INVENTORY_ID
         self._refresh_inventory_view()
         self.progress_label.setText(f"已保存 {len(pieces)} 件库存：{path}")
 
@@ -6039,13 +6146,14 @@ class OptimizerWindow(QMainWindow):
             json.dumps(
                 {
                     "game_id": self.selected_game().id,
-                    "storage_id": self.selected_storage_character_id(),
+                    "storage_id": SHARED_INVENTORY_ID,
+                    "inventory_scope": "game_shared",
                     "legacy_storage_id": self.selected_legacy_storage_character_id(),
                     "target_template_id": self.selected_character().id,
                     "target_template_name": self.selected_character().name,
                     "agent_id": self.selected_agent().agent_id if self.selected_agent() is not None else "",
                     "inventory_loaded_storage_id": self._inventory_loaded_storage_id,
-                    "character_id": self.selected_storage_character_id(),
+                    "character_id": self.selected_character().id,
                     "input_audit": input_audit,
                     "input_audit_lines": input_audit.splitlines(),
                     "duplicate_summary": duplicate_summary,
@@ -6346,6 +6454,9 @@ class OptimizerWindow(QMainWindow):
                 self.log.append(f"已清理 {len(removed)} 个旧的成功 Action EV 临时目录。")
 
     def run_best_loadout(self) -> None:
+        if self._selected_character_is_missing_target():
+            QMessageBox.information(self, "缺目标模板", "当前代理人还没有目标模板，请先创建目标模板后再计算。")
+            return
         current_pieces = self._collect_current_or_warn()
         if current_pieces is None or not self._ensure_current_still_confirmed(current_pieces):
             return
@@ -6601,6 +6712,9 @@ class OptimizerWindow(QMainWindow):
         self._update_action_buttons()
 
     def run_action_ev(self) -> None:
+        if self._selected_character_is_missing_target():
+            QMessageBox.information(self, "缺目标模板", "当前代理人还没有目标模板，请先创建目标模板后再计算。")
+            return
         current_pieces = self._collect_current_or_warn()
         if current_pieces is None or not self._ensure_current_still_confirmed(current_pieces):
             return
