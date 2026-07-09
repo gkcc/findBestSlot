@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
 from gear_optimizer.models import CharacterPreset, GameRules, GearPiece, ProbabilityModel, position_key
+from gear_optimizer.piece_distribution import (
+    _advance_roll_states,
+    _initial_roll_states,
+    quality_from_roll_state,
+)
 from gear_optimizer.portfolio_models import (
     PortfolioActionRow,
     PortfolioGain,
@@ -43,6 +48,14 @@ from gear_optimizer.position_ev import (
 
 _EPSILON = 1e-9
 PortfolioActionScope = Literal["tuning", "upgrade", "all"]
+_JOINT_QUALITY_DISTRIBUTION_CACHE: dict[
+    tuple,
+    list[tuple[tuple[tuple[float, tuple[float, ...]], ...], float]],
+] = {}
+
+
+class PortfolioAuditCancelled(RuntimeError):
+    pass
 
 
 @dataclass(frozen=True)
@@ -249,10 +262,150 @@ def _coarse_outcome_piece_distribution(
     return distribution
 
 
+def _joint_quality_distribution(
+    game: GameRules,
+    probability_model: ProbabilityModel,
+    targets: Sequence[PortfolioTarget],
+    main_stat: str,
+    required_substats: tuple[str, ...] = (),
+) -> list[tuple[tuple[tuple[float, tuple[float, ...]], ...], float]]:
+    key = (
+        game.id,
+        tuple(game.sub_stats),
+        tuple(sorted(game.sub_stat_probabilities.items())),
+        game.enhancement.max_level,
+        game.enhancement.step,
+        game.enhancement.initial_add_level,
+        tuple(game.enhancement.event_levels),
+        tuple(sorted(probability_model.initial_substat_count_probabilities.items())),
+        tuple(
+            (
+                target.character.id,
+                tuple(target.character.priority_stats()),
+                tuple(target.character.substat_priority.core if target.character.substat_priority else ()),
+                tuple(target.character.substat_priority.usable if target.character.substat_priority else ()),
+                tuple(sorted(target.character.effective_substats.items())),
+            )
+            for target in targets
+        ),
+        main_stat,
+        tuple(required_substats),
+    )
+    cached = _JOINT_QUALITY_DISTRIBUTION_CACHE.get(key)
+    if cached is not None:
+        return cached
+
+    distribution: defaultdict[tuple[tuple[float, tuple[float, ...]], ...], float] = defaultdict(float)
+    for count_text, count_probability in probability_model.initial_substat_count_probabilities.items():
+        initial_count = int(count_text)
+        initial_states = _initial_roll_states(
+            game,
+            main_stat,
+            initial_count,
+            required_substats,
+        )
+        final_states = _advance_roll_states(game, main_stat, initial_states, initial_count)
+        for state, probability in final_states.items():
+            quality_key = tuple(
+                quality_from_roll_state(state, target.character)
+                for target in targets
+            )
+            distribution[quality_key] += count_probability * probability
+    result = [
+        (quality_key, probability)
+        for quality_key, probability in distribution.items()
+        if probability > _EPSILON
+    ]
+    _JOINT_QUALITY_DISTRIBUTION_CACHE[key] = result
+    return result
+
+
+def _portfolio_quality_row_distribution(
+    spec: ActionSpec,
+    game: GameRules,
+    probability_model: ProbabilityModel,
+    targets: Sequence[PortfolioTarget],
+) -> list[tuple[dict[str, dict], GearPiece, float]]:
+    if spec.upgrade_inventory_id:
+        return []
+
+    distribution: list[tuple[dict[str, dict], GearPiece, float]] = []
+    for set_name, set_probability in _set_distribution(probability_model, list(spec.set_options)):
+        for position, position_probability in _action_position_items(game, spec.target_position):
+            if not game.set_available_for_position(set_name, position):
+                continue
+            valid_main_stats = game.main_stats_for(position)
+            main_stats = [spec.fixed_main_stat] if spec.fixed_main_stat else valid_main_stats
+            for main_stat in main_stats:
+                if main_stat not in valid_main_stats:
+                    continue
+                main_probability = (
+                    1.0
+                    if spec.fixed_main_stat
+                    else game.main_stat_probability(position, main_stat)
+                )
+                base_probability = position_probability * set_probability * main_probability
+                if base_probability <= 0:
+                    continue
+                for quality_key, quality_probability in _joint_quality_distribution(
+                    game,
+                    probability_model,
+                    targets,
+                    main_stat,
+                    spec.required_substats,
+                ):
+                    probability = base_probability * quality_probability
+                    if probability <= 0:
+                        continue
+                    rows_by_agent: dict[str, dict] = {}
+                    for target, (quality_score, quality_vector) in zip(targets, quality_key):
+                        preferred_mains = target.character.preferred_mains_for(position)
+                        rows_by_agent[target.agent_id] = {
+                            "position": position,
+                            "set_name": set_name,
+                            "main_stat": main_stat,
+                            "level": game.enhancement.max_level,
+                            "main_preferred": not preferred_mains or main_stat in preferred_mains,
+                            "effective_rolls": quality_score,
+                            "quality_score": quality_score,
+                            "quality_vector": quality_vector,
+                            "locked": False,
+                            "source": "outcome",
+                        }
+                    audit_piece = GearPiece(
+                        position=position,
+                        set_name=set_name,
+                        main_stat=main_stat,
+                        level=game.enhancement.max_level,
+                        substats=[],
+                        initial_substat_count=4,
+                    )
+                    distribution.append((rows_by_agent, audit_piece, probability))
+    return distribution
+
+
 def _row_enters_best_loadout(row: dict, inventory: list[dict], game: GameRules, character: CharacterPreset) -> bool:
     signature = _inventory_row_signature(row)
     combo = _best_combo_rows(inventory, game, character)
     return any(_inventory_row_signature(combo_row) == signature for combo_row in combo)
+
+
+def _portfolio_value_row_signature(row: dict) -> tuple:
+    return (
+        position_key(row["position"]),
+        str(row["set_name"]),
+        bool(row["main_preferred"]),
+        bool(row.get("locked", False)),
+        str(row.get("source") or "inventory"),
+        bool(row.get("_allow_unfinished_loadout", False)),
+        round(float(row["effective_rolls"]), 6),
+        round(float(row["quality_score"]), 6),
+        tuple(round(float(value), 6) for value in row["quality_vector"]),
+    )
+
+
+def _portfolio_value_signature(rows: Sequence[dict]) -> tuple[tuple, ...]:
+    return tuple(sorted(_portfolio_value_row_signature(row) for row in rows))
 
 
 def _candidate_rows_for_position(rows: list[dict], game: GameRules, position: object) -> list[dict]:
@@ -419,6 +572,7 @@ def _target_gain_for_outcome(
     game: GameRules,
     spec: ActionSpec,
     outcome_piece: GearPiece,
+    value_cache: dict[tuple[str, tuple[tuple, ...]], tuple[float, ...]] | None = None,
 ) -> tuple[float, tuple[float, ...], bool]:
     if not current_value:
         return 0.0, tuple(), False
@@ -456,16 +610,44 @@ def _target_gain_for_outcome(
         return 0.0, tuple(), False
 
     next_inventory = next_state.to_inventory_rows()
-    next_value = next_state.best_loadout_value(game, target.character)
+    cache_key = (target.character.id, _portfolio_value_signature(next_inventory))
+    if value_cache is not None and cache_key in value_cache:
+        next_value = value_cache[cache_key]
+    else:
+        next_value = _cached_best_combo_value(next_inventory, game, target.character)
+        if value_cache is not None:
+            value_cache[cache_key] = next_value
     gain_vector = _positive_gain(next_value, current_value)
     scalar_gain = _portfolio_delta_scalar(gain_vector)
-    enters_best = scalar_gain > _EPSILON and _row_enters_best_loadout(
-        next_row,
-        next_inventory,
-        game,
-        target.character,
-    )
+    enters_best = scalar_gain > _EPSILON
     return scalar_gain, gain_vector, enters_best
+
+
+def _target_gain_for_outcome_row(
+    state: EvState,
+    current_value: tuple[float, ...],
+    target: PortfolioTarget,
+    game: GameRules,
+    outcome_row: dict,
+    value_cache: dict[tuple[str, tuple[tuple, ...]], tuple[float, ...]] | None = None,
+) -> tuple[float, tuple[float, ...], bool]:
+    if not current_value:
+        return 0.0, tuple(), False
+    next_state = state.with_candidate_row(outcome_row, game, target.character)
+    if next_state.signature == state.signature:
+        return 0.0, tuple(), False
+
+    next_inventory = next_state.to_inventory_rows()
+    cache_key = (target.character.id, _portfolio_value_signature(next_inventory))
+    if value_cache is not None and cache_key in value_cache:
+        next_value = value_cache[cache_key]
+    else:
+        next_value = _cached_best_combo_value(next_inventory, game, target.character)
+        if value_cache is not None:
+            value_cache[cache_key] = next_value
+    gain_vector = _positive_gain(next_value, current_value)
+    scalar_gain = _portfolio_delta_scalar(gain_vector)
+    return scalar_gain, gain_vector, scalar_gain > _EPSILON
 
 
 def _mode_gain(mode: PortfolioMode, weighted_gains: list[tuple[PortfolioTarget, float]]) -> float:
@@ -493,6 +675,7 @@ def portfolio_action_rows(
     mode: PortfolioMode = PortfolioMode.ANY_USEFUL,
     horizon: int = 1,
     action_scope: PortfolioActionScope = "tuning",
+    should_cancel: Callable[[], bool] | None = None,
 ) -> list[PortfolioActionRow]:
     if horizon != 1:
         raise ValueError("Portfolio/BOX EV Phase 1 only supports horizon=1")
@@ -500,6 +683,10 @@ def portfolio_action_rows(
         raise ValueError("action_scope must be one of: tuning, upgrade, all")
     if not targets:
         return []
+
+    def check_cancelled() -> None:
+        if should_cancel is not None and should_cancel():
+            raise PortfolioAuditCancelled("Portfolio/BOX audit cancelled")
 
     inventory_pieces = inventory_pieces or []
     rows_by_agent = {
@@ -520,7 +707,8 @@ def portfolio_action_rows(
         for target in targets
     }
     current_values = {
-        target.agent_id: states_by_agent[target.agent_id].best_loadout_value(
+        target.agent_id: _cached_best_combo_value(
+            rows_by_agent[target.agent_id],
             game,
             target.character,
         )
@@ -534,11 +722,24 @@ def portfolio_action_rows(
         base_rows,
         action_scope,
     )
+    value_cache: dict[tuple[str, tuple[tuple, ...]], tuple[float, ...]] = {
+        (target.character.id, _portfolio_value_signature(rows_by_agent[target.agent_id])): current_values[target.agent_id]
+        for target in targets
+    }
 
     result_rows: list[PortfolioActionRow] = []
     for spec in specs:
+        check_cancelled()
+        use_quality_rows = not spec.upgrade_inventory_id
+        quality_row_outcomes = (
+            _portfolio_quality_row_distribution(spec, game, probability_model, targets)
+            if use_quality_rows
+            else []
+        )
         outcomes = (
-            _coarse_outcome_piece_distribution(spec, game, probability_model)
+            quality_row_outcomes
+            if use_quality_rows
+            else _coarse_outcome_piece_distribution(spec, game, probability_model)
             if all_targets_incomplete and not spec.upgrade_inventory_id
             else _raw_outcome_piece_distribution(spec, base_rows, game, probability_model)
         )
@@ -565,19 +766,38 @@ def portfolio_action_rows(
         build_progress_gain = 0.0
         portfolio_ev = 0.0
 
-        for outcome_piece, probability in outcomes:
+        for outcome_index, outcome in enumerate(outcomes, start=1):
+            if outcome_index == 1 or outcome_index % 100 == 0:
+                check_cancelled()
+            if use_quality_rows:
+                outcome_rows_by_agent, outcome_piece, probability = outcome
+            else:
+                outcome_piece, probability = outcome
+                outcome_rows_by_agent = {}
             gains: list[tuple[PortfolioTarget, float]] = []
             build_hits: list[bool] = []
             for target in targets:
-                gain, gain_vector, enters_best = _target_gain_for_outcome(
-                    rows_by_agent[target.agent_id],
-                    states_by_agent[target.agent_id],
-                    current_values[target.agent_id],
-                    target,
-                    game,
-                    spec,
-                    outcome_piece,
-                )
+                outcome_row = outcome_rows_by_agent.get(target.agent_id)
+                if outcome_row is not None:
+                    gain, gain_vector, enters_best = _target_gain_for_outcome_row(
+                        states_by_agent[target.agent_id],
+                        current_values[target.agent_id],
+                        target,
+                        game,
+                        outcome_row,
+                        value_cache,
+                    )
+                else:
+                    gain, gain_vector, enters_best = _target_gain_for_outcome(
+                        rows_by_agent[target.agent_id],
+                        states_by_agent[target.agent_id],
+                        current_values[target.agent_id],
+                        target,
+                        game,
+                        spec,
+                        outcome_piece,
+                        value_cache,
+                    )
                 gains.append((target, gain))
                 expected_delta_by_agent[target.agent_id] = _add_delta_vectors(
                     expected_delta_by_agent[target.agent_id],
@@ -711,6 +931,9 @@ def portfolio_action_rows(
                 default=0.0,
             ),
             row.beneficiary_count,
+            -row.mother_cost,
+            -row.tuner_cost,
+            -row.core_cost,
         ),
         reverse=True,
     )

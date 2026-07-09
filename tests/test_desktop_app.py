@@ -217,7 +217,27 @@ def test_optimizer_window_constructs_key_pyside6_components(monkeypatch, tmp_pat
         assert window.overview_game_label.text()
         assert "代理人 / 目标模板" in visible_labels
         assert "计算输入审计" in group_titles
-        assert "本次输入口径" in group_titles
+        assert "本次输入口径" not in group_titles
+        assert not window.config_selectors_group.isHidden()
+        assert window.result_config_strip.isHidden()
+        result_tab_index = next(
+            index for index in range(window.tabs.count()) if window.tabs.tabText(index) == "计算结果"
+        )
+        window.tabs.setCurrentIndex(result_tab_index)
+        app.processEvents()
+        assert window.config_selectors_group.isHidden()
+        assert not window.result_config_strip.isHidden()
+        assert "当前" in window.result_config_summary_label.text()
+        assert "库存" in window.result_config_summary_label.text()
+        assert window.result_config_toggle_button.text() == "编辑配置"
+        window.result_config_toggle_button.click()
+        app.processEvents()
+        assert not window.config_selectors_group.isHidden()
+        assert window.result_config_toggle_button.text() == "收起配置"
+        window.tabs.setCurrentIndex(0)
+        app.processEvents()
+        assert not window.config_selectors_group.isHidden()
+        assert window.result_config_strip.isHidden()
         assert "目标模板：" in window.input_audit_label.text()
         assert "数据归属：" in window.input_audit_label.text()
         assert ("库存归属：" in window.input_audit_label.text()) or ("库存来源：" in window.input_audit_label.text())
@@ -229,7 +249,8 @@ def test_optimizer_window_constructs_key_pyside6_components(monkeypatch, tmp_pat
         assert "库存指纹：" in window.input_audit_label.text()
         assert window.result_input_audit_label.text() == window.input_audit_label.text()
         assert window.copy_input_audit_button.text() == "复制输入审计"
-        assert window.copy_result_input_audit_button.text() == "复制本次输入口径"
+        assert window.copy_result_input_audit_button.text() == "复制审计"
+        assert "复制本次输入口径" in window.copy_result_input_audit_button.toolTip()
         window.copy_input_audit()
         assert app.clipboard().text() == window.input_audit_label.text()
         assert "已复制本次输入口径" in window.progress_label.text()
@@ -240,7 +261,8 @@ def test_optimizer_window_constructs_key_pyside6_components(monkeypatch, tmp_pat
         assert window.selected_agent().character_preset_id == window.selected_character().id
         assert window.selected_character().id in window.agent_summary_label.text()
         assert window.edit_target_template_button.text() == "编辑目标模板"
-        assert not window.delete_target_template_button.isEnabled()
+        assert window.delete_target_template_button.text() == "隐藏内置目标模板"
+        assert window.delete_target_template_button.isEnabled() == (len(window.characters) > 1)
         assert "目标模板=计算目标，不保存装备" in window.target_template_summary_label.text()
         assert "期望套装结构" in window.target_template_summary_label.text()
         assert "每位置期望主属性" in window.target_template_summary_label.text()
@@ -279,8 +301,9 @@ def test_optimizer_window_constructs_key_pyside6_components(monkeypatch, tmp_pat
         assert window.replaceable_filter.text() == "只看可替换当前"
         assert window.duplicate_filter.text() == "只看重复库存"
         assert window.clear_inventory_filters_button.text() == "清除筛选"
-        assert window.best_button.text() == "计算当前最优搭配（含强化期望）"
-        assert window.portfolio_button.text() == "多代理人调律建议"
+        assert window.best_button.text() == "最优搭配"
+        assert window.action_button.text() == "调律建议"
+        assert window.portfolio_button.text() == "BOX 调律"
         assert "多代理人调律" in {
             window.result_tabs.tabText(index)
             for index in range(window.result_tabs.count())
@@ -365,8 +388,8 @@ def test_optimizer_window_constructs_key_pyside6_components(monkeypatch, tmp_pat
         assert window.inventory_cards[0].is_selected
         assert "库存 #1 现在是换下来的旧当前件" in window.progress_label.text()
         assert window.current_confirmed_digest is None
-        assert window.result_tabs.tabText(0) == "Action EV 明细"
-        assert window.result_tabs.tabText(1) == "H=2 方案"
+        assert window.result_tabs.tabText(0) == "调律建议"
+        assert window.result_tabs.tabText(1) == "H=2 说明"
         assert window.result_tabs.tabText(2) == "搭配结果"
         assert window.result_tabs.tabText(3) == "多代理人调律"
         assert window.result_tabs.tabText(4) == "运行日志"
@@ -374,7 +397,8 @@ def test_optimizer_window_constructs_key_pyside6_components(monkeypatch, tmp_pat
         assert not window.show_all_actions_button.isEnabled()
         assert not window.cancel_action_button.isEnabled()
         window.horizon_combo.setCurrentIndex(1)
-        assert "完整概率分布精确计算" in window.horizon_note_label.text()
+        assert "两层期望聚合" in window.horizon_note_label.text()
+        assert "静态二层聚合" in window.horizon_note_label.text()
         assert "可取消" in window.horizon_note_label.text()
         assert window.progress_bar.objectName() == "ActionProgressBar"
         window._on_action_progress({"event": "unit_progress", "completed": 50, "total": 100})
@@ -450,55 +474,71 @@ def test_optimizer_window_constructs_key_pyside6_components(monkeypatch, tmp_pat
         window._action_result_rows = [dict(sample_action_row) for _index in range(ACTION_DETAIL_DISPLAY_LIMIT + 5)]
         window._render_action_table()
         assert window.action_table.rowCount() == ACTION_DETAIL_DISPLAY_LIMIT
+        compact_height = window.action_table.maximumHeight()
+        assert compact_height < 420
+        compact_panel_height = window.result_panel.maximumHeight()
+        assert compact_panel_height < 620
         headers = [
             window.action_table.horizontalHeaderItem(index).text()
             for index in range(window.action_table.columnCount())
         ]
-        assert "动作类型" in headers
-        assert "调律策略/动作" in headers
-        assert "有效期望" in headers
-        assert "比较口径" in headers
-        assert "代表分支搭配" in headers
+        assert headers == ["动作", "目标", "收益", "效率", "成本", "判断"]
+        assert "收益" in headers
+        assert "目标" in headers
         assert "策略" not in headers
         assert "期望提升" not in headers
         assert "质量/母盘" not in headers
+        assert "有效期望" not in headers
+        assert "有效/母盘" not in headers
+        assert "增益判断" not in headers
         assert "预期搭配" not in headers
         assert "相对随机" not in headers
+        assert "说明" not in headers
         assert "排序向量/母盘" not in headers
         assert "_sort_vector" not in headers
-        assert headers.index("套装约束") < headers.index("有效期望")
-        assert headers.index("比较口径") < headers.index("有效期望")
-        assert headers.index("有效/母盘") > headers.index("有效期望")
-        effective_col = headers.index("有效期望")
+        assert headers.index("效率") > headers.index("收益")
+        effective_col = headers.index("收益")
         assert window.action_table.item(0, effective_col).text() == "有效提升 +0.3"
         assert "质量 +1" not in window.action_table.item(0, effective_col).text()
+        assert "固定位置" in window.action_table.item(0, headers.index("动作")).text()
         assert window.show_all_actions_button.isEnabled()
-        assert "显示全部" in window.show_all_actions_button.text()
+        assert f"Top {ACTION_DETAIL_DISPLAY_LIMIT}" in window.action_table_status_label.text()
+        assert "完整审计可展开" in window.action_table_status_label.text()
+        assert "调律母盘" not in window.action_table_status_label.text()
+        assert "库存升级机会 0 条" not in window.action_table_status_label.text()
+        assert "展开全部审计" in window.show_all_actions_button.text()
         window.toggle_action_rows()
         assert window.action_table.rowCount() == ACTION_DETAIL_DISPLAY_LIMIT + 5
-        assert "收起" in window.show_all_actions_button.text()
+        assert window.action_table.maximumHeight() > compact_height
+        assert window.result_panel.maximumHeight() > compact_panel_height
+        assert "已展开全部" in window.action_table_status_label.text()
+        assert f"收起到 Top {ACTION_DETAIL_DISPLAY_LIMIT}" in window.show_all_actions_button.text()
         card_text = window._recommended_action_card_text(sample_action_row)
-        assert "动作类型：调律母盘" in card_text
-        assert "推荐动作：固定位置" in card_text
-        assert "方案类型：代表路径" in card_text
-        assert "第二步策略摘要：固定位置 / 云岿如我 / 2号位" in card_text
-        assert "有效期望：有效提升 +0.3" in card_text
+        assert "推荐：固定位置" in card_text
+        assert "目标：云岿如我 / 1号位 / 生命值" in card_text
+        assert "方案类型：期望聚合" in card_text
+        assert "第二步策略摘要" not in card_text
+        assert "H=2：" in card_text
+        assert "概率分散，不单列后续策略" in card_text
+        assert "第二步" not in card_text
+        assert "收益：有效提升 +0.3" in card_text
         assert "期望提升：质量 +1" not in card_text
         assert "质量 +1" not in card_text
         assert "质量/母盘" not in card_text
-        assert "排序口径" in card_text
-        assert "先要求有效提升为正" in card_text
-        assert "按有效/母盘、有效提升排序" in card_text
-        assert "审计排序向量仅作 tie-break" in card_text
+        assert "排序" in card_text
+        assert "先看收益为正" in card_text
+        assert "按效率排序" in card_text
         assert "沿用引擎排序向量" not in card_text
         assert "按排序向量/母盘推荐" not in card_text
-        assert "计算口径：精确" in card_text
-        assert "计算引擎：inventory_recursive" in card_text
-        assert "执行方式" in card_text
-        assert "比较口径：固定位置基础行；优于随机混合，才建议固定" in card_text
-        assert "固定位置是基础 action" in card_text
-        assert "固定位置基础行；优于随机混合，才建议固定" in card_text
-        assert "H=2 方案页展示审计用代表路径或条件分支" in card_text
+        assert "计算口径" not in card_text
+        assert "计算引擎" not in card_text
+        assert "执行方式" not in card_text
+        assert "判断：优于随机，才建议固定" in card_text
+        assert "概率分散，不单列后续策略" in card_text
+        summary_text = window._recommended_action_summary_text(sample_action_row)
+        assert "H=2：已聚合未来 outcome 的期望收益" in summary_text
+        assert "概率分散，不单列后续策略" in summary_text
+        assert "第二步" not in summary_text
         first_position = window.selected_game().positions[0].id
         window._render_action_plan(
             {
@@ -516,9 +556,16 @@ def test_optimizer_window_constructs_key_pyside6_components(monkeypatch, tmp_pat
                 ],
             }
         )
-        assert "方案类型：代表路径" in window.action_plan_summary_label.text()
+        assert "方案类型：期望聚合" in window.action_plan_summary_label.text()
+        assert "第二步策略摘要" not in window.action_plan_summary_label.text()
+        assert "推荐 action" in window.action_plan_summary_label.text()
+        assert "概率分散，不单列后续策略" in window.action_plan_summary_label.text()
+        assert "代表分支搭配" not in window.action_plan_summary_label.text()
+        assert "第二步" not in window.action_plan_summary_label.text()
         assert window.action_plan_branch_table.rowCount() == 0
-        assert window.action_plan_loadout_table.rowCount() == 1
+        assert window.action_plan_loadout_table.rowCount() == 0
+        assert window.action_plan_branch_table.isHidden()
+        assert window.action_plan_loadout_table.isHidden()
         window._render_action_plan(
             {
                 **sample_action_row,
@@ -548,9 +595,12 @@ def test_optimizer_window_constructs_key_pyside6_components(monkeypatch, tmp_pat
                 ],
             }
         )
-        assert "混合结果，不存在唯一典型搭配" in window.action_plan_summary_label.text()
-        assert window.action_plan_branch_table.rowCount() == 1
+        assert "概率分散，不单列后续策略" in window.action_plan_summary_label.text()
+        assert "第二步" not in window.action_plan_summary_label.text()
+        assert window.action_plan_branch_table.rowCount() == 0
         assert window.action_plan_loadout_table.rowCount() == 0
+        assert window.action_plan_branch_table.isHidden()
+        assert window.action_plan_loadout_table.isHidden()
         upgrade_text = window._recommended_action_card_text(
             {
                 **sample_action_row,
@@ -559,13 +609,11 @@ def test_optimizer_window_constructs_key_pyside6_components(monkeypatch, tmp_pat
                 "_upgrade_inventory_id": f"piece:{window.current_table.rowCount()}",
             }
         )
-        assert "动作类型：库存升级机会" in upgrade_text
-        assert "机会动作：非调律：升级已有库存" in upgrade_text
-        assert "库存升级机会不参与主调律推荐" in upgrade_text
-        assert "没有有效提升为正的调律 action" in upgrade_text
+        assert "推荐：非调律：升级已有库存" in upgrade_text
+        assert "库存强化机会；不参与调律主推荐" in upgrade_text
         assert "不消耗母盘" in upgrade_text
-        assert "库存编号：库存 #1" in upgrade_text
-        assert "不等于这件胚子当前已经比已装备件更好" in upgrade_text
+        assert "库存：库存 #1" in upgrade_text
+        assert "不等于这件胚子当前已经比已装备件更好" not in upgrade_text
         for method in [
             "confirm_current",
             "run_best_loadout",
@@ -771,13 +819,14 @@ def test_multi_agent_tuning_button_renders_recommendation_rows(monkeypatch, tmp_
             window.portfolio_table.horizontalHeaderItem(index).text()
             for index in range(window.portfolio_table.columnCount())
         ]
+        assert headers == ["动作", "主EV", "EV/母盘", "成型概率", "主要受益人", "建设提示", "判断"]
         assert "主EV" in headers
-        assert "成型收益概率" in headers
+        assert "成型概率" in headers
         assert "主要受益人" in headers
         assert "建设提示" in headers
         assert "固定副属性" not in headers
         assert "多代理人调律完成" in window.portfolio_status_label.text()
-        assert "本表只比较随机位置、固定位置、固定主属性" in window.portfolio_status_label.text()
+        assert "主表只显示排序结论" in window.portfolio_status_label.text()
         assert window.result_tabs.tabText(window.result_tabs.currentIndex()) == "多代理人调律"
         assert window.progress_label.text() == "多代理人调律建议已计算完成。"
         assert "多代理人调律推荐" in window.result_recommend_title.text()
@@ -889,6 +938,7 @@ def test_portfolio_audit_runs_in_background_and_records_operations(monkeypatch, 
         target_set = "A"
         portfolio_ev = 0.0
         useful_probability = 0.0
+        build_progress_probability = 1.0
         best_beneficiary_agent = ""
 
         def to_recommendation_row(self):
@@ -927,6 +977,8 @@ def test_portfolio_audit_runs_in_background_and_records_operations(monkeypatch, 
         assert window._action_busy()
         assert not window.portfolio_button.isEnabled()
         assert window.progress_bar.maximum() == 0
+        assert not window.progress_bar.isHidden()
+        assert not window.progress_detail_label.isHidden()
         assert "后台计算" in window.progress_label.text()
 
         log_text = pyside6_app.ui_runtime_log_path().read_text(encoding="utf-8")
@@ -941,6 +993,13 @@ def test_portfolio_audit_runs_in_background_and_records_operations(monkeypatch, 
         )
 
         assert window.progress_label.text() == "多代理人调律建议已计算完成。"
+        assert window.progress_bar.isHidden()
+        assert window.progress_detail_label.isHidden()
+        assert window.horizon_note_label.isHidden()
+        assert window.result_status_strip.isHidden()
+        assert window.result_recommend_title.text() == "暂无成型收益推荐；仅显示建设审计"
+        assert "不参与推荐排序" in window.result_recommend_detail.text()
+        assert "固定位置" not in window.result_recommend_title.text()
         log_text = pyside6_app.ui_runtime_log_path().read_text(encoding="utf-8")
         assert "portfolio_compute_finished" in log_text
     finally:
@@ -1150,7 +1209,8 @@ def test_target_template_switch_preserves_editing_tables(monkeypatch, tmp_path):
         window._target_template_changed()
 
         assert window.selected_character().id == saved.id
-        assert window.selected_storage_character_id() == source_agent.agent_id
+        current_storage_id = window.selected_storage_character_id()
+        assert current_storage_id != ""
         assert window.current_table.rowCount() == 1
         assert window.inventory_table.rowCount() == 1
         assert window._hidden_table_pieces(window.current_table)[0].position == current_piece.position
@@ -1158,12 +1218,16 @@ def test_target_template_switch_preserves_editing_tables(monkeypatch, tmp_path):
         assert window.current_table.character.id == saved.id
         assert window.inventory_table.character.id == saved.id
         assert window.current_template_combo.currentData() == ""
-        assert "未载入快照" in window.current_template_combo.currentText()
+        assert "未保存快照" in window.current_template_combo.currentText()
         assert not window.load_current_template_button.isEnabled()
-        assert any(
+        assert not any(
             "维琳娜快照" in window.current_template_combo.itemText(index)
             for index in range(window.current_template_combo.count())
         )
+
+        save_user_current_gear(game.id, current_storage_id, [source_snapshot_piece], "当前代理人快照")
+        window._refresh_current_template_controls()
+
         def select_current_snapshot(label: str) -> None:
             snapshot_index = next(
                 index
@@ -1172,10 +1236,10 @@ def test_target_template_switch_preserves_editing_tables(monkeypatch, tmp_path):
             )
             window.current_template_combo.setCurrentIndex(snapshot_index)
 
-        select_current_snapshot("维琳娜快照")
+        select_current_snapshot("当前代理人快照")
         assert window.current_template_combo.currentData()
         assert window.load_current_template_button.isEnabled()
-        assert f"库存归属：{source_agent.agent_id}" in window.inventory_card_status_label.text()
+        assert f"库存归属：{current_storage_id}" in window.inventory_card_status_label.text()
         assert window.current_confirmed_digest is None
         assert "目标模板已变化" in window.progress_label.text()
 
@@ -1191,12 +1255,12 @@ def test_target_template_switch_preserves_editing_tables(monkeypatch, tmp_path):
         window.save_current()
         saved_labels = [
             item["label"]
-            for item in load_user_current_gears(game.id, source_agent.agent_id)
+            for item in load_user_current_gears(game.id, current_storage_id)
         ]
         assert default_labels == ["当前装备"]
-        assert saved_labels == ["维琳娜快照", "切换后保存"]
+        assert saved_labels == ["当前代理人快照", "切换后保存"]
 
-        select_current_snapshot("维琳娜快照")
+        select_current_snapshot("当前代理人快照")
         window.load_current_template()
         loaded_default_labels = []
         monkeypatch.setattr(
@@ -1210,12 +1274,12 @@ def test_target_template_switch_preserves_editing_tables(monkeypatch, tmp_path):
         window.save_current()
         saved_labels = [
             item["label"]
-            for item in load_user_current_gears(game.id, source_agent.agent_id)
+            for item in load_user_current_gears(game.id, current_storage_id)
         ]
-        assert loaded_default_labels == ["维琳娜快照"]
-        assert saved_labels == ["维琳娜快照", "切换后保存", "载入后另存"]
+        assert loaded_default_labels == ["当前代理人快照"]
+        assert saved_labels == ["当前代理人快照", "切换后保存", "载入后另存"]
 
-        select_current_snapshot("维琳娜快照")
+        select_current_snapshot("当前代理人快照")
         window.current_table.set_context(game, saved, [current_piece])
         window._current_changed()
         edited_default_labels = []
@@ -1230,10 +1294,10 @@ def test_target_template_switch_preserves_editing_tables(monkeypatch, tmp_path):
         window.save_current()
         saved_labels = [
             item["label"]
-            for item in load_user_current_gears(game.id, source_agent.agent_id)
+            for item in load_user_current_gears(game.id, current_storage_id)
         ]
         assert edited_default_labels == ["当前装备"]
-        assert saved_labels == ["维琳娜快照", "切换后保存", "载入后另存", "手动编辑后保存"]
+        assert saved_labels == ["当前代理人快照", "切换后保存", "载入后另存", "手动编辑后保存"]
     finally:
         window.close()
         app.processEvents()
@@ -1402,7 +1466,47 @@ def test_delete_target_template_success_message_includes_fallback_summary(monkey
         app.processEvents()
 
 
-def test_user_target_template_source_restores_agent_fallback(monkeypatch, tmp_path):
+def test_hide_builtin_target_template_removes_it_from_combo(monkeypatch, tmp_path):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.setenv("GEAR_OPTIMIZER_USER_DATA_DIR", str(tmp_path / "user_data"))
+    pytest.importorskip("PySide6")
+
+    from PySide6.QtWidgets import QApplication, QMessageBox
+    from gear_optimizer.pyside6_app import OptimizerWindow
+    from gear_optimizer.user_target_templates import load_hidden_builtin_target_template_ids
+
+    app = QApplication.instance() or QApplication([])
+    window = OptimizerWindow(width=1000, height=720)
+    try:
+        zzz_index = window.game_combo.findData("zzz")
+        assert zzz_index >= 0
+        window.game_combo.setCurrentIndex(zzz_index)
+        anomaly_id = "zzz_template_anomaly"
+        index = window.character_combo.findData(anomaly_id)
+        assert index >= 0
+        window.character_combo.setCurrentIndex(index)
+        window._target_template_changed()
+        assert window.delete_target_template_button.text() == "隐藏内置目标模板"
+        assert window.delete_target_template_button.isEnabled()
+
+        monkeypatch.setattr(
+            QMessageBox,
+            "question",
+            lambda *args, **_kwargs: QMessageBox.StandardButton.Yes,
+        )
+        window.delete_target_template()
+
+        assert window.character_combo.findData(anomaly_id) < 0
+        assert anomaly_id in load_hidden_builtin_target_template_ids(window.selected_game().id)
+        progress = window.progress_label.text()
+        assert "已隐藏内置目标模板：ZZZ 泛用异常模板" in progress
+        assert "期望套装结构：" in progress
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_user_target_template_source_does_not_override_selected_agent_storage(monkeypatch, tmp_path):
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
     monkeypatch.setenv("GEAR_OPTIMIZER_USER_DATA_DIR", str(tmp_path / "user_data"))
     pytest.importorskip("PySide6")
@@ -1440,27 +1544,26 @@ def test_user_target_template_source_restores_agent_fallback(monkeypatch, tmp_pa
         window._reload_target_template_options(saved.id)
 
         assert window.selected_character().id == saved.id
-        assert window.selected_agent().agent_id == source_agent.agent_id
-        assert window.selected_storage_character_id() == source_agent.agent_id
+        assert window.selected_agent().agent_id == stale_agent.agent_id
+        assert window.selected_storage_character_id() == stale_agent.agent_id
         assert window.selected_legacy_storage_character_id() == source_agent.character_preset_id
         window._refresh_agent_selector_summary()
-        assert f"数据归属：{source_agent.agent_id}" in window.agent_summary_label.text()
+        assert f"数据归属：{stale_agent.agent_id}" in window.agent_summary_label.text()
         assert f"目标模板来源：{source_agent.character_preset_id}" in window.agent_summary_label.text()
     finally:
         window.close()
         app.processEvents()
 
 
-def test_agent_storage_keeps_legacy_current_snapshot_unloaded_until_explicit_selection(monkeypatch, tmp_path):
+def test_agent_storage_does_not_expose_legacy_current_snapshot_or_inventory(monkeypatch, tmp_path):
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
     monkeypatch.setenv("GEAR_OPTIMIZER_USER_DATA_DIR", str(tmp_path / "user_data"))
     pytest.importorskip("PySide6")
 
-    from PySide6.QtWidgets import QApplication, QInputDialog, QMessageBox, QPushButton
+    from PySide6.QtWidgets import QApplication, QPushButton
     from gear_optimizer.pyside6_app import OptimizerWindow, _default_inventory_piece
     from gear_optimizer.user_current_gear import load_user_current_gears, save_user_current_gear
-    from gear_optimizer.user_inventory import load_user_inventory, save_user_inventory
-    from gear_optimizer.user_target_templates import save_user_target_template
+    from gear_optimizer.user_inventory import save_user_inventory
 
     app = QApplication.instance() or QApplication([])
     window = OptimizerWindow(width=1000, height=720)
@@ -1495,61 +1598,96 @@ def test_agent_storage_keeps_legacy_current_snapshot_unloaded_until_explicit_sel
             source_agent.character_preset_id,
             [inventory_piece],
         )
-        saved = save_user_target_template(
-            window.selected_game().id,
-            source_template.model_copy(update={"name": "维琳娜代理人目标"}),
-            "维琳娜代理人目标",
-            source_character_id=source_agent.character_preset_id,
-            source_agent_id=source_agent.agent_id,
-        )
-
-        window._reload_target_template_options(saved.id)
-        window._reload_character_context()
+        window._select_agent(source_agent)
 
         assert window.selected_agent().agent_id == source_agent.agent_id
         assert window.selected_storage_character_id() == source_agent.agent_id
         assert window.selected_legacy_storage_character_id() == source_agent.character_preset_id
         assert f"数据归属：{source_agent.agent_id}" in window.agent_summary_label.text()
-        assert f"目标模板来源：{source_agent.character_preset_id}" in window.overview_character_label.text()
+        assert f"目标模板来源：{source_agent.character_preset_id}" in window.agent_summary_label.text()
         assert window._hidden_table_pieces(window.current_table) == []
         assert not any(
             button.text() == "卸下"
             for card in window.current_cards
             for button in card.findChildren(QPushButton)
         )
-        assert [piece.position for piece in window._hidden_table_pieces(window.inventory_table)] == [inventory_piece.position]
+        assert window._hidden_table_pieces(window.inventory_table) == []
         assert window.current_template_combo.currentData() == ""
-        assert "未载入快照" in window.current_template_combo.currentText()
+        assert "未保存快照" in window.current_template_combo.currentText()
         assert not window.load_current_template_button.isEnabled()
-        legacy_snapshot_index = next(
-            index
+        assert not any(
+            "旧来源" in window.current_template_combo.itemText(index)
+            or "旧模板存储" in window.current_template_combo.itemText(index)
             for index in range(window.current_template_combo.count())
-            if "旧来源" in window.current_template_combo.itemText(index)
         )
-        assert f"库存来源：旧来源 {source_agent.character_preset_id}" in window.inventory_card_status_label.text()
-        assert f"保存会写入 {source_agent.agent_id}" in window.inventory_card_status_label.text()
-
-        window.save_inventory()
-        assert [piece.position for piece in load_user_inventory(window.selected_game().id, source_agent.agent_id)] == [inventory_piece.position]
         assert f"库存归属：{source_agent.agent_id}" in window.inventory_card_status_label.text()
-        window.export_inventory_details()
-        exported = json.loads((PROJECT_ROOT / "reports" / "inventory_export.json").read_text(encoding="utf-8"))
-        assert exported["storage_id"] == source_agent.agent_id
-        assert exported["legacy_storage_id"] == source_agent.character_preset_id
-        assert exported["target_template_id"] == saved.id
-        assert exported["agent_id"] == source_agent.agent_id
-        assert exported["duplicate_summary"]["flagged_piece_count"] == 0
-        assert exported["pieces"][0]["inventory_index"] == 1
-        assert exported["character_id"] == source_agent.agent_id
 
-        window.current_template_combo.setCurrentIndex(legacy_snapshot_index)
-        assert window.load_current_template_button.isEnabled()
-        monkeypatch.setattr(QInputDialog, "getText", lambda *args, **kwargs: ("旧模板改名", True))
-        window.rename_current_template()
         legacy_items = load_user_current_gears(window.selected_game().id, source_agent.character_preset_id)
         agent_items = load_user_current_gears(window.selected_game().id, source_agent.agent_id)
-        assert [item["label"] for item in legacy_items] == ["旧模板改名"]
+        assert [item["label"] for item in legacy_items] == ["旧模板存储"]
         assert agent_items == []
+        assert not window.load_current_template_button.isEnabled()
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_same_target_template_agent_switch_isolates_current_snapshots(monkeypatch, tmp_path):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.setenv("GEAR_OPTIMIZER_USER_DATA_DIR", str(tmp_path / "user_data"))
+    pytest.importorskip("PySide6")
+
+    from PySide6.QtWidgets import QApplication, QMessageBox
+    from gear_optimizer.pyside6_app import OptimizerWindow, _default_inventory_piece
+    from gear_optimizer.user_current_gear import load_user_current_gears, save_user_current_gear
+    from gear_optimizer.user_inventory import save_user_inventory
+
+    app = QApplication.instance() or QApplication([])
+    window = OptimizerWindow(width=1000, height=720)
+    try:
+        zzz_index = window.game_combo.findData("zzz")
+        if zzz_index >= 0:
+            window.game_combo.setCurrentIndex(zzz_index)
+        game = window.selected_game()
+        billy_agent = next(agent for agent in window.agents if agent.name == "星徽·比利")
+        ye_agent = next(agent for agent in window.agents if agent.name == "叶瞬光")
+        assert billy_agent.character_preset_id == ye_agent.character_preset_id
+        character = next(
+            item
+            for item in window.characters
+            if item.id == billy_agent.character_preset_id
+        )
+        billy_current = _default_inventory_piece(game, character, game.positions[0].id)
+        billy_inventory = _default_inventory_piece(game, character, game.positions[1].id)
+        ye_current = _default_inventory_piece(game, character, game.positions[2].id)
+        save_user_current_gear(game.id, billy_agent.agent_id, [billy_current], "比利快照")
+        save_user_inventory(game.id, billy_agent.agent_id, [billy_inventory])
+        save_user_current_gear(game.id, ye_agent.agent_id, [ye_current], "叶瞬光快照")
+
+        window._select_agent(billy_agent)
+        assert window.selected_agent().agent_id == billy_agent.agent_id
+        assert window.selected_storage_character_id() == billy_agent.agent_id
+        assert [piece.position for piece in window._hidden_table_pieces(window.current_table)] == [
+            billy_current.position
+        ]
+        assert any(
+            "比利快照" in window.current_template_combo.itemText(index)
+            for index in range(window.current_template_combo.count())
+        )
+
+        window._select_agent(ye_agent)
+        assert window.selected_agent().agent_id == ye_agent.agent_id
+        assert window.selected_storage_character_id() == ye_agent.agent_id
+        assert [piece.position for piece in window._hidden_table_pieces(window.current_table)] == [
+            ye_current.position
+        ]
+        assert window._hidden_table_pieces(window.inventory_table) == []
+        labels = [
+            window.current_template_combo.itemText(index)
+            for index in range(window.current_template_combo.count())
+        ]
+        assert any("叶瞬光快照" in label for label in labels)
+        assert not any("比利快照" in label for label in labels)
 
         monkeypatch.setattr(
             QMessageBox,
@@ -1557,8 +1695,10 @@ def test_agent_storage_keeps_legacy_current_snapshot_unloaded_until_explicit_sel
             lambda *args, **kwargs: QMessageBox.StandardButton.Yes,
         )
         window.delete_current_template()
-        assert load_user_current_gears(window.selected_game().id, source_agent.character_preset_id) == []
-        assert not window.load_current_template_button.isEnabled()
+        assert load_user_current_gears(game.id, ye_agent.agent_id) == []
+        assert [item["label"] for item in load_user_current_gears(game.id, billy_agent.agent_id)] == [
+            "比利快照"
+        ]
     finally:
         window.close()
         app.processEvents()
@@ -2518,7 +2658,7 @@ def test_save_empty_inventory_requires_confirmation_before_clearing_saved_file(m
         app.processEvents()
 
 
-def test_save_empty_inventory_requires_confirmation_before_masking_legacy_source(monkeypatch, tmp_path):
+def test_save_empty_agent_inventory_does_not_mask_legacy_source(monkeypatch, tmp_path):
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
     monkeypatch.setenv("GEAR_OPTIMIZER_USER_DATA_DIR", str(tmp_path / "user_data"))
     pytest.importorskip("PySide6")
@@ -2557,34 +2697,21 @@ def test_save_empty_inventory_requires_confirmation_before_masking_legacy_source
         target_path = user_inventory_store_path(game.id, source_agent.agent_id)
 
         assert not target_path.exists()
-        assert window._inventory_loaded_storage_id == source_agent.character_preset_id
-        assert len(window._hidden_table_pieces(window.inventory_table)) == 1
+        assert window._inventory_loaded_storage_id == source_agent.agent_id
+        assert len(window._hidden_table_pieces(window.inventory_table)) == 0
 
         window.inventory_table.set_context(game, window.selected_character(), [])
         window._inventory_changed()
         questions = []
 
-        def deny_empty_save(*args, **_kwargs):
+        def unexpected_empty_save_prompt(*args, **_kwargs):
             questions.append((args[1], args[2]))
             return QMessageBox.StandardButton.No
 
-        monkeypatch.setattr(QMessageBox, "question", deny_empty_save)
+        monkeypatch.setattr(QMessageBox, "question", unexpected_empty_save_prompt)
         window.save_inventory()
 
-        assert questions
-        assert questions[0][0] == "保存空库存？"
-        assert "旧来源库存会被遮住" in questions[0][1]
-        assert not target_path.exists()
-        assert len(load_user_inventory(game.id, source_agent.character_preset_id)) == 1
-        assert window.progress_label.text() == "已取消保存空库存；本机库存未变化。"
-
-        monkeypatch.setattr(
-            QMessageBox,
-            "question",
-            lambda *args, **_kwargs: QMessageBox.StandardButton.Yes,
-        )
-        window.save_inventory()
-
+        assert questions == []
         assert target_path.exists()
         assert load_user_inventory(game.id, source_agent.agent_id) == []
         assert len(load_user_inventory(game.id, source_agent.character_preset_id)) == 1
@@ -3301,9 +3428,9 @@ def test_horizon_one_gain_summary_marks_no_positive_gain(monkeypatch, tmp_path):
         ]
 
         assert "当前可用调律 action 均无有效提升" in window._action_gain_summary_text(no_gain_rows)
-        assert "1/1 个有效提升为正" in window._action_gain_summary_text(gain_rows)
+        assert "1/1 个收益为正" in window._action_gain_summary_text(gain_rows)
         upgrade_summary = window._action_gain_summary_text([*gain_rows, *upgrade_rows])
-        assert "调律有效/母盘最高为 0.2" in upgrade_summary
+        assert "最高效率 0.2 / 母盘" in upgrade_summary
         assert "库存升级机会：1/1 个升级机会有效提升为正" in upgrade_summary
         assert "非调律，仅提示，不参与主调律推荐" in upgrade_summary
         assert "个胚子有效提升为正" not in upgrade_summary
@@ -3350,16 +3477,74 @@ def test_action_finished_shows_upgrade_opportunity_without_tuning_recommendation
             ]
         )
 
-        assert window.result_recommend_title.text() == "暂无可推荐调律 action；有库存升级机会"
-        assert "机会动作：非调律：升级已有库存" in window.result_recommend_detail.text()
-        assert "库存编号：库存 #1" in window.result_recommend_detail.text()
+        assert window.result_recommend_title.text() == "强化 库存 #1"
+        assert "建议：可考虑强化" not in window.result_recommend_detail.text()
+        assert "收益：有效提升 +0.4" in window.result_recommend_detail.text()
+        assert "不消耗母盘；不参与调律主推荐" in window.result_recommend_detail.text()
+        assert "推荐：非调律：升级已有库存" not in window.result_recommend_detail.text()
         assert window._highlighted_inventory_label == "机会"
         assert window._highlighted_inventory_source_rows == {0}
         assert window.progress_label.text() == "Action EV 结果已计算完成。"
         assert "结果已更新" in window.progress_meter_label.text()
         assert "推荐已更新" not in window.progress_meter_label.text()
+        assert window.progress_bar.isHidden()
+        assert window.progress_detail_label.isHidden()
+        assert window.horizon_note_label.isHidden()
+        assert window.result_status_strip.isHidden()
+        window.horizon_combo.setCurrentIndex(1 if window.horizon_combo.currentIndex() == 0 else 0)
+        assert not window.horizon_note_label.isHidden()
+        assert not window.result_status_strip.isHidden()
         assert not window.inventory_cards[0].highlight_badge.isHidden()
         assert window.inventory_cards[0].highlight_badge.text() == "机会"
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_action_finished_uses_recommended_action_as_card_title(monkeypatch, tmp_path):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.setenv("GEAR_OPTIMIZER_USER_DATA_DIR", str(tmp_path / "user_data"))
+    pytest.importorskip("PySide6")
+
+    from PySide6.QtWidgets import QApplication
+    from gear_optimizer.pyside6_app import OptimizerWindow, _default_inventory_piece
+
+    app = QApplication.instance() or QApplication([])
+    window = OptimizerWindow(width=1200, height=760)
+    try:
+        game = window.selected_game()
+        character = window.selected_character()
+        piece = _default_inventory_piece(game, character, game.positions[0].id)
+        window.inventory_table.set_context(game, character, [piece])
+        window._refresh_inventory_view()
+
+        window._on_action_finished(
+            [
+                {
+                    "策略": "固定位置",
+                    "动作类型": "调律母盘",
+                    "目标套装": piece.set_name,
+                    "位置": game.position_name(piece.position),
+                    "主属性": piece.main_stat,
+                    "固定副属性": "不固定",
+                    "horizon": 1,
+                    "套装约束": "满足",
+                    "相对随机": "固定位置基准",
+                    "有效提升": 0.4,
+                    "质量提升": 0.4,
+                    "有效/母盘": 0.2,
+                    "母盘/次": 2,
+                    "期望提升": "有效 +0.4",
+                    "_sort_vector": (0.4, 0.2),
+                }
+            ]
+        )
+
+        assert window.result_recommend_title.text().startswith("固定位置：")
+        assert piece.set_name in window.result_recommend_title.text()
+        assert "收益：有效提升 +0.4" in window.result_recommend_detail.text()
+        assert "建议：固定位置" not in window.result_recommend_detail.text()
+        assert "推荐调律策略" not in window.result_recommend_title.text()
     finally:
         window.close()
         app.processEvents()
@@ -3403,7 +3588,7 @@ def test_action_finished_without_recommendation_keeps_default_highlight_label(mo
             ]
         )
 
-        assert window.result_recommend_title.text() == "暂无可推荐 action"
+        assert window.result_recommend_title.text() == "暂无可推荐策略"
         assert window._highlighted_inventory_label == "入选"
         assert window._highlighted_inventory_source_rows == set()
         assert "当前结果未高亮库存" in window.inventory_card_status_label.text()
@@ -3450,12 +3635,12 @@ def test_action_finished_hides_quality_only_recommendation_from_main_card(monkey
             ]
         )
 
-        assert window.result_recommend_title.text() == "暂无有效提升 action"
+        assert window.result_recommend_title.text() == "暂无有效提升策略"
         assert "当前桌面主口径不作为推荐" in window.result_recommend_detail.text()
-        assert "推荐调律 action" not in window.result_recommend_title.text()
+        assert "推荐调律策略" not in window.result_recommend_title.text()
         assert window._highlighted_inventory_label == "入选"
         assert window._highlighted_inventory_source_rows == set()
-        assert window.action_plan_summary_label.text() == "尚无 H=2 方案。"
+        assert window.action_plan_summary_label.text() == "尚无 H=2 说明。"
         assert "排序最高 action 没有有效提升" in window.log.toPlainText()
     finally:
         window.close()

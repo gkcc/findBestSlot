@@ -327,6 +327,7 @@ def _position_rows_with_fake_action_values(
     increments: dict[str, float],
     *,
     action_mode: str = position_ev.DEFAULT_ACTION_EV_MODE,
+    horizon: int = 1,
 ):
     game, character, probability_model, analysis, inventory = _tiny_lock_context()
     current_value = best_loadout_value(
@@ -359,6 +360,7 @@ def _position_rows_with_fake_action_values(
         probability_model,
         analysis,
         action_mode=action_mode,
+        horizon=horizon,
     )
     position_ev._ACTION_EV_ROWS_CACHE.clear()
     return rows, calls
@@ -500,7 +502,7 @@ def test_horizon_two_random_action_row_is_marked_as_mixed_not_representative():
             "代表最终搭配",
             "套装约束",
         }.issubset(branch)
-        assert "exact horizon=1 lookahead" in branch["第二步原因"] or "未找到正提升" in branch["第二步原因"]
+        assert "static tuning horizon=1 lookahead" in branch["第二步原因"] or "未找到正提升" in branch["第二步原因"]
 
     fixed_row = next(row for row in rows if row["策略"] == "固定位置")
     assert fixed_row["方案类型"] == "代表路径"
@@ -751,6 +753,129 @@ def test_best_loadout_can_explicitly_rank_unfinished_inventory_by_upgrade_expect
         current_count=1,
         include_upgrade_expectation=True,
     ) > best_loadout_value([current, embryo], game, character, current_count=1)
+
+
+def test_fast_horizon_two_uses_static_upgrade_rows_without_upgrade_actions(monkeypatch):
+    game, character, current, embryo = _tiny_upgrade_expectation_context()
+    probability_model = ProbabilityModel(
+        id="tiny_upgrade_prob",
+        game=game.id,
+        name="Tiny Upgrade Prob",
+        target_set_probability=1.0,
+        initial_substat_count_probabilities={"3": 0.0, "4": 1.0},
+        resource_costs={
+            "mother_disk_fixed_position_attempt": 1.0,
+            "mother_disk_random_position_attempt": 1.0,
+        },
+    )
+    analysis = analyse_current_gear([current], game, character)
+    current_value = best_loadout_value(
+        [current, embryo],
+        game,
+        character,
+        current_count=1,
+        include_upgrade_expectation=True,
+    )
+    calls = []
+
+    def fake_expected_action_value(
+        inventory_rows,
+        _game,
+        _character,
+        _probability_model,
+        spec,
+        *_args,
+        **kwargs,
+    ):
+        calls.append(
+            {
+                "strategy": spec.strategy,
+                "scope": kwargs.get("lookahead_scope"),
+                "has_expected_upgrade": any(row.get("_expected_upgrade") for row in inventory_rows),
+            }
+        )
+        return current_value
+
+    position_ev._ACTION_EV_ROWS_CACHE.clear()
+    monkeypatch.setattr(position_ev, "_expected_action_value", fake_expected_action_value)
+    rows = position_strategy_efficiency_rows(
+        game,
+        character,
+        probability_model,
+        analysis,
+        inventory_pieces=[current, embryo],
+        horizon=2,
+        action_mode=position_ev.ACTION_EV_FAST_MODE,
+    )
+    position_ev._ACTION_EV_ROWS_CACHE.clear()
+
+    assert rows
+    assert calls
+    assert {call["scope"] for call in calls} == {position_ev.LOOKAHEAD_SCOPE_TUNING_STATIC}
+    assert all(call["has_expected_upgrade"] for call in calls)
+    assert not any(call["strategy"] == "强化库存胚子" for call in calls)
+
+
+def test_exact_horizon_two_uses_static_upgrade_rows_without_upgrade_actions(monkeypatch):
+    game, character, current, embryo = _tiny_upgrade_expectation_context()
+    probability_model = ProbabilityModel(
+        id="tiny_upgrade_prob",
+        game=game.id,
+        name="Tiny Upgrade Prob",
+        target_set_probability=1.0,
+        initial_substat_count_probabilities={"3": 0.0, "4": 1.0},
+        resource_costs={
+            "mother_disk_fixed_position_attempt": 1.0,
+            "mother_disk_random_position_attempt": 1.0,
+        },
+    )
+    analysis = analyse_current_gear([current], game, character)
+    current_value = best_loadout_value(
+        [current, embryo],
+        game,
+        character,
+        current_count=1,
+        include_upgrade_expectation=True,
+    )
+    calls = []
+
+    def fake_expected_action_value(
+        inventory_rows,
+        _game,
+        _character,
+        _probability_model,
+        spec,
+        *_args,
+        **kwargs,
+    ):
+        calls.append(
+            {
+                "strategy": spec.strategy,
+                "scope": kwargs.get("lookahead_scope"),
+                "has_expected_upgrade": any(row.get("_expected_upgrade") for row in inventory_rows),
+            }
+        )
+        return current_value
+
+    position_ev._ACTION_EV_ROWS_CACHE.clear()
+    monkeypatch.setattr(position_ev, "_expected_action_value", fake_expected_action_value)
+    rows = position_strategy_efficiency_rows(
+        game,
+        character,
+        probability_model,
+        analysis,
+        inventory_pieces=[current, embryo],
+        horizon=2,
+        action_mode=position_ev.ACTION_EV_EXACT_MODE,
+    )
+    position_ev._ACTION_EV_ROWS_CACHE.clear()
+
+    assert rows
+    assert calls
+    assert {call["scope"] for call in calls} == {position_ev.LOOKAHEAD_SCOPE_TUNING_STATIC}
+    assert all(call["has_expected_upgrade"] for call in calls)
+    assert not any(call["strategy"] == "强化库存胚子" for call in calls)
+    assert not any(row["策略"] == "强化库存胚子" for row in rows)
 
 
 def test_revealed_next_substat_conditions_inventory_upgrade_expectation():
@@ -1185,6 +1310,68 @@ def test_lookahead_action_space_keeps_frontier_and_dominant_generation_specs():
     )
 
 
+def test_tuning_static_lookahead_scope_excludes_upgrade_and_locked_stat_actions():
+    game, character, _probability_model, analysis, inventory = _tiny_lock_context()
+    rows = inventory_rows_from_pieces(
+        inventory,
+        game,
+        character,
+        current_count=len(analysis.scores),
+    )
+
+    exact_specs = _lookahead_action_specs(game, character, rows)
+    static_specs = _lookahead_action_specs(
+        game,
+        character,
+        rows,
+        scope=position_ev.LOOKAHEAD_SCOPE_TUNING_STATIC,
+    )
+
+    assert any(spec.strategy == "固定位置 + 固定主属性 + 固定副属性" for spec in exact_specs)
+    assert static_specs
+    assert {spec.strategy for spec in static_specs} == {"固定位置"}
+
+    upgrade_game, upgrade_character, current, embryo = _tiny_upgrade_expectation_context()
+    upgrade_rows = inventory_rows_from_pieces(
+        [current, embryo],
+        upgrade_game,
+        upgrade_character,
+        current_count=1,
+    )
+    assert any(
+        spec.strategy == "强化库存胚子"
+        for spec in _lookahead_action_specs(upgrade_game, upgrade_character, upgrade_rows)
+    )
+    assert not any(
+        spec.strategy == "强化库存胚子"
+        for spec in _lookahead_action_specs(
+            upgrade_game,
+            upgrade_character,
+            upgrade_rows,
+            scope=position_ev.LOOKAHEAD_SCOPE_TUNING_STATIC,
+        )
+    )
+
+
+def test_tuning_static_lookahead_uses_static_candidates_not_full_outcome_distribution(monkeypatch):
+    game, character, probability_model, inventory = _tiny_exact_context()
+
+    def fail_dynamic_distribution(*_args, **_kwargs):
+        raise AssertionError("static lookahead should not enumerate full second-step outcomes")
+
+    monkeypatch.setattr(position_ev, "_candidate_distribution_for_action", fail_dynamic_distribution)
+    value = lookahead_inventory_value(
+        inventory,
+        game,
+        character,
+        probability_model,
+        horizon=1,
+        lookahead_scope=position_ev.LOOKAHEAD_SCOPE_TUNING_STATIC,
+    )
+
+    assert value >= best_loadout_value(inventory, game, character)
+
+
 def test_aggregated_action_outcomes_cache_matches_manual_distribution(monkeypatch):
     game, character, probability_model, _analysis = _billy_context()
     inventory = [
@@ -1418,6 +1605,9 @@ def test_action_ev_progress_emits_performance_audit(monkeypatch):
     assert "outcome_cache_misses" in audit
     assert isinstance(audit["top_10_slowest_actions"], list)
     assert isinstance(audit["action_timings"], list)
+    assert isinstance(audit["phase_seconds"], dict)
+    assert isinstance(audit["phase_counts"], dict)
+    assert isinstance(audit["top_20_slowest_phase_calls"], list)
     assert audit["total_seconds"] >= 0
     assert any(event.get("event") == "action_perf" for event in events)
 
@@ -1651,6 +1841,46 @@ def test_action_ev_fast_mode_skips_fixed_substat_expansion(monkeypatch):
     assert any(row["策略"] == "固定位置 + 固定主属性" for row in rows)
     assert not any(row["策略"] == "固定位置 + 固定主属性 + 固定副属性" for row in rows)
     assert "固定位置 + 固定主属性 + 固定副属性" not in calls
+
+
+def test_action_ev_fast_horizon_two_skips_fixed_main_and_substat_expansion(monkeypatch):
+    rows, calls = _position_rows_with_fake_action_values(
+        monkeypatch,
+        {
+            "固定位置:1": 2.0,
+            "固定位置:2": 0.0,
+            "固定位置 + 固定主属性": 3.0,
+            "固定位置 + 固定主属性 + 固定副属性": 4.0,
+        },
+        horizon=2,
+    )
+
+    assert not any(row["策略"] == "固定位置 + 固定主属性" for row in rows)
+    assert not any(row["策略"] == "固定位置 + 固定主属性 + 固定副属性" for row in rows)
+    assert "固定位置 + 固定主属性" not in calls
+    assert "固定位置 + 固定主属性 + 固定副属性" not in calls
+
+
+def test_action_ev_exact_horizon_two_keeps_fixed_resources_as_top3_audit(monkeypatch):
+    rows, calls = _position_rows_with_fake_action_values(
+        monkeypatch,
+        {
+            "固定位置:1": 2.0,
+            "固定位置:2": 0.0,
+            "固定位置 + 固定主属性": 3.0,
+            "固定位置 + 固定主属性 + 固定副属性": 4.0,
+        },
+        horizon=2,
+        action_mode=position_ev.ACTION_EV_EXACT_MODE,
+    )
+
+    assert not any(row["策略"] == "固定位置 + 固定主属性" for row in rows)
+    assert not any(row["策略"] == "固定位置 + 固定主属性 + 固定副属性" for row in rows)
+    assert "固定位置 + 固定主属性" not in calls
+    assert "固定位置 + 固定主属性 + 固定副属性" not in calls
+    audited_rows = [row for row in rows if row.get("锁主审计") or row.get("锁副审计")]
+    assert 0 < len(audited_rows) <= position_ev.H2_STATIC_RESOURCE_AUDIT_TOP_N
+    assert all("静态审计" in str(row.get("锁主审计")) for row in audited_rows)
 
 
 def test_action_ev_fast_mode_skips_upgrade_rows():

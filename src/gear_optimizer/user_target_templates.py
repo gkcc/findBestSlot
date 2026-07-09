@@ -8,6 +8,8 @@ import yaml
 from gear_optimizer.models import CharacterPreset
 from gear_optimizer.paths import app_data_root
 
+HIDDEN_BUILTIN_TEMPLATE_IDS_KEY = "hidden_builtin_template_ids"
+
 
 def _safe_id(value: str) -> str:
     text = "".join(char.lower() if char.isalnum() else "_" for char in value)
@@ -98,6 +100,86 @@ def _template_payload(
     return payload
 
 
+def _store_payload(
+    game_id: str,
+    records: list[tuple[CharacterPreset, str, str]],
+    hidden_builtin_template_ids: set[str] | None = None,
+) -> dict[str, Any]:
+    data: dict[str, Any] = {"game": game_id}
+    hidden_ids = sorted(hidden_builtin_template_ids or set())
+    if hidden_ids:
+        data[HIDDEN_BUILTIN_TEMPLATE_IDS_KEY] = hidden_ids
+    if records:
+        data["templates"] = [
+            _template_payload(item, source, agent)
+            for item, source, agent in records
+        ]
+    return data
+
+
+def load_hidden_builtin_target_template_ids(
+    game_id: str,
+    root: Path | None = None,
+) -> set[str]:
+    path = target_template_store_path(game_id, root)
+    data = _read_store(path)
+    raw_ids = data.get(HIDDEN_BUILTIN_TEMPLATE_IDS_KEY, [])
+    if raw_ids is None:
+        return set()
+    if not isinstance(raw_ids, list):
+        raise ValueError(f"{HIDDEN_BUILTIN_TEMPLATE_IDS_KEY} must be a list in {path}")
+    return {str(item) for item in raw_ids if str(item)}
+
+
+def hide_builtin_target_template(
+    game_id: str,
+    preset_id: str,
+    root: Path | None = None,
+) -> bool:
+    if preset_id.startswith("user_"):
+        return False
+    path = target_template_store_path(game_id, root)
+    records = _template_records(game_id, root)
+    hidden_ids = load_hidden_builtin_target_template_ids(game_id, root)
+    if preset_id in hidden_ids:
+        return False
+    hidden_ids.add(preset_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as handle:
+        yaml.safe_dump(
+            _store_payload(game_id, records, hidden_ids),
+            handle,
+            allow_unicode=True,
+            sort_keys=False,
+        )
+    return True
+
+
+def unhide_builtin_target_template(
+    game_id: str,
+    preset_id: str,
+    root: Path | None = None,
+) -> bool:
+    path = target_template_store_path(game_id, root)
+    records = _template_records(game_id, root)
+    hidden_ids = load_hidden_builtin_target_template_ids(game_id, root)
+    if preset_id not in hidden_ids:
+        return False
+    hidden_ids.remove(preset_id)
+    if records or hidden_ids:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", encoding="utf-8") as handle:
+            yaml.safe_dump(
+                _store_payload(game_id, records, hidden_ids),
+                handle,
+                allow_unicode=True,
+                sort_keys=False,
+            )
+    elif path.exists():
+        path.unlink()
+    return True
+
+
 def _new_template_id(
     preset: CharacterPreset,
     label: str,
@@ -139,21 +221,20 @@ def save_user_target_template(
         or (preset.id if not preset.id.startswith("user_") else "")
     )
     resolved_agent_source = source_agent_id or previous_agent_source
+    hidden_ids = load_hidden_builtin_target_template_ids(game_id, root)
     existing = [
         (item, source, agent)
         for item, source, agent in previous_records
         if item.id != saved.id
     ]
     existing.append((saved, resolved_source, resolved_agent_source))
-    data = {
-        "game": game_id,
-        "templates": [
-            _template_payload(item, source, agent)
-            for item, source, agent in existing
-        ],
-    }
     with path.open("w", encoding="utf-8") as handle:
-        yaml.safe_dump(data, handle, allow_unicode=True, sort_keys=False)
+        yaml.safe_dump(
+            _store_payload(game_id, existing, hidden_ids),
+            handle,
+            allow_unicode=True,
+            sort_keys=False,
+        )
     return saved
 
 
@@ -164,6 +245,7 @@ def delete_user_target_template(
 ) -> bool:
     path = target_template_store_path(game_id, root)
     existing = _template_records(game_id, root)
+    hidden_ids = load_hidden_builtin_target_template_ids(game_id, root)
     remaining = [
         (item, source, agent)
         for item, source, agent in existing
@@ -171,17 +253,15 @@ def delete_user_target_template(
     ]
     if len(remaining) == len(existing):
         return False
-    if remaining:
-        data = {
-            "game": game_id,
-            "templates": [
-                _template_payload(item, source, agent)
-                for item, source, agent in remaining
-            ],
-        }
+    if remaining or hidden_ids:
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("w", encoding="utf-8") as handle:
-            yaml.safe_dump(data, handle, allow_unicode=True, sort_keys=False)
+            yaml.safe_dump(
+                _store_payload(game_id, remaining, hidden_ids),
+                handle,
+                allow_unicode=True,
+                sort_keys=False,
+            )
     elif path.exists():
         path.unlink()
     return True

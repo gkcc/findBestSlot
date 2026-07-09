@@ -89,7 +89,7 @@ from gear_optimizer.position_ev import (
     position_strategy_efficiency_rows,
     recommended_action_ev_row,
 )
-from gear_optimizer.portfolio_ev import portfolio_action_rows
+from gear_optimizer.portfolio_ev import PortfolioAuditCancelled, portfolio_action_rows
 from gear_optimizer.portfolio_models import PortfolioMode, PortfolioTarget
 from gear_optimizer.presets import list_current_examples, load_current_example
 from gear_optimizer.scoring import analyse_current_gear
@@ -104,6 +104,8 @@ from gear_optimizer.user_current_gear import (
 from gear_optimizer.user_inventory import load_user_inventory, save_user_inventory, user_inventory_store_path
 from gear_optimizer.user_target_templates import (
     delete_user_target_template,
+    hide_builtin_target_template,
+    load_hidden_builtin_target_template_ids,
     load_user_target_template_source_agents,
     load_user_target_template_sources,
     load_user_target_templates,
@@ -162,12 +164,12 @@ GEAR_COLUMN_WIDTHS = [
 ]
 LEVEL_COMBO_MIN_WIDTH = 82
 ROLL_SPINBOX_MIN_WIDTH = 96
-ACTION_DETAIL_DISPLAY_LIMIT = 20
+ACTION_DETAIL_DISPLAY_LIMIT = 8
 ACTION_PROCESS_TEMP_PREFIX = "gear-action-ev-"
 ACTION_SUCCESSFUL_RUNS_TO_KEEP = 3
 UI_RUNTIME_LOG_NAME = "ui-runtime.log"
 SUBSTAT_CARD_MIME = "application/x-gear-substat-card"
-SUMMARY_NUMERIC_COLUMNS = {"有效", "当前有效", "期望有效", "有效/母盘"}
+SUMMARY_NUMERIC_COLUMNS = {"有效", "当前有效", "期望有效", "收益", "效率", "有效/母盘", "主EV", "EV/母盘"}
 _TRANSIENT_POPUP_GUARD: QObject | None = None
 _TRANSIENT_POPUP_SUPPRESS_UNTIL = 0.0
 _TRANSIENT_POPUP_CLASS_NAMES = {
@@ -176,27 +178,12 @@ _TRANSIENT_POPUP_CLASS_NAMES = {
     "QTipLabel",
 }
 ACTION_VISIBLE_COLUMNS = [
-    "动作类型",
-    "调律策略/动作",
-    "目标套装",
-    "位置",
-    "主属性",
-    "固定副属性",
-    "horizon",
-    "套装约束",
-    "比较口径",
-    "有效期望",
-    "有效/母盘",
-    "高级素材/次",
-    "增益判断",
-    "方案类型",
-    "第一步 action",
-    "第二步策略摘要",
-    "计算口径",
-    "说明",
-    "代表路径",
-    "代表分支搭配",
-    "互补位",
+    "动作",
+    "目标",
+    "收益",
+    "效率",
+    "成本",
+    "判断",
 ]
 
 
@@ -356,9 +343,8 @@ QLabel#MutedText {
     color: #56606b;
 }
 QLabel#ProgressTitle {
-    font-size: 15px;
-    font-weight: 800;
-    color: #174ea6;
+    font-weight: 700;
+    color: #3c4043;
 }
 QLabel#ProgressMeter {
     font-weight: 700;
@@ -376,6 +362,34 @@ QFrame#PieceCard, QFrame#PieceCardSelected, QFrame#OverviewCard, QFrame#Recommen
     background: #ffffff;
     border: 1px solid #d7dce2;
     border-radius: 8px;
+}
+QFrame#ResultToolbar, QFrame#ResultPanel {
+    background: #ffffff;
+    border: 1px solid #d7dce2;
+    border-radius: 8px;
+}
+QFrame#ResultConfigStrip {
+    background: #ffffff;
+    border: 1px solid #d7dce2;
+    border-radius: 8px;
+}
+QFrame#ResultStatusStrip {
+    background: #f8fafc;
+    border: 0;
+    border-radius: 6px;
+}
+QPushButton#SecondaryActionButton {
+    background: #edf2f7;
+    color: #2f3a46;
+    border: 1px solid #d2d8df;
+}
+QPushButton#SecondaryActionButton:hover:!disabled {
+    background: #e2e8f0;
+}
+QPushButton#SecondaryActionButton:disabled {
+    background: #eef2f7;
+    color: #8a96a3;
+    border: 1px solid #d7dce2;
 }
 QFrame#PieceCard:hover {
     border-color: #1a73e8;
@@ -1149,7 +1163,10 @@ def _action_row_explanation(row: dict[str, Any]) -> str:
     horizon = int(row.get("horizon") or 1)
     horizon_note = ""
     if horizon > 1:
-        horizon_note = "horizon>1 的 EV 已加权所有 outcome；H=2 方案页展示审计用代表路径或条件分支。"
+        horizon_note = (
+            "horizon>1 的主排序使用静态调律二层聚合；库存强化按期望折入库存，"
+            "锁主/锁副仅作为 TOP3 审计列提示。"
+        )
     if set_plan.startswith("未满足"):
         return "未满足当前套装硬约束，不作为推荐结论。"
     if strategy == "随机位置":
@@ -1169,7 +1186,6 @@ def _action_row_explanation(row: dict[str, Any]) -> str:
             "升级不消耗母盘，会消耗强化材料，本工具暂不把强化材料折算成母盘。"
             "有效提升为正表示升级后的所有 roll 分支按概率加权后有 option value；"
             "它不等于这件胚子当前已经比已装备件更好，也不保证代表/均值搭配一定选它。"
-            "如果它出现在 H=2 第二步，第一步调律 action 会写在对应代表路径或条件分支里。"
             f"{horizon_note}"
         )
     return (relative or "完整概率分布精确计算。") + horizon_note
@@ -1199,6 +1215,68 @@ def _action_visible_summary(row: dict[str, Any], current_count: int = 0) -> str:
         if value and value != "-":
             parts.append(value)
     return " / ".join(parts) if parts else "-"
+
+
+def _action_target_summary(row: dict[str, Any]) -> str:
+    parts = []
+    for key in ["目标套装", "位置"]:
+        value = _format_value(row.get(key, "-"))
+        if value and value != "-":
+            parts.append(value)
+    main_stat = _format_value(row.get("主属性", "-"))
+    if main_stat and main_stat not in {"-", "不固定"}:
+        parts.append(main_stat)
+    fixed_substats = _format_value(row.get("固定副属性", "-"))
+    if fixed_substats and fixed_substats not in {"-", "不固定"}:
+        parts.append(fixed_substats)
+    return " / ".join(parts) if parts else "-"
+
+
+def _action_cost_summary(row: dict[str, Any]) -> str:
+    parts: list[str] = []
+    mother = _float_value(row.get("母盘/次"))
+    if mother:
+        parts.append(f"母盘 {mother:g}")
+    tuner = _float_value(row.get("校音器/次"))
+    if tuner:
+        parts.append(f"校音器 {tuner:g}")
+    core = _float_value(row.get("共鸣核/次"))
+    if core:
+        parts.append(f"共鸣核 {core:g}")
+    if not parts:
+        material = _float_value(row.get("高级素材/次"))
+        if material:
+            parts.append(f"素材 {material:g}")
+    return " + ".join(parts) if parts else "-"
+
+
+def _action_decision_summary(row: dict[str, Any]) -> str:
+    set_plan = str(row.get("套装约束") or "")
+    if set_plan.startswith("未满足"):
+        return "套装约束不满足"
+    if row.get("策略") == "强化库存胚子":
+        return "库存强化机会" if _action_row_has_positive_gain(row) else "强化期望不高"
+    relative = str(row.get("相对随机") or "")
+    if relative in {"优于随机，才建议固定", "固定位置基准", "基准"}:
+        return relative
+    if "不如随机" in relative:
+        return "不如随机"
+    if relative:
+        return relative
+    return "有效提升为正" if _action_row_has_positive_gain(row) else "暂无有效提升"
+
+
+def _action_hint_summary(row: dict[str, Any]) -> str:
+    hints: list[str] = []
+    if _is_horizon_two_action(row):
+        hints.append("H=2期望聚合")
+    if str(row.get("锁主审计") or "").strip():
+        hints.append("锁主审计见详情")
+    if str(row.get("锁副审计") or "").strip():
+        hints.append("锁副审计见详情")
+    if row.get("策略") == "强化库存胚子":
+        hints.append("不参与调律主推荐")
+    return "；".join(hints) if hints else "-"
 
 
 def _best_positive_upgrade_row(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -1293,27 +1371,63 @@ def _desktop_recommended_action_row(rows: list[dict[str, Any]]) -> dict[str, Any
 
 
 def _action_display_row(row: dict[str, Any]) -> dict[str, Any]:
-    display = {
-        column: (
-            _action_type_label(row)
-            if column == "动作类型"
-            else _action_display_strategy_label(row)
-            if column == "调律策略/动作"
-            else row.get("比较口径", row.get("相对随机", ""))
-            if column == "比较口径"
-            else row.get("代表分支搭配", row.get("预期搭配", ""))
-            if column == "代表分支搭配"
-            else _action_gain_label(row)
-            if column == "增益判断"
-            else _effective_gain_summary(row)
-            if column == "有效期望"
-            else row.get(column, "")
-        )
-        for column in ACTION_VISIBLE_COLUMNS
+    return {
+        "动作": _action_visible_summary(row),
+        "目标": _action_target_summary(row),
+        "收益": _effective_gain_summary(row),
+        "效率": row.get("有效/母盘", "-"),
+        "成本": _action_cost_summary(row),
+        "判断": _action_gain_label(row),
     }
-    display["计算口径"] = "精确"
-    display["说明"] = _action_row_explanation(row)
-    return display
+
+
+H2_AGGREGATED_SECOND_STEP_NOTE = "H=2 已按所有 outcome 聚合进 EV；概率分散，不单列后续策略。"
+
+
+def _is_horizon_two_action(row: dict[str, Any]) -> bool:
+    try:
+        return int(row.get("horizon") or 1) > 1
+    except (TypeError, ValueError):
+        return False
+
+
+def _h2_plan_note(row: dict[str, Any]) -> str:
+    calculation_scope = str(row.get("计算口径") or "")
+    if "H=2" in calculation_scope:
+        return calculation_scope + "；概率分散，不单列后续策略。"
+    return H2_AGGREGATED_SECOND_STEP_NOTE
+
+
+def _portfolio_display_row(row: Any) -> dict[str, Any]:
+    if isinstance(row, dict):
+        source = row
+    elif hasattr(row, "to_recommendation_row"):
+        source = row.to_recommendation_row()
+    elif hasattr(row, "to_display_row"):
+        source = row.to_display_row()
+    else:
+        source = {}
+    action = source.get("调律动作") or source.get("调律策略/动作") or getattr(row, "action_label", "-")
+    main_ev = source.get("主EV", source.get("portfolio EV", getattr(row, "portfolio_ev", "-")))
+    ev_per_mother = source.get("EV/母盘", getattr(row, "ev_per_mother", "-"))
+    useful_probability = (
+        source.get("成型收益概率")
+        or source.get("至少一人成型收益概率")
+        or (f"{getattr(row, 'useful_probability'):.1%}" if hasattr(row, "useful_probability") else "-")
+    )
+    build_hint = source.get("建设提示")
+    if not build_hint and hasattr(row, "build_progress_probability"):
+        build_probability = float(getattr(row, "build_progress_probability", 0.0) or 0.0)
+        build_hint = f"{build_probability:.1%}" if build_probability > 0 else "-"
+    return {
+        "动作": action,
+        "主EV": main_ev,
+        "EV/母盘": ev_per_mother,
+        "成型概率": useful_probability,
+        "主要受益人": source.get("主要受益人") or source.get("最佳受益代理人") or getattr(row, "best_beneficiary_agent", "-") or "-",
+        "建设提示": build_hint or "-",
+        "判断": source.get("说明") or "-",
+    }
 
 
 class GearTable(QTableWidget):
@@ -2890,6 +3004,7 @@ class ActionEvWorker(QObject):
 class PortfolioAuditWorker(QObject):
     finished = Signal(list)
     failed = Signal(str)
+    cancelled = Signal()
 
     def __init__(
         self,
@@ -2907,6 +3022,13 @@ class PortfolioAuditWorker(QObject):
         self.current_pieces = current_pieces
         self.inventory_pieces = inventory_pieces
         self.mode = mode
+        self._cancel_requested = False
+
+    def cancel(self) -> None:
+        self._cancel_requested = True
+
+    def is_cancel_requested(self) -> bool:
+        return self._cancel_requested
 
     @Slot()
     def run(self) -> None:
@@ -2920,8 +3042,11 @@ class PortfolioAuditWorker(QObject):
                 mode=self.mode,
                 horizon=1,
                 action_scope="tuning",
+                should_cancel=self.is_cancel_requested,
             )
             self.finished.emit(rows)
+        except PortfolioAuditCancelled:
+            self.cancelled.emit()
         except Exception:
             self.failed.emit(traceback.format_exc())
 
@@ -3106,6 +3231,7 @@ class OptimizerWindow(QMainWindow):
         self._portfolio_worker: PortfolioAuditWorker | None = None
         self._portfolio_context: dict[str, Any] = {}
         self._portfolio_started_at: float | None = None
+        self._result_config_expanded = False
         self._action_process: QProcess | None = None
         self._action_process_cancel_requested = False
         self._action_run_dir: str | None = None
@@ -3138,8 +3264,8 @@ class OptimizerWindow(QMainWindow):
         self.edit_target_template_button.setToolTip(
             "编辑目标模板：每个位置期望主属性、4+2/2+2+2 套装结构、副属性有效排序；不保存装备。"
         )
-        self.delete_target_template_button = QPushButton("删除自定义目标模板")
-        self.delete_target_template_button.setToolTip("只删除自定义目标模板；不会删除库存或当前装备快照。")
+        self.delete_target_template_button = QPushButton("删除/隐藏目标模板")
+        self.delete_target_template_button.setToolTip("自定义目标模板会删除；内置目标模板只从本机下拉列表隐藏。不会删除库存或当前装备快照。")
         self.target_template_summary_label = QLabel("-")
         self.target_template_summary_label.setWordWrap(True)
         self.agent_button = QPushButton("选择代理人")
@@ -3173,6 +3299,11 @@ class OptimizerWindow(QMainWindow):
         self.input_audit_label.setTextInteractionFlags(
             Qt.TextInteractionFlag.TextSelectableByMouse
         )
+        self.result_config_summary_label = QLabel("-")
+        self.result_config_summary_label.setObjectName("MutedText")
+        self.result_config_summary_label.setWordWrap(False)
+        self.result_config_toggle_button = QPushButton("编辑配置")
+        self.result_config_toggle_button.setObjectName("SecondaryActionButton")
         self.result_input_audit_label = QLabel("-")
         self.result_input_audit_label.setWordWrap(True)
         self.result_input_audit_label.setObjectName("MutedText")
@@ -3180,7 +3311,9 @@ class OptimizerWindow(QMainWindow):
             Qt.TextInteractionFlag.TextSelectableByMouse
         )
         self.copy_input_audit_button = QPushButton("复制输入审计")
-        self.copy_result_input_audit_button = QPushButton("复制本次输入口径")
+        self.copy_result_input_audit_button = QPushButton("复制审计")
+        self.copy_result_input_audit_button.setObjectName("SecondaryActionButton")
+        self.copy_result_input_audit_button.setToolTip("复制本次输入口径，可直接发给 GPT 或用于复核。")
         self.current_template_combo = QComboBox()
         self.load_current_template_button = QPushButton("载入快照")
         self.confirm_button = QPushButton("确认当前装备")
@@ -3216,10 +3349,13 @@ class OptimizerWindow(QMainWindow):
         self.inventory_card_scroll.setWidget(self.inventory_card_host)
         self.inventory_detail_label = QLabel("库存为空。")
         self.inventory_detail_label.setWordWrap(True)
-        self.best_button = QPushButton("计算当前最优搭配（含强化期望）")
-        self.action_button = QPushButton("计算调律建议")
-        self.portfolio_button = QPushButton("多代理人调律建议")
-        self.cancel_action_button = QPushButton("取消计算")
+        self.best_button = QPushButton("最优搭配")
+        self.best_button.setObjectName("SecondaryActionButton")
+        self.action_button = QPushButton("调律建议")
+        self.portfolio_button = QPushButton("BOX 调律")
+        self.portfolio_button.setObjectName("SecondaryActionButton")
+        self.cancel_action_button = QPushButton("取消")
+        self.cancel_action_button.setObjectName("SecondaryActionButton")
         self.cancel_action_button.setEnabled(False)
         self.horizon_combo = QComboBox()
         self.action_mode_combo = QComboBox()
@@ -3255,16 +3391,24 @@ class OptimizerWindow(QMainWindow):
         self.best_table = QTableWidget()
         self.action_table = QTableWidget()
         self.action_loadout_table = QTableWidget()
-        self.action_plan_summary_label = QLabel("尚无 H=2 方案。")
+        self.action_plan_summary_label = QLabel("尚无 H=2 说明。")
         self.action_plan_summary_label.setWordWrap(True)
+        self.action_plan_summary_label.setAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop
+        )
+        self.action_plan_summary_label.setSizePolicy(
+            QSizePolicy.Policy.Preferred,
+            QSizePolicy.Policy.Maximum,
+        )
         self.action_plan_branch_table = QTableWidget()
         self.action_plan_loadout_table = QTableWidget()
         self.portfolio_status_label = QLabel("尚无多代理人调律建议。")
         self.portfolio_status_label.setWordWrap(True)
         self.portfolio_table = QTableWidget()
-        self.action_table_status_label = QLabel("尚无 Action EV 明细。")
+        self.action_table_status_label = QLabel("尚无调律建议。")
         self.action_table_status_label.setWordWrap(True)
         self.show_all_actions_button = QPushButton("显示全部")
+        self.show_all_actions_button.setObjectName("SecondaryActionButton")
         self.show_all_actions_button.setEnabled(False)
         self.log_toggle_button = QPushButton("显示运行日志")
         self.log_toggle_button.setCheckable(True)
@@ -3286,8 +3430,8 @@ class OptimizerWindow(QMainWindow):
         root = QWidget()
         layout = QVBoxLayout(root)
 
-        selectors = QGroupBox("基础配置")
-        form = QFormLayout(selectors)
+        self.config_selectors_group = QGroupBox("基础配置")
+        form = QFormLayout(self.config_selectors_group)
         form.addRow("游戏", self.game_combo)
         agent_row = QWidget()
         agent_layout = QHBoxLayout(agent_row)
@@ -3304,7 +3448,17 @@ class OptimizerWindow(QMainWindow):
         form.addRow("目标模板（主属性 / 套装 / 副属性排序）", target_row)
         form.addRow("计算目标摘要", self.target_template_summary_label)
         form.addRow("概率模型", self.probability_combo)
-        layout.addWidget(selectors)
+        layout.addWidget(self.config_selectors_group)
+
+        self.result_config_strip = QFrame()
+        self.result_config_strip.setObjectName("ResultConfigStrip")
+        result_config_layout = QHBoxLayout(self.result_config_strip)
+        result_config_layout.setContentsMargins(12, 8, 12, 8)
+        result_config_layout.setSpacing(8)
+        result_config_layout.addWidget(self.result_config_summary_label, 1)
+        result_config_layout.addWidget(self.result_config_toggle_button)
+        self.result_config_strip.setVisible(False)
+        layout.addWidget(self.result_config_strip)
 
         overview_page = QWidget()
         overview_layout = QVBoxLayout(overview_page)
@@ -3408,40 +3562,51 @@ class OptimizerWindow(QMainWindow):
 
         result_page = QWidget()
         result_page_layout = QVBoxLayout(result_page)
-        action_group = QGroupBox("计算")
+        result_page_layout.setContentsMargins(8, 8, 8, 8)
+        result_page_layout.setSpacing(10)
+        result_page_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        action_group = QFrame()
+        action_group.setObjectName("ResultToolbar")
+        action_group.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
         action_layout = QVBoxLayout(action_group)
+        action_layout.setContentsMargins(12, 10, 12, 10)
+        action_layout.setSpacing(8)
         settings = QHBoxLayout()
+        settings.setSpacing(8)
         self.horizon_combo.addItem("horizon=1", 1)
         self.horizon_combo.addItem("horizon=2", 2)
         self.action_mode_combo.addItem("快速推荐", "fast")
         self.action_mode_combo.addItem("深度精算", "exact")
-        settings.addWidget(QLabel("Action EV 展望步数"))
+        settings.addWidget(QLabel("展望"))
         settings.addWidget(self.horizon_combo)
-        settings.addWidget(QLabel("计算模式"))
+        settings.addWidget(QLabel("模式"))
         settings.addWidget(self.action_mode_combo)
         settings.addWidget(self.best_button)
         settings.addWidget(self.action_button)
         settings.addWidget(self.portfolio_button)
         settings.addWidget(self.cancel_action_button)
+        settings.addWidget(self.copy_result_input_audit_button)
         settings.addStretch(1)
         action_layout.addLayout(settings)
-        action_layout.addWidget(self.horizon_note_label)
-        action_layout.addWidget(self.progress_label)
-        action_layout.addWidget(self.progress_meter_label)
-        action_layout.addWidget(self.progress_bar)
-        action_layout.addWidget(self.progress_detail_label)
-        result_input_audit_group = QGroupBox("本次输入口径")
-        result_input_audit_layout = QVBoxLayout(result_input_audit_group)
-        result_input_audit_actions = QHBoxLayout()
-        result_input_audit_actions.addStretch(1)
-        result_input_audit_actions.addWidget(self.copy_result_input_audit_button)
-        result_input_audit_layout.addLayout(result_input_audit_actions)
-        result_input_audit_layout.addWidget(self.result_input_audit_label)
-        action_layout.addWidget(result_input_audit_group)
+        self.result_status_strip = QFrame()
+        self.result_status_strip.setObjectName("ResultStatusStrip")
+        status_layout = QVBoxLayout(self.result_status_strip)
+        status_layout.setContentsMargins(10, 6, 10, 6)
+        status_layout.setSpacing(3)
+        status_layout.addWidget(self.progress_label)
+        status_layout.addWidget(self.horizon_note_label)
+        status_layout.addWidget(self.progress_meter_label)
+        status_layout.addWidget(self.progress_bar)
+        status_layout.addWidget(self.progress_detail_label)
+        action_layout.addWidget(self.result_status_strip)
+        self.progress_meter_label.setVisible(False)
+        self.progress_bar.setVisible(False)
+        self.progress_detail_label.setVisible(False)
         result_page_layout.addWidget(action_group)
 
         recommend_card = QFrame()
         recommend_card.setObjectName("RecommendCard")
+        recommend_card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Maximum)
         recommend_layout = QVBoxLayout(recommend_card)
         recommend_header = QHBoxLayout()
         recommend_header.addWidget(self.result_recommend_icon)
@@ -3452,21 +3617,29 @@ class OptimizerWindow(QMainWindow):
 
         action_detail_page = QWidget()
         action_detail_layout = QVBoxLayout(action_detail_page)
+        action_detail_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         action_detail_header = QHBoxLayout()
         action_detail_header.addWidget(self.action_table_status_label, 1)
         action_detail_header.addWidget(self.show_all_actions_button)
         action_detail_layout.addLayout(action_detail_header)
         action_detail_layout.addWidget(self.action_table)
-        self.result_tabs.addTab(action_detail_page, "Action EV 明细")
+        self.result_tabs.addTab(action_detail_page, "调律建议")
 
         plan_page = QWidget()
         plan_layout = QVBoxLayout(plan_page)
+        plan_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         plan_layout.addWidget(self.action_plan_summary_label)
-        plan_layout.addWidget(QLabel("条件分支"))
+        self.action_plan_branch_label = QLabel("条件分支（仅审计）")
+        plan_layout.addWidget(self.action_plan_branch_label)
         plan_layout.addWidget(self.action_plan_branch_table)
-        plan_layout.addWidget(QLabel("代表分支搭配"))
+        self.action_plan_loadout_label = QLabel("代表分支搭配（仅审计）")
+        plan_layout.addWidget(self.action_plan_loadout_label)
         plan_layout.addWidget(self.action_plan_loadout_table)
-        self.result_tabs.addTab(plan_page, "H=2 方案")
+        self.action_plan_branch_label.setVisible(False)
+        self.action_plan_branch_table.setVisible(False)
+        self.action_plan_loadout_label.setVisible(False)
+        self.action_plan_loadout_table.setVisible(False)
+        self.result_tabs.addTab(plan_page, "H=2 说明")
 
         loadout_page = QWidget()
         loadout_layout = QVBoxLayout(loadout_page)
@@ -3487,10 +3660,12 @@ class OptimizerWindow(QMainWindow):
         log_layout.addWidget(self.log_toggle_button)
         log_layout.addWidget(self.log)
         self.result_tabs.addTab(log_page, "运行日志")
-        result_group = QGroupBox("结果")
-        result_layout = QVBoxLayout(result_group)
+        self.result_panel = QFrame()
+        self.result_panel.setObjectName("ResultPanel")
+        result_layout = QVBoxLayout(self.result_panel)
+        result_layout.setContentsMargins(10, 10, 10, 10)
         result_layout.addWidget(self.result_tabs)
-        result_page_layout.addWidget(result_group)
+        result_page_layout.addWidget(self.result_panel)
         self.tabs.addTab(result_page, "计算结果")
         layout.addWidget(self.tabs, 1)
         self.tabs.setCurrentIndex(0)
@@ -3508,6 +3683,7 @@ class OptimizerWindow(QMainWindow):
         self.delete_target_template_button.clicked.connect(self.delete_target_template)
         self.copy_input_audit_button.clicked.connect(self.copy_input_audit)
         self.copy_result_input_audit_button.clicked.connect(self.copy_input_audit)
+        self.result_config_toggle_button.clicked.connect(self._toggle_result_config_expanded)
         self.current_table.changed.connect(self._current_changed)
         self.inventory_table.changed.connect(self._inventory_changed)
         self.position_filter.currentIndexChanged.connect(lambda _index: self._refresh_inventory_view())
@@ -3543,6 +3719,42 @@ class OptimizerWindow(QMainWindow):
 
     def _tab_context_changed(self) -> None:
         _suppress_transient_popups()
+        self._sync_result_config_visibility()
+        self._sync_result_panel_height()
+
+    def _is_result_tab_active(self) -> bool:
+        return self.tabs.tabText(self.tabs.currentIndex()) == "计算结果"
+
+    def _toggle_result_config_expanded(self) -> None:
+        self._result_config_expanded = not self._result_config_expanded
+        self._sync_result_config_visibility()
+
+    def _result_config_summary_text(self) -> str:
+        if not self.games:
+            return "尚未载入游戏配置"
+        game_text = self.selected_game().name if self.games else "-"
+        agent = self.selected_agent()
+        agent_text = agent.name if agent is not None else "未选择代理人"
+        target_text = self.selected_character().name if self.characters else "-"
+        probability_text = self.selected_probability_model().name if self.probabilities else "-"
+        current_count = self.current_table.rowCount()
+        inventory_count = self.inventory_table.rowCount()
+        confirmed_text = "已确认" if self.current_confirmed_digest else "未确认"
+        return (
+            f"{game_text} | {agent_text} | 目标 {target_text} | 概率 {probability_text} | "
+            f"当前 {current_count}/6 | 库存 {inventory_count} | {confirmed_text}"
+        )
+
+    def _sync_result_config_visibility(self) -> None:
+        if not hasattr(self, "config_selectors_group") or not hasattr(self, "result_config_strip"):
+            return
+        on_result_page = self._is_result_tab_active()
+        if not on_result_page:
+            self._result_config_expanded = False
+        self.result_config_summary_label.setText(self._result_config_summary_text())
+        self.result_config_strip.setVisible(on_result_page)
+        self.config_selectors_group.setVisible((not on_result_page) or self._result_config_expanded)
+        self.result_config_toggle_button.setText("收起配置" if self._result_config_expanded else "编辑配置")
 
     def _load_games(self) -> None:
         self.game_combo.blockSignals(True)
@@ -3585,10 +3797,12 @@ class OptimizerWindow(QMainWindow):
         game = self.selected_game()
         base_characters = load_characters(game.id)
         try:
+            hidden_builtin_template_ids = load_hidden_builtin_target_template_ids(game.id)
             user_templates = load_user_target_templates(game.id)
             user_template_sources = load_user_target_template_sources(game.id)
             user_template_source_agents = load_user_target_template_source_agents(game.id)
         except Exception as exc:
+            hidden_builtin_template_ids = set()
             user_templates = []
             user_template_sources = {}
             user_template_source_agents = {}
@@ -3596,9 +3810,19 @@ class OptimizerWindow(QMainWindow):
                 self.log.append(f"用户目标模板读取失败，已退回内置目标模板：{exc}")
             if hasattr(self, "progress_label"):
                 self.progress_label.setText("用户目标模板读取失败，已退回内置目标模板。")
-        self.characters = [*base_characters, *user_templates]
+        visible_base_characters = [
+            character
+            for character in base_characters
+            if character.id not in hidden_builtin_template_ids
+        ]
+        if not visible_base_characters and not user_templates:
+            visible_base_characters = base_characters
+            hidden_builtin_template_ids = set()
+            if hasattr(self, "log"):
+                self.log.append("所有内置目标模板都被隐藏，已临时恢复显示以避免目标列表为空。")
+        self.characters = [*visible_base_characters, *user_templates]
         self._target_template_source_by_id = {
-            **{character.id: character.id for character in base_characters},
+            **{character.id: character.id for character in visible_base_characters},
             **user_template_sources,
         }
         self._target_template_source_agent_by_id = user_template_source_agents
@@ -3651,7 +3875,13 @@ class OptimizerWindow(QMainWindow):
     def _refresh_target_template_controls(self) -> None:
         character = self.selected_character()
         is_user_template = character.id.startswith("user_")
-        self.delete_target_template_button.setEnabled(is_user_template)
+        if is_user_template:
+            self.delete_target_template_button.setText("删除自定义目标模板")
+            self.delete_target_template_button.setToolTip("删除这个自定义目标模板；不会删除库存或当前装备快照。")
+        else:
+            self.delete_target_template_button.setText("隐藏内置目标模板")
+            self.delete_target_template_button.setToolTip("从本机下拉列表隐藏这个内置目标模板；不会删除内置配置、库存或当前装备快照。")
+        self.delete_target_template_button.setEnabled(is_user_template or len(self.characters) > 1)
         self.target_template_summary_label.setText(self._target_template_summary_text(character))
 
     def selected_agent(self) -> AgentMetadata | None:
@@ -3659,6 +3889,9 @@ class OptimizerWindow(QMainWindow):
             return None
         game_id = self.selected_game().id if self.games else ""
         selected_id = self._selected_agent_id_by_game.get(game_id)
+        for agent in self.agents:
+            if agent.agent_id == selected_id:
+                return agent
         source_agent_id = self._selected_target_template_source_agent_id()
         if source_agent_id:
             for agent in self.agents:
@@ -3667,14 +3900,8 @@ class OptimizerWindow(QMainWindow):
         source_character_id = self._selected_target_template_source_character_id()
         if source_character_id:
             for agent in self.agents:
-                if agent.agent_id == selected_id and agent.character_preset_id == source_character_id:
-                    return agent
-            for agent in self.agents:
                 if agent.character_preset_id == source_character_id:
                     return agent
-        for agent in self.agents:
-            if agent.agent_id == selected_id:
-                return agent
         character_id = self.character_combo.currentData()
         for agent in self.agents:
             if agent.agent_id == character_id and agent.character_preset_id == character_id:
@@ -3739,11 +3966,7 @@ class OptimizerWindow(QMainWindow):
             return
         self._selected_agent_id_by_game[self.selected_game().id] = agent.agent_id
         if self.character_combo.currentIndex() == index:
-            self._refresh_agent_selector_summary()
-            self._refresh_overview()
-            self._clear_results(
-                "已切换代理人。当前最优/Action EV 需要确认当前装备；多代理人调律可直接使用空或部分当前盘面。"
-            )
+            self._reload_character_context()
             return
         self.character_combo.blockSignals(True)
         try:
@@ -3856,16 +4079,15 @@ class OptimizerWindow(QMainWindow):
                 matching_agent = next(
                     (agent for agent in self.agents if agent.character_preset_id == character.id),
                     None,
-            )
+                )
             if matching_agent is not None:
                 self._selected_agent_id_by_game[game.id] = matching_agent.agent_id
         storage_character_id = self.selected_storage_character_id()
-        fallback_storage_ids = [self.selected_legacy_storage_character_id()]
         current_pieces = _initial_current_pieces(game, storage_character_id)
         inventory_pieces, inventory_source_id = _initial_inventory_with_source(
             game,
             storage_character_id,
-            fallback_storage_ids,
+            [],
         )
         self._inventory_loaded_storage_id = inventory_source_id
         self.current_table.set_context(game, character, current_pieces)
@@ -4033,9 +4255,6 @@ class OptimizerWindow(QMainWindow):
         return self._target_template_source_agent_by_id.get(character_id, "")
 
     def selected_storage_character_id(self) -> str:
-        source_agent_id = self._selected_target_template_source_agent_id()
-        if source_agent_id:
-            return source_agent_id
         agent = self.selected_agent()
         if agent is not None:
             return agent.agent_id
@@ -4087,10 +4306,46 @@ class OptimizerWindow(QMainWindow):
             + self._target_template_summary_text(saved)
         )
 
+    def _fallback_target_template_id_after_removal(self, removed_id: str) -> str | None:
+        for character in self.characters:
+            if character.id != removed_id:
+                return character.id
+        return None
+
     def delete_target_template(self) -> None:
         character = self.selected_character()
-        if not character.id.startswith("user_"):
-            QMessageBox.information(self, "内置目标模板", "内置目标模板不能删除；可以编辑后另存为自定义目标模板。")
+        game = self.selected_game()
+        is_user_template = character.id.startswith("user_")
+        fallback_target_id = self.selected_legacy_storage_character_id()
+        if fallback_target_id == character.id:
+            fallback_target_id = self._fallback_target_template_id_after_removal(character.id)
+        if fallback_target_id is None:
+            QMessageBox.information(
+                self,
+                "目标模板",
+                "不能移除最后一个目标模板；至少需要保留一个可计算目标。",
+            )
+            return
+        if not is_user_template:
+            answer = QMessageBox.question(
+                self,
+                "隐藏内置目标模板？",
+                f"确定从本机下拉列表隐藏内置目标模板“{character.name}”吗？"
+                "内置配置文件不会删除，库存和当前装备也不会删除。",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                self.progress_label.setText("已取消隐藏目标模板；目标规则未变化。")
+                return
+            hide_builtin_target_template(game.id, character.id)
+            self._reload_target_template_options(fallback_target_id)
+            self._target_template_changed()
+            active = self.selected_character()
+            self.progress_label.setText(
+                f"已隐藏内置目标模板：{character.name}。已切回目标模板：{active.name}。\n"
+                + self._target_template_summary_text(active)
+            )
             return
         answer = QMessageBox.question(
             self,
@@ -4102,8 +4357,6 @@ class OptimizerWindow(QMainWindow):
         if answer != QMessageBox.StandardButton.Yes:
             self.progress_label.setText("已取消删除目标模板；目标规则未变化。")
             return
-        game = self.selected_game()
-        fallback_target_id = self.selected_legacy_storage_character_id()
         delete_user_target_template(game.id, character.id)
         self._reload_target_template_options(fallback_target_id)
         self._target_template_changed()
@@ -4167,11 +4420,12 @@ class OptimizerWindow(QMainWindow):
         if self._results_stale and self._has_calculated_once:
             guide = "装备、库存或概率模型已变化，旧结果不可作为当前结论，请重新计算。"
         elif self._has_visible_results() and not self._results_stale:
-            guide = "结果已更新，可在“计算结果”页查看 Action EV 明细、H=2 方案、搭配结果、多代理人调律和运行日志。"
+            guide = "结果已更新，可在“计算结果”页查看调律建议、H=2 说明、搭配结果、多代理人调律和运行日志。"
         self.overview_guide_label.setText(guide)
         audit_text = self._input_audit_text()
         self.input_audit_label.setText(audit_text)
         self.result_input_audit_label.setText(audit_text)
+        self._sync_result_config_visibility()
 
     def _input_audit_text(self) -> str:
         game = self.selected_game()
@@ -4238,19 +4492,16 @@ class OptimizerWindow(QMainWindow):
 
     def _current_template_items(self) -> list[dict[str, Any]]:
         game_id = self.selected_game().id
-        for storage_id in _unique_storage_ids(
-            self.selected_storage_character_id(),
-            self.selected_legacy_storage_character_id(),
-        ):
-            try:
-                items = load_user_current_gears(game_id, storage_id)
-                if items or current_gear_store_path(game_id, storage_id).exists():
-                    return [
-                        {**item, "_storage_id": storage_id}
-                        for item in items
-                    ]
-            except Exception:
-                continue
+        storage_id = self.selected_storage_character_id()
+        try:
+            items = load_user_current_gears(game_id, storage_id)
+            if items or current_gear_store_path(game_id, storage_id).exists():
+                return [
+                    {**item, "_storage_id": storage_id}
+                    for item in items
+                ]
+        except Exception:
+            return []
         return []
 
     def _refresh_current_template_controls(
@@ -4896,17 +5147,22 @@ class OptimizerWindow(QMainWindow):
     def _update_horizon_note(self) -> None:
         horizon = int(self.horizon_combo.currentData() or 1)
         mode = self._current_action_ev_mode() if hasattr(self, "action_mode_combo") else DEFAULT_ACTION_EV_MODE
-        mode_text = (
-            "快速推荐：只算随机位置、固定位置、固定主属性。"
-            if mode == "fast"
-            else "深度精算：包含库存强化与固定副属性展开，可能明显更慢。"
-        )
         if horizon == 2:
+            mode_text = (
+                "H=2 主排序只算调律母盘静态二层聚合；库存强化按期望折入库存；锁主/锁副只对 TOP3 做审计。"
+            )
             self.horizon_note_label.setText(
-                f"horizon=2 为完整概率分布精确计算，可能耗时较长；计算期间可取消。{mode_text}"
+                f"horizon=2 为两层期望聚合；计算期间可取消。{mode_text}"
             )
         else:
+            mode_text = (
+                "快速推荐：只算随机位置、固定位置、固定主属性。"
+                if mode == "fast"
+                else "深度精算：H=1 会包含库存强化与固定副属性展开。"
+            )
             self.horizon_note_label.setText(f"horizon=1 为完整概率分布计算。{mode_text}")
+        self._set_result_status_visible(True)
+        self.horizon_note_label.setVisible(True)
         if hasattr(self, "input_audit_label"):
             self._refresh_overview()
 
@@ -4927,6 +5183,22 @@ class OptimizerWindow(QMainWindow):
             or self._portfolio_worker is not None
         )
 
+    def _set_progress_feedback_visible(self, visible: bool) -> None:
+        if visible:
+            self._set_result_status_visible(True)
+        self.progress_meter_label.setVisible(visible)
+        self.progress_bar.setVisible(visible)
+        self.progress_detail_label.setVisible(visible)
+
+    def _set_result_guidance_visible(self, visible: bool) -> None:
+        if visible:
+            self._set_result_status_visible(True)
+        self.horizon_note_label.setVisible(visible)
+
+    def _set_result_status_visible(self, visible: bool) -> None:
+        if hasattr(self, "result_status_strip"):
+            self.result_status_strip.setVisible(visible)
+
     def _clear_results(self, message: str = "") -> None:
         self._results_stale = True
         self._highlighted_inventory_source_rows = set()
@@ -4935,18 +5207,22 @@ class OptimizerWindow(QMainWindow):
         self.best_table.setColumnCount(0)
         self.action_table.setRowCount(0)
         self.action_table.setColumnCount(0)
+        self._set_action_table_compact_height(0, compact=True)
+        self._sync_result_panel_height()
         self._action_result_rows = []
         self._show_all_action_rows = False
-        self.action_table_status_label.setText("尚无 Action EV 明细。")
+        self.action_table_status_label.setText("尚无调律建议。")
         self.show_all_actions_button.setEnabled(False)
         self.show_all_actions_button.setText("显示全部")
         self.action_loadout_table.setRowCount(0)
         self.action_loadout_table.setColumnCount(0)
-        self.action_plan_summary_label.setText("尚无 H=2 方案。")
+        self.action_plan_summary_label.setText("尚无 H=2 说明。")
         self.action_plan_branch_table.setRowCount(0)
         self.action_plan_branch_table.setColumnCount(0)
         self.action_plan_loadout_table.setRowCount(0)
         self.action_plan_loadout_table.setColumnCount(0)
+        if hasattr(self, "action_plan_branch_label"):
+            self._set_action_plan_detail_visible(branches=False, loadout=False)
         self.portfolio_status_label.setText("尚无多代理人调律建议。")
         self.portfolio_table.setRowCount(0)
         self.portfolio_table.setColumnCount(0)
@@ -4967,6 +5243,8 @@ class OptimizerWindow(QMainWindow):
             self.progress_label.setText(message or "等待操作。")
             self.progress_meter_label.setText("")
             self.progress_detail_label.setText("")
+            self._set_progress_feedback_visible(False)
+            self._set_result_guidance_visible(True)
             if self._has_calculated_once:
                 self._last_recommended_action_summary = "结果已过期，请重新计算。"
                 self._last_main_metric_summary = "-"
@@ -4984,6 +5262,8 @@ class OptimizerWindow(QMainWindow):
 
     def _start_action_progress(self) -> None:
         now = time.monotonic()
+        self._set_progress_feedback_visible(True)
+        self._set_result_guidance_visible(True)
         self._action_progress_started_at = now
         self._action_progress_current_unit_started_at = None
         self._action_progress_current_unit_key = None
@@ -5005,13 +5285,14 @@ class OptimizerWindow(QMainWindow):
     def _stop_action_progress(self) -> None:
         self._progress_timer.stop()
         self._last_action_progress_payload = {}
-        self._last_action_performance_audit = {}
         self._last_action_progress_seen_at = None
         self._action_progress_current_unit_started_at = None
         self._action_progress_current_unit_key = None
 
     def _start_portfolio_progress(self) -> None:
         self._portfolio_started_at = time.monotonic()
+        self._set_progress_feedback_visible(True)
+        self._set_result_guidance_visible(False)
         self.progress_bar.setRange(0, 0)
         self.progress_bar.setFormat("多代理人调律计算中")
         self.progress_label.setText("多代理人调律建议正在后台计算。")
@@ -5262,7 +5543,15 @@ class OptimizerWindow(QMainWindow):
             self.best_button.setToolTip("用已确认当前装备作为单角色基线计算当前最优搭配。")
             self.action_button.setToolTip("用已确认当前装备作为单角色基线计算调律建议。")
             self.portfolio_button.setToolTip("多代理人调律可使用已确认、空或部分当前盘面。")
-        self.cancel_action_button.setEnabled(self._action_process is not None)
+        self.cancel_action_button.setEnabled(
+            self._action_process is not None or self._portfolio_worker is not None
+        )
+        if self._portfolio_worker is not None:
+            self.cancel_action_button.setToolTip("取消当前多代理人调律后台计算。")
+        elif self._action_process is not None:
+            self.cancel_action_button.setToolTip("取消当前 Action EV 子进程计算。")
+        else:
+            self.cancel_action_button.setToolTip("")
         has_current_piece = self.current_table.rowCount() > 0
         self.confirm_button.setEnabled(not busy and has_current_piece)
         has_current_template = bool(str(self.current_template_combo.currentData() or ""))
@@ -5930,6 +6219,21 @@ class OptimizerWindow(QMainWindow):
         self._action_progress_offset = 0
         self._set_action_execution_metadata(engine, "worker_process", action_mode)
         self._start_action_progress()
+        self._log_ui_event(
+            "action_compute_start",
+            game_id=self.selected_game().id,
+            character_id=self.selected_character().id,
+            probability_model_id=self.selected_probability_model().id,
+            horizon=horizon,
+            engine=engine,
+            action_mode=action_mode,
+            execution_mode="worker_process",
+            current_count=len(current_pieces),
+            inventory_count=len(inventory_pieces),
+            run_id=run_id,
+            run_dir=str(run_dir),
+            progress_path=str(progress_path),
+        )
         self.progress_detail_label.setText(
             f"horizon=2 正在子进程中计算；engine={engine}；mode={action_mode}；主窗口可继续切换 Tab，也可取消。"
         )
@@ -5961,8 +6265,26 @@ class OptimizerWindow(QMainWindow):
         self._action_process_cancel_requested = False
 
     def cancel_action_ev(self) -> None:
-        if self._action_process is not None:
+        if self._portfolio_worker is not None:
+            self._portfolio_worker.cancel()
+            self._log_ui_event(
+                "portfolio_compute_cancel_requested",
+                target_count=int(self._portfolio_context.get("target_count") or 0),
+            )
+            self.progress_label.setText("正在取消多代理人调律建议。")
+            self.progress_meter_label.setText("取消中 | 已停止接收新推荐")
+            self.progress_detail_label.setText("用户取消，等待当前 BOX 计算点安全退出。")
+            self.log.append("用户取消多代理人调律建议，等待后台任务安全退出。")
+            self.log_toggle_button.setChecked(True)
+            self.cancel_action_button.setEnabled(False)
+        elif self._action_process is not None:
             self._action_process_cancel_requested = True
+            self._log_ui_event(
+                "action_compute_cancel_requested",
+                engine=self._last_action_engine,
+                action_mode=self._last_action_mode,
+                execution_mode=self._last_action_execution_mode,
+            )
             self.progress_label.setText("正在取消 Action EV 计算。")
             self.progress_meter_label.setText("取消中 | 已停止接收新推荐")
             self.progress_detail_label.setText("用户取消，未生成新推荐。")
@@ -5987,6 +6309,15 @@ class OptimizerWindow(QMainWindow):
         self._stop_action_progress()
         self._clear_action_process_state()
         if cancelled:
+            self._set_progress_feedback_visible(True)
+            self._set_result_guidance_visible(True)
+            self._log_ui_event(
+                "action_compute_cancelled",
+                engine=self._last_action_engine,
+                action_mode=self._last_action_mode,
+                execution_mode=self._last_action_execution_mode,
+                **self._action_performance_log_fields(),
+            )
             self.progress_label.setText("Action EV 计算已取消。")
             self.progress_meter_label.setText("已取消 | 未更新推荐")
             self.progress_detail_label.setText("用户取消，未生成新推荐。")
@@ -6056,6 +6387,9 @@ class OptimizerWindow(QMainWindow):
         self.tabs.setCurrentIndex(3)
         self.result_tabs.setCurrentIndex(2)
         self.progress_label.setText("当前最优搭配已计算完成；未满级按满级强化期望估值。")
+        self._set_progress_feedback_visible(False)
+        self._set_result_guidance_visible(False)
+        self._set_result_status_visible(False)
         self._refresh_overview()
 
     def run_portfolio_audit(self) -> None:
@@ -6140,12 +6474,15 @@ class OptimizerWindow(QMainWindow):
             inventory_pieces,
             mode,
         )
+        self._update_action_buttons()
         self._portfolio_worker.moveToThread(self._portfolio_worker_thread)
         self._portfolio_worker_thread.started.connect(self._portfolio_worker.run)
         self._portfolio_worker.finished.connect(self._on_portfolio_audit_finished)
         self._portfolio_worker.failed.connect(self._on_portfolio_audit_failed)
+        self._portfolio_worker.cancelled.connect(self._on_portfolio_audit_cancelled)
         self._portfolio_worker.finished.connect(self._portfolio_worker_thread.quit)
         self._portfolio_worker.failed.connect(self._portfolio_worker_thread.quit)
+        self._portfolio_worker.cancelled.connect(self._portfolio_worker_thread.quit)
         self._portfolio_worker_thread.finished.connect(self._portfolio_worker.deleteLater)
         self._portfolio_worker_thread.finished.connect(self._portfolio_worker_thread.deleteLater)
         self._portfolio_worker_thread.start()
@@ -6156,11 +6493,11 @@ class OptimizerWindow(QMainWindow):
         self._portfolio_worker_thread = None
         self.progress_bar.setValue(100)
         self.progress_bar.setFormat("多代理人调律 100%")
+        self._set_progress_feedback_visible(False)
+        self._set_result_guidance_visible(False)
+        self._set_result_status_visible(False)
 
-        display_rows = [
-            row.to_recommendation_row() if hasattr(row, "to_recommendation_row") else row.to_display_row()
-            for row in rows
-        ]
+        display_rows = [_portfolio_display_row(row) for row in rows]
         self._fill_table(self.portfolio_table, display_rows)
         mode = self._portfolio_context.get("mode")
         mode_label = mode.label if isinstance(mode, PortfolioMode) else str(self._portfolio_context.get("mode_value") or "-")
@@ -6170,18 +6507,26 @@ class OptimizerWindow(QMainWindow):
         elapsed = time.monotonic() - float(started_at) if isinstance(started_at, float) else 0.0
         top_row = rows[0] if rows else None
         self.portfolio_status_label.setText(
-            f"多代理人调律完成：{len(rows)} 个动作；模式={mode_label}；目标代理人={target_names}。\n"
-            "排序只看主 EV：outcome 加入代理人盘池后 best_loadout_value 的正提升；"
-            "本表只比较随机位置、固定位置、固定主属性；建设提示不参与排序。"
+            f"多代理人调律完成：{len(rows)} 个动作；模式={mode_label}；目标={target_names}。\n"
+            "主表只显示排序结论；主 EV 来自成型 best_loadout 正提升，建设提示不参与排序。"
         )
         if top_row is not None and hasattr(top_row, "action_label"):
             top_ev = float(getattr(top_row, "portfolio_ev", 0.0) or 0.0)
             top_prob = float(getattr(top_row, "useful_probability", 0.0) or 0.0)
             top_beneficiary = str(getattr(top_row, "best_beneficiary_agent", "") or "-")
-            self.result_recommend_title.setText(f"多代理人调律推荐：{top_row.action_label}")
-            self.result_recommend_detail.setText(
-                f"主EV {top_ev:.3f}；成型收益概率 {top_prob:.1%}；主要受益人 {top_beneficiary}。"
-            )
+            if top_ev > 0:
+                self.result_recommend_title.setText(f"多代理人调律推荐：{top_row.action_label}")
+                self.result_recommend_detail.setText(
+                    f"主EV {top_ev:.3f}；成型收益概率 {top_prob:.1%}；主要受益人 {top_beneficiary}。"
+                )
+            else:
+                build_prob = float(getattr(top_row, "build_progress_probability", 0.0) or 0.0)
+                self.result_recommend_title.setText("暂无成型收益推荐；仅显示建设审计")
+                self.result_recommend_detail.setText(
+                    f"最高主EV {top_ev:.3f}；成型收益概率 {top_prob:.1%}。"
+                    f"建设方向最高命中 {build_prob:.1%}，不参与推荐排序；"
+                    "同为 0 主EV 时优先展示低母盘成本动作。"
+                )
             self._set_result_recommend_icon(str(getattr(top_row, "target_set", "") or "") or None)
         else:
             self.result_recommend_title.setText("多代理人调律暂无可排序动作")
@@ -6206,6 +6551,8 @@ class OptimizerWindow(QMainWindow):
 
     def _on_portfolio_audit_failed(self, traceback_text: str) -> None:
         self._stop_portfolio_progress()
+        self._set_progress_feedback_visible(True)
+        self._set_result_guidance_visible(True)
         self._portfolio_worker = None
         self._portfolio_worker_thread = None
         started_at = self._portfolio_context.get("started_at")
@@ -6229,6 +6576,30 @@ class OptimizerWindow(QMainWindow):
         self._update_action_buttons()
         QMessageBox.critical(self, "多代理人调律失败", traceback_text)
 
+    def _on_portfolio_audit_cancelled(self) -> None:
+        self._stop_portfolio_progress()
+        self._set_progress_feedback_visible(True)
+        self._set_result_guidance_visible(True)
+        self._portfolio_worker = None
+        self._portfolio_worker_thread = None
+        started_at = self._portfolio_context.get("started_at")
+        elapsed = time.monotonic() - float(started_at) if isinstance(started_at, float) else 0.0
+        self.progress_bar.setValue(0)
+        self.progress_bar.setFormat("多代理人调律已取消")
+        self.progress_label.setText("多代理人调律建议已取消。")
+        self.progress_meter_label.setText(f"已取消 | 已耗时 {_format_duration(elapsed)}")
+        self.progress_detail_label.setText("用户取消，未生成新推荐；旧结果未被覆盖。")
+        self.result_recommend_title.setText("多代理人调律已取消")
+        self.result_recommend_detail.setText("用户取消，未生成新推荐；旧结果未被覆盖。")
+        self.log.append(f"多代理人调律已取消；耗时 {_format_duration(elapsed)}。")
+        self._log_ui_event(
+            "portfolio_compute_cancelled",
+            elapsed_seconds=round(elapsed, 3),
+        )
+        self._portfolio_context = {}
+        self._refresh_overview()
+        self._update_action_buttons()
+
     def run_action_ev(self) -> None:
         current_pieces = self._collect_current_or_warn()
         if current_pieces is None or not self._ensure_current_still_confirmed(current_pieces):
@@ -6251,6 +6622,18 @@ class OptimizerWindow(QMainWindow):
         self._set_action_execution_metadata(engine, "qthread", action_mode)
         self.log.append(f"Action EV engine: {_engine_label(engine)}；mode={action_mode}；执行方式：QThread 后台线程。")
         self._start_action_progress()
+        self._log_ui_event(
+            "action_compute_start",
+            game_id=self.selected_game().id,
+            character_id=self.selected_character().id,
+            probability_model_id=self.selected_probability_model().id,
+            horizon=horizon,
+            engine=engine,
+            action_mode=action_mode,
+            execution_mode="qthread",
+            current_count=len(current_pieces),
+            inventory_count=len(inventory_pieces),
+        )
         self.progress_detail_label.setText(f"horizon=1 正在后台线程计算；engine={engine}；mode={action_mode}。")
         self._worker_thread = QThread(self)
         self._worker = ActionEvWorker(
@@ -6287,7 +6670,9 @@ class OptimizerWindow(QMainWindow):
         total = len(display_rows)
         if total == 0:
             self._fill_table(self.action_table, [])
-            self.action_table_status_label.setText("尚无 Action EV 明细。")
+            self._set_action_table_compact_height(0, compact=True)
+            self._sync_result_panel_height()
+            self.action_table_status_label.setText("尚无调律建议。")
             self.show_all_actions_button.setEnabled(False)
             self.show_all_actions_button.setText("显示全部")
             return
@@ -6295,20 +6680,25 @@ class OptimizerWindow(QMainWindow):
         limit = ACTION_DETAIL_DISPLAY_LIMIT
         visible_rows = display_rows if self._show_all_action_rows else display_rows[:limit]
         self._fill_table(self.action_table, visible_rows)
+        self._set_action_table_compact_height(
+            len(visible_rows),
+            compact=not self._show_all_action_rows,
+        )
+        self._sync_result_panel_height()
         shown = len(visible_rows)
         upgrade_count = sum(1 for row in self._action_result_rows if row.get("策略") == "强化库存胚子")
-        tuning_count = total - upgrade_count
-        scope_text = f"调律母盘 {tuning_count} 条，库存升级机会 {upgrade_count} 条；库存升级不参与主调律推荐。"
+        upgrade_note = f"；含库存强化 {upgrade_count} 条（不参与主推荐）" if upgrade_count else ""
         if total > limit:
-            self.action_table_status_label.setText(
-                f"默认按推荐口径显示前 {limit} 条；完整精确结果共 {total} 条，{scope_text}可展开审计。"
-            )
+            if self._show_all_action_rows:
+                self.action_table_status_label.setText(f"已展开全部 {shown} 条推荐行{upgrade_note}。")
+            else:
+                self.action_table_status_label.setText(f"显示 Top {limit} / 共 {total} 条；完整审计可展开{upgrade_note}。")
             self.show_all_actions_button.setEnabled(True)
             self.show_all_actions_button.setText(
-                f"收起到前 {limit} 条" if self._show_all_action_rows else f"显示全部 {total} 条"
+                f"收起到 Top {limit}" if self._show_all_action_rows else f"展开全部审计 {total} 条"
             )
         else:
-            self.action_table_status_label.setText(f"已显示全部 {shown} 条 Action EV 明细；{scope_text}")
+            self.action_table_status_label.setText(f"已显示 {shown} 条推荐行{upgrade_note}。")
             self.show_all_actions_button.setEnabled(False)
             self.show_all_actions_button.setText("已显示全部")
 
@@ -6317,6 +6707,41 @@ class OptimizerWindow(QMainWindow):
             return
         self._show_all_action_rows = not self._show_all_action_rows
         self._render_action_table()
+
+    def _set_action_table_compact_height(self, row_count: int, *, compact: bool) -> None:
+        if not compact:
+            self.action_table.setMinimumHeight(0)
+            self.action_table.setMaximumHeight(16777215)
+            self.action_table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+            return
+        if row_count <= 0:
+            self.action_table.setMinimumHeight(120)
+            self.action_table.setMaximumHeight(120)
+            self.action_table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            return
+        header_height = self.action_table.horizontalHeader().height()
+        rows_height = sum(self.action_table.rowHeight(index) for index in range(row_count))
+        chrome = 64
+        target_height = header_height + rows_height + chrome
+        self.action_table.setMinimumHeight(target_height)
+        self.action_table.setMaximumHeight(target_height)
+        self.action_table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+    def _sync_result_panel_height(self) -> None:
+        if not hasattr(self, "result_panel") or not hasattr(self, "result_tabs"):
+            return
+        action_tab_active = self.result_tabs.tabText(self.result_tabs.currentIndex()) == "调律建议"
+        compact_action_table = action_tab_active and not self._show_all_action_rows
+        if not compact_action_table:
+            self.result_panel.setMinimumHeight(0)
+            self.result_panel.setMaximumHeight(16777215)
+            self.result_panel.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+            return
+        chrome = 124
+        target_height = self.action_table.maximumHeight() + chrome
+        self.result_panel.setMinimumHeight(target_height)
+        self.result_panel.setMaximumHeight(target_height)
+        self.result_panel.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
     def _action_gain_summary_text(self, rows: list[dict[str, Any]]) -> str:
         if not rows:
@@ -6351,8 +6776,8 @@ class OptimizerWindow(QMainWindow):
                 key=lambda row: _float_value(row.get("有效/母盘")),
             )
             parts.append(
-                f"调律策略：{len(positive_tuning_rows)}/{len(valid_tuning_rows)} 个有效提升为正；"
-                f"调律有效/母盘最高为 {best_tuning.get('有效/母盘', '-')}"
+                f"调律策略：{len(positive_tuning_rows)}/{len(valid_tuning_rows)} 个收益为正；"
+                f"最高效率 {best_tuning.get('有效/母盘', '-')} / 母盘"
             )
         if positive_upgrade_rows:
             best_upgrade = max(
@@ -6370,46 +6795,94 @@ class OptimizerWindow(QMainWindow):
 
     def _recommended_action_card_text(self, row: dict[str, Any]) -> str:
         is_upgrade = row.get("策略") == "强化库存胚子"
+        is_h2 = _is_horizon_two_action(row)
         if is_upgrade:
-            ranking_scope = "库存升级机会不参与主调律推荐；仅在没有有效提升为正的调律 action 时，作为非调律机会展示"
+            ranking_scope = "库存强化机会；不参与调律主推荐"
         else:
-            ranking_scope = "桌面主推荐先要求有效提升为正，并通过固定/锁定比较门槛；再按有效/母盘、有效提升排序，审计排序向量仅作 tie-break"
+            ranking_scope = "先看收益为正，再按效率排序"
         fields = [
-            ("动作类型", _action_type_label(row)),
-            ("推荐动作" if not is_upgrade else "机会动作", _action_display_strategy_label(row)),
-            ("目标套装", row.get("目标套装", "-")),
-            ("目标位置", row.get("位置", "-")),
-            ("主属性", row.get("主属性", "-")),
-            ("固定副属性", row.get("固定副属性", "-")),
-            ("horizon", row.get("horizon", "-")),
-            ("方案类型", row.get("方案类型", "-")),
-            ("第一步 action", row.get("第一步 action", "-")),
-            ("第二步策略摘要", row.get("第二步策略摘要", "-")),
-            ("有效期望", _effective_gain_summary(row)),
-            ("增益判断", _action_gain_label(row)),
-            ("有效/母盘", row.get("有效/母盘", "-")),
-            ("比较口径", row.get("比较口径", row.get("相对随机", "-"))),
-            ("排序口径", ranking_scope),
-            ("计算口径", "精确；完整概率分布枚举，不使用 Monte Carlo/近似/partial 推荐"),
-            ("计算引擎", _engine_label(str(row.get("_engine") or self._last_action_engine))),
-            ("执行方式", _execution_mode_label(str(row.get("_execution_mode") or self._last_action_execution_mode))),
+            ("推荐", _action_visible_summary(row, self.current_table.rowCount())),
+            ("目标", _action_target_summary(row)),
+            ("收益", _effective_gain_summary(row)),
+            ("效率", f"{row.get('有效/母盘', '-')} / 母盘"),
+            ("成本", _action_cost_summary(row)),
+            ("判断", _action_decision_summary(row)),
+            ("排序", ranking_scope),
+            ("方案类型", "期望聚合" if is_h2 else row.get("方案类型", "-")),
         ]
+        if is_h2:
+            fields.append(("H=2", _h2_plan_note(row)))
+        audit_details = [
+            value
+            for value in [row.get("锁主审计"), row.get("锁副审计")]
+            if str(value or "").strip()
+        ]
+        if audit_details:
+            fields.append(("资源审计", "；".join(str(value) for value in audit_details)))
         if is_upgrade:
-            fields.insert(
-                3,
+            fields.append(
                 (
-                    "库存编号",
-                    _inventory_label_from_piece_id(
-                        row.get("_upgrade_inventory_id"),
-                        self.current_table.rowCount(),
-                    ),
-                ),
+                    "库存",
+                    _inventory_label_from_piece_id(row.get("_upgrade_inventory_id"), self.current_table.rowCount()),
+                )
             )
         detail = "\n".join(f"{label}：{_format_value(value)}" for label, value in fields)
-        explanation = _action_row_explanation(row)
-        if explanation:
+        explanation = (
+            "库存强化不消耗母盘；只作机会提示，不参与调律主推荐。"
+            if is_upgrade
+            else _action_row_explanation(row)
+        )
+        if explanation and (is_upgrade or not is_h2):
             detail = f"{detail}\n说明：{explanation}"
         return detail
+
+    def _recommended_action_title_text(self, row: dict[str, Any]) -> str:
+        if row.get("策略") == "强化库存胚子":
+            inventory_label = _inventory_label_from_piece_id(
+                row.get("_upgrade_inventory_id"),
+                self.current_table.rowCount(),
+            )
+            target = _action_target_summary(row)
+            target_text = inventory_label if inventory_label != "-" else target
+            return f"强化 {target_text}" if target_text and target_text != "-" else "库存强化机会"
+        action = _action_display_strategy_label(row)
+        target = _action_target_summary(row)
+        return f"{action}：{target}" if target and target != "-" else action
+
+    def _recommended_action_summary_text(self, row: dict[str, Any], *, include_suggestion: bool = True) -> str:
+        is_upgrade = row.get("策略") == "强化库存胚子"
+        if is_upgrade:
+            inventory_label = _inventory_label_from_piece_id(
+                row.get("_upgrade_inventory_id"),
+                self.current_table.rowCount(),
+            )
+            target = _action_target_summary(row)
+            target_text = inventory_label if inventory_label != "-" else target
+            parts = []
+            if include_suggestion:
+                parts.append(f"建议：可考虑强化 {target_text}")
+            parts.extend(
+                [
+                    f"收益：{_effective_gain_summary(row)}；判断：库存强化机会",
+                    "说明：不消耗母盘；不参与调律主推荐。",
+                ]
+            )
+            return "\n".join(parts)
+
+        parts = []
+        if include_suggestion:
+            parts.append(f"建议：{_action_display_strategy_label(row)}，{_action_target_summary(row)}")
+        parts.extend(
+            [
+                f"收益：{_effective_gain_summary(row)}；"
+                f"效率 {row.get('有效/母盘', '-')} / 母盘；"
+                f"成本 {_action_cost_summary(row)}",
+                f"判断：{_action_decision_summary(row)}",
+            ]
+        )
+        if _is_horizon_two_action(row):
+            parts.append("H=2：已聚合未来 outcome 的期望收益；概率分散，不单列后续策略。")
+        return "\n".join(parts)
 
     def _action_execution_summary_text(self) -> str:
         parts = [
@@ -6442,18 +6915,82 @@ class OptimizerWindow(QMainWindow):
                         if isinstance(item, dict)
                     )
                 )
+            phases = audit.get("top_20_slowest_phase_calls")
+            if isinstance(phases, list) and phases:
+                parts.append(
+                    "最慢阶段 Top3："
+                    + "；".join(
+                        f"{item.get('phase', '-')}: {item.get('seconds', '-')}s"
+                        for item in phases[:3]
+                        if isinstance(item, dict)
+                    )
+                )
         return "\n".join(parts)
+
+    def _action_performance_log_fields(self) -> dict[str, Any]:
+        audit = self._last_action_performance_audit
+        if not audit:
+            performance = self._last_action_progress_payload.get("performance_audit")
+            audit = dict(performance) if isinstance(performance, dict) else {}
+        if not audit:
+            return {}
+        phase_rows = audit.get("top_20_slowest_phase_calls")
+        action_rows = audit.get("top_10_slowest_actions")
+        top_phases = []
+        if isinstance(phase_rows, list):
+            top_phases = [
+                {
+                    "phase": item.get("phase"),
+                    "seconds": item.get("seconds"),
+                    "strategy": item.get("strategy"),
+                    "target_set": item.get("target_set"),
+                    "horizon": item.get("horizon", item.get("remaining_horizon")),
+                }
+                for item in phase_rows[:5]
+                if isinstance(item, dict)
+            ]
+        top_actions = []
+        if isinstance(action_rows, list):
+            top_actions = [
+                {
+                    "label": item.get("label"),
+                    "seconds": item.get("seconds"),
+                    "strategy": item.get("strategy"),
+                    "target_set": item.get("target_set"),
+                }
+                for item in action_rows[:5]
+                if isinstance(item, dict)
+            ]
+        return {
+            "performance_total_seconds": audit.get("total_seconds"),
+            "action_count": audit.get("action_count"),
+            "raw_outcome_count": audit.get("raw_outcome_count"),
+            "aggregated_outcome_count": audit.get("aggregated_outcome_count"),
+            "best_loadout_value_calls": audit.get("best_loadout_value_calls"),
+            "best_loadout_cache_hits": audit.get("best_loadout_cache_hits"),
+            "best_loadout_cache_misses": audit.get("best_loadout_cache_misses"),
+            "outcome_cache_hits": audit.get("outcome_cache_hits"),
+            "outcome_cache_misses": audit.get("outcome_cache_misses"),
+            "phase_seconds": audit.get("phase_seconds", {}),
+            "top_phase_calls": top_phases,
+            "top_actions": top_actions,
+        }
 
     def _action_plan_summary_text(self, row: dict[str, Any]) -> str:
         plan_type = str(row.get("方案类型") or "-")
+        is_h2 = _is_horizon_two_action(row)
         fields = [
-            ("方案类型", plan_type),
+            ("方案类型", "期望聚合" if is_h2 else plan_type),
             ("动作类型", _action_type_label(row)),
-            ("第一步 action", row.get("第一步 action", "-")),
-            ("第二步策略摘要", row.get("第二步策略摘要", "-")),
+            ("推荐 action" if is_h2 else "第一步 action", row.get("第一步 action", "-")),
             ("比较口径", row.get("比较口径", row.get("相对随机", "-"))),
-            ("代表路径说明", row.get("代表路径说明", "-")),
         ]
+        if is_h2:
+            fields.append(("H=2说明", _h2_plan_note(row)))
+            return "\n".join(f"{label}：{_format_value(value)}" for label, value in fields)
+        else:
+            fields.append(("代表路径说明", row.get("代表路径说明", "-")))
+            fields.insert(3, ("第二步策略摘要", row.get("第二步策略摘要", "-")))
         if plan_type == "条件策略":
             fields.append(("代表分支搭配", "混合结果，不存在唯一典型搭配"))
         else:
@@ -6465,14 +7002,29 @@ class OptimizerWindow(QMainWindow):
             )
         return "\n".join(f"{label}：{_format_value(value)}" for label, value in fields)
 
+    def _set_action_plan_detail_visible(self, *, branches: bool, loadout: bool) -> None:
+        if hasattr(self, "action_plan_branch_label"):
+            self.action_plan_branch_label.setVisible(branches)
+        self.action_plan_branch_table.setVisible(branches)
+        if hasattr(self, "action_plan_loadout_label"):
+            self.action_plan_loadout_label.setVisible(loadout)
+        self.action_plan_loadout_table.setVisible(loadout)
+
     def _render_action_plan(self, recommended: dict[str, Any] | None) -> None:
         if not recommended:
-            self.action_plan_summary_label.setText("尚无 H=2 方案。")
+            self.action_plan_summary_label.setText("尚无 H=2 说明。")
             self._fill_table(self.action_plan_branch_table, [])
             self._fill_table(self.action_plan_loadout_table, [])
+            self._set_action_plan_detail_visible(branches=False, loadout=False)
             return
 
         self.action_plan_summary_label.setText(self._action_plan_summary_text(recommended))
+        if _is_horizon_two_action(recommended):
+            self._fill_table(self.action_plan_branch_table, [])
+            self._fill_table(self.action_plan_loadout_table, [])
+            self._set_action_plan_detail_visible(branches=False, loadout=False)
+            return
+
         raw_branches = recommended.get("条件分支")
         branches = [dict(branch) for branch in raw_branches] if isinstance(raw_branches, list) else []
         self._fill_table(self.action_plan_branch_table, branches)
@@ -6490,6 +7042,10 @@ class OptimizerWindow(QMainWindow):
         else:
             loadout_rows = []
         self._fill_table(self.action_plan_loadout_table, loadout_rows)
+        self._set_action_plan_detail_visible(
+            branches=bool(branches),
+            loadout=bool(loadout_rows),
+        )
 
     def _on_action_finished(self, rows: list[dict]) -> None:
         self._stop_action_progress()
@@ -6536,6 +7092,26 @@ class OptimizerWindow(QMainWindow):
                 )
         self._fill_table(self.action_loadout_table, loadout_rows)
         self._render_action_plan(recommended)
+        finished_horizon = int(rows[0].get("horizon") or self.horizon_combo.currentData() or 1) if rows else int(
+            self.horizon_combo.currentData() or 1
+        )
+        self._log_ui_event(
+            "action_compute_finished",
+            game_id=self.selected_game().id,
+            character_id=self.selected_character().id,
+            probability_model_id=self.selected_probability_model().id,
+            horizon=finished_horizon,
+            engine=self._last_action_engine,
+            action_mode=self._last_action_mode,
+            execution_mode=self._last_action_execution_mode,
+            rows=len(rows),
+            recommended=(
+                _action_visible_summary(recommended, self.current_table.rowCount())
+                if recommended is not None
+                else ""
+            ),
+            **self._action_performance_log_fields(),
+        )
         self.log.append(
             f"Action EV 完成：engine={_engine_label(self._last_action_engine)}；"
             f"执行方式={_execution_mode_label(self._last_action_execution_mode)}。"
@@ -6570,29 +7146,31 @@ class OptimizerWindow(QMainWindow):
             self._last_recommended_action_summary = recommended_summary
             self._last_main_metric_summary = (
                 f"{_effective_gain_summary(recommended)}；"
-                f"有效/母盘：{recommended.get('有效/母盘', '-')}"
+                f"效率：{recommended.get('有效/母盘', '-')} / 母盘"
             )
             if "当前可用调律 action 均无有效提升" in gain_summary and has_positive_upgrade:
-                self.result_recommend_title.setText("调律暂无有效提升；有库存升级机会")
+                self.result_recommend_title.setText("调律暂无有效提升；有库存强化机会")
             elif "当前可用调律 action 均无有效提升" in gain_summary:
                 self.result_recommend_title.setText("H=1 暂无有效提升")
             else:
-                self.result_recommend_title.setText("推荐调律 action")
-            detail = self._recommended_action_card_text(recommended)
-            self.result_recommend_detail.setText(f"{gain_summary}\n{detail}" if gain_summary else detail)
+                self.result_recommend_title.setText(self._recommended_action_title_text(recommended))
+            self.result_recommend_detail.setText(
+                self._recommended_action_summary_text(recommended, include_suggestion=False)
+            )
             self._set_result_recommend_icon(str(recommended.get("目标套装") or ""))
         elif best_upgrade:
             gain_summary = self._action_gain_summary_text(self._action_result_rows)
             opportunity_summary = _action_visible_summary(best_upgrade, self.current_table.rowCount())
             self.log.append(f"库存升级机会：{opportunity_summary}")
-            self._last_recommended_action_summary = "暂无可推荐调律 action；有库存升级机会。"
+            self._last_recommended_action_summary = "暂无可推荐调律；有库存强化机会。"
             self._last_main_metric_summary = (
                 f"{opportunity_summary}\n"
                 f"{_effective_gain_summary(best_upgrade)}"
             )
-            self.result_recommend_title.setText("暂无可推荐调律 action；有库存升级机会")
-            detail = self._recommended_action_card_text(best_upgrade)
-            self.result_recommend_detail.setText(f"{gain_summary}\n{detail}" if gain_summary else detail)
+            self.result_recommend_title.setText(self._recommended_action_title_text(best_upgrade))
+            self.result_recommend_detail.setText(
+                self._recommended_action_summary_text(best_upgrade, include_suggestion=False)
+            )
             self._set_result_recommend_icon(str(best_upgrade.get("目标套装") or ""))
         else:
             gain_summary = self._action_gain_summary_text(self._action_result_rows)
@@ -6601,26 +7179,22 @@ class OptimizerWindow(QMainWindow):
                     raw_recommended,
                     self.current_table.rowCount(),
                 )
-                self._last_recommended_action_summary = "暂无有效提升 action。"
-                self.result_recommend_title.setText("暂无有效提升 action")
+                self._last_recommended_action_summary = "暂无有效提升策略。"
+                self.result_recommend_title.setText("暂无有效提升策略")
                 self.result_recommend_detail.setText(
                     "\n".join(
                         part
                         for part in [
-                            gain_summary,
                             f"排序最高 action 仅有非有效收益，当前桌面主口径不作为推荐：{suppressed_summary}",
-                            self._action_execution_summary_text(),
                         ]
                         if part
                     )
                 )
                 self._set_result_recommend_icon(str(raw_recommended.get("目标套装") or ""))
             else:
-                self._last_recommended_action_summary = "没有找到满足当前硬约束的推荐 action。"
-                self.result_recommend_title.setText("暂无可推荐 action")
-                self.result_recommend_detail.setText(
-                    f"{self._last_recommended_action_summary}\n{self._action_execution_summary_text()}"
-                )
+                self._last_recommended_action_summary = "没有找到满足当前硬约束的推荐策略。"
+                self.result_recommend_title.setText("暂无可推荐策略")
+                self.result_recommend_detail.setText(self._last_recommended_action_summary)
             self._last_main_metric_summary = "-"
             if raw_recommended is None:
                 self._set_result_recommend_icon(None)
@@ -6629,14 +7203,30 @@ class OptimizerWindow(QMainWindow):
         self.progress_label.setText("Action EV 结果已计算完成。")
         self.progress_meter_label.setText("总进度 100% | 已完成 | 结果已更新")
         self.progress_detail_label.setText("整体 100/100 | 已完成")
+        self._set_progress_feedback_visible(False)
+        self._set_result_guidance_visible(False)
+        self._set_result_status_visible(False)
         self.result_tabs.setCurrentIndex(0)
         self._refresh_overview()
         self._update_action_buttons()
 
     def _on_action_failed(self, traceback_text: str) -> None:
         self._stop_action_progress()
+        self._set_progress_feedback_visible(True)
+        self._set_result_guidance_visible(True)
         self._worker = None
         self._worker_thread = None
+        self._log_ui_event(
+            "action_compute_failed",
+            game_id=self.selected_game().id,
+            character_id=self.selected_character().id,
+            probability_model_id=self.selected_probability_model().id,
+            engine=self._last_action_engine,
+            action_mode=self._last_action_mode,
+            execution_mode=self._last_action_execution_mode,
+            error_preview=traceback_text[:1000],
+            **self._action_performance_log_fields(),
+        )
         self.progress_label.setText("Action EV 计算失败。")
         self.progress_meter_label.setText("计算失败 | 未更新推荐")
         self.progress_detail_label.setText("后台计算已停止，错误详情已写入运行日志。")
@@ -6661,9 +7251,16 @@ class OptimizerWindow(QMainWindow):
         table.setHorizontalHeaderLabels(columns)
         table.setRowCount(len(rows))
         table.verticalHeader().setVisible(False)
+        table.setAlternatingRowColors(True)
+        table.setWordWrap(False)
+        table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         for row_index, row in enumerate(rows):
             for column_index, column in enumerate(columns):
-                item = QTableWidgetItem(_format_value(row.get(column)))
+                text = _format_value(row.get(column))
+                item = QTableWidgetItem(text)
+                item.setToolTip(text)
                 if column in SUMMARY_NUMERIC_COLUMNS:
                     item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
                 item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)

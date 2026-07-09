@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import Counter, OrderedDict, defaultdict
 from collections.abc import Callable, Sequence
+from contextlib import contextmanager
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -40,6 +41,9 @@ ACTION_EV_FAST_MODE = "fast"
 ACTION_EV_EXACT_MODE = "exact"
 DEFAULT_ACTION_EV_MODE = ACTION_EV_FAST_MODE
 ACTION_EV_MODES = {ACTION_EV_FAST_MODE, ACTION_EV_EXACT_MODE}
+LOOKAHEAD_SCOPE_EXACT = "exact"
+LOOKAHEAD_SCOPE_TUNING_STATIC = "tuning_static"
+H2_STATIC_RESOURCE_AUDIT_TOP_N = 3
 
 
 @dataclass
@@ -53,6 +57,9 @@ class ActionEvPerformanceAudit:
     outcome_cache_hits: int = 0
     outcome_cache_misses: int = 0
     action_timings: list[dict[str, object]] = field(default_factory=list)
+    phase_seconds: defaultdict[str, float] = field(default_factory=lambda: defaultdict(float))
+    phase_counts: Counter[str] = field(default_factory=Counter)
+    phase_top_calls: list[dict[str, object]] = field(default_factory=list)
     started_at: float = field(default_factory=time.monotonic)
     total_seconds: float = 0.0
 
@@ -97,6 +104,35 @@ class ActionEvPerformanceAudit:
         self.action_timings.append(timing)
         return timing
 
+    def record_phase(
+        self,
+        phase: str,
+        seconds: float,
+        details: dict[str, object] | None = None,
+    ) -> None:
+        if seconds < 0:
+            return
+        self.phase_seconds[phase] += seconds
+        self.phase_counts[phase] += 1
+        entry: dict[str, object] = {
+            "phase": phase,
+            "seconds": round(seconds, 6),
+        }
+        if details:
+            entry.update(
+                {
+                    key: value
+                    for key, value in details.items()
+                    if value not in (None, "")
+                }
+            )
+        self.phase_top_calls.append(entry)
+        self.phase_top_calls.sort(
+            key=lambda item: float(item.get("seconds") or 0.0),
+            reverse=True,
+        )
+        del self.phase_top_calls[50:]
+
     def summary(self) -> dict[str, object]:
         total_seconds = self.total_seconds or (time.monotonic() - self.started_at)
         slowest = sorted(
@@ -115,6 +151,20 @@ class ActionEvPerformanceAudit:
             "outcome_cache_misses": self.outcome_cache_misses,
             "action_timings": self.action_timings,
             "top_10_slowest_actions": slowest,
+            "phase_seconds": {
+                key: round(value, 6)
+                for key, value in sorted(
+                    self.phase_seconds.items(),
+                    key=lambda item: item[1],
+                    reverse=True,
+                )
+            },
+            "phase_counts": dict(self.phase_counts),
+            "phase_average_seconds": {
+                key: round(self.phase_seconds[key] / max(count, 1), 6)
+                for key, count in self.phase_counts.items()
+            },
+            "top_20_slowest_phase_calls": self.phase_top_calls[:20],
             "total_seconds": round(total_seconds, 6),
         }
 
@@ -123,6 +173,19 @@ _ACTIVE_ACTION_EV_AUDIT: ContextVar[ActionEvPerformanceAudit | None] = ContextVa
     "gear_optimizer_action_ev_audit",
     default=None,
 )
+
+
+@contextmanager
+def _audit_phase(phase: str, **details: object):
+    audit = _ACTIVE_ACTION_EV_AUDIT.get()
+    if audit is None:
+        yield
+        return
+    started_at = time.monotonic()
+    try:
+        yield
+    finally:
+        audit.record_phase(phase, time.monotonic() - started_at, details)
 
 
 def normalize_action_ev_mode(value: object | None) -> str:
@@ -1080,7 +1143,8 @@ def _best_combo_rows(
 ) -> tuple[dict, ...]:
     if not return_combo:
         raise ValueError("_best_combo_rows requires return_combo=True; use _best_combo_value for value-only DP")
-    return _best_loadout_dp(inventory, game, character, return_combo=True)
+    with _audit_phase("best_combo.rows", inventory_count=len(inventory)):
+        return _best_loadout_dp(inventory, game, character, return_combo=True)
 
 
 def _best_combo_value(
@@ -1088,7 +1152,8 @@ def _best_combo_value(
     game: GameRules,
     character: CharacterPreset,
 ) -> tuple[float, ...]:
-    return _best_loadout_dp(inventory, game, character, return_combo=False)
+    with _audit_phase("best_combo.value_dp", inventory_count=len(inventory)):
+        return _best_loadout_dp(inventory, game, character, return_combo=False)
 
 
 def best_loadout_value(
@@ -1282,18 +1347,44 @@ def _cached_best_combo_value(
     character: CharacterPreset,
 ) -> tuple[float, ...]:
     audit = _ACTIVE_ACTION_EV_AUDIT.get()
+    started_at = time.monotonic() if audit is not None else 0.0
     if audit is not None:
         audit.best_loadout_value_calls += 1
+    key_started_at = time.monotonic() if audit is not None else 0.0
     key = _best_combo_cache_key(inventory, game, character)
+    if audit is not None:
+        audit.record_phase(
+            "best_combo.cache_key",
+            time.monotonic() - key_started_at,
+            {"inventory_count": len(inventory)},
+        )
     cached = _lru_get(_BEST_COMBO_VALUE_CACHE, key)
     if cached is not None:
         if audit is not None:
             audit.best_loadout_cache_hits += 1
+            audit.record_phase(
+                "best_combo.cached_total",
+                time.monotonic() - started_at,
+                {"inventory_count": len(inventory), "cache": "hit"},
+            )
         return cached
     if audit is not None:
         audit.best_loadout_cache_misses += 1
+    compute_started_at = time.monotonic() if audit is not None else 0.0
     value = _best_combo_value(inventory, game, character)
+    if audit is not None:
+        audit.record_phase(
+            "best_combo.cache_miss_compute",
+            time.monotonic() - compute_started_at,
+            {"inventory_count": len(inventory), "cache": "miss"},
+        )
     _lru_set(_BEST_COMBO_VALUE_CACHE, key, value, BEST_COMBO_VALUE_CACHE_MAX_SIZE)
+    if audit is not None:
+        audit.record_phase(
+            "best_combo.cached_total",
+            time.monotonic() - started_at,
+            {"inventory_count": len(inventory), "cache": "miss"},
+        )
     return value
 
 
@@ -1328,6 +1419,9 @@ def _aggregated_action_outcomes_for_spec(
     progress_callback: ProgressCallback | None = None,
     progress_depth: int = 0,
 ) -> list[tuple[list[dict], float]]:
+    audit = _ACTIVE_ACTION_EV_AUDIT.get()
+    started_at = time.monotonic() if audit is not None else 0.0
+    key_started_at = time.monotonic() if audit is not None else 0.0
     key = (
         _game_cache_key(game),
         _character_cache_key(character),
@@ -1335,19 +1429,37 @@ def _aggregated_action_outcomes_for_spec(
         _inventory_signature(inventory),
         spec,
     )
+    if audit is not None:
+        audit.record_phase(
+            "outcomes.cache_key",
+            time.monotonic() - key_started_at,
+            {
+                "strategy": spec.strategy,
+                "target_set": spec.set_label,
+                "inventory_count": len(inventory),
+            },
+        )
     cached = _lru_get(_AGGREGATED_ACTION_OUTCOME_CACHE, key)
     if cached is not None:
-        audit = _ACTIVE_ACTION_EV_AUDIT.get()
         if audit is not None:
             audit.outcome_cache_hits += 1
             audit.aggregated_outcome_count += len(cached)
+            audit.record_phase(
+                "outcomes.cached_total",
+                time.monotonic() - started_at,
+                {
+                    "strategy": spec.strategy,
+                    "target_set": spec.set_label,
+                    "cache": "hit",
+                    "outcome_count": len(cached),
+                },
+            )
         _emit_progress(
             progress_callback,
             "aggregated_outcome_cache_hit",
             depth=progress_depth,
         )
         return cached
-    audit = _ACTIVE_ACTION_EV_AUDIT.get()
     if audit is not None:
         audit.outcome_cache_misses += 1
     _emit_progress(
@@ -1357,16 +1469,22 @@ def _aggregated_action_outcomes_for_spec(
         action_strategy=spec.strategy,
         action_set=spec.set_label,
     )
-    raw_outcomes = _action_outcome_distribution(
-        inventory,
-        game,
-        character,
-        probability_model,
-        spec,
-        quality_cache=quality_cache,
-        progress_callback=progress_callback,
-        progress_depth=progress_depth,
-    )
+    with _audit_phase(
+        "outcomes.distribution",
+        strategy=spec.strategy,
+        target_set=spec.set_label,
+        inventory_count=len(inventory),
+    ):
+        raw_outcomes = _action_outcome_distribution(
+            inventory,
+            game,
+            character,
+            probability_model,
+            spec,
+            quality_cache=quality_cache,
+            progress_callback=progress_callback,
+            progress_depth=progress_depth,
+        )
     if audit is not None:
         audit.raw_outcome_count += len(raw_outcomes)
     _emit_progress(
@@ -1384,7 +1502,13 @@ def _aggregated_action_outcomes_for_spec(
         completed=0,
         total=len(raw_outcomes),
     )
-    outcomes = _aggregate_inventory_outcomes(raw_outcomes, game, character)
+    with _audit_phase(
+        "outcomes.aggregate",
+        strategy=spec.strategy,
+        target_set=spec.set_label,
+        raw_outcome_count=len(raw_outcomes),
+    ):
+        outcomes = _aggregate_inventory_outcomes(raw_outcomes, game, character)
     if audit is not None:
         audit.aggregated_outcome_count += len(outcomes)
     _emit_progress(
@@ -1406,6 +1530,17 @@ def _aggregated_action_outcomes_for_spec(
         "aggregated_outcome_cache_miss",
         depth=progress_depth,
     )
+    if audit is not None:
+        audit.record_phase(
+            "outcomes.cached_total",
+            time.monotonic() - started_at,
+            {
+                "strategy": spec.strategy,
+                "target_set": spec.set_label,
+                "cache": "miss",
+                "outcome_count": len(outcomes),
+            },
+        )
     return outcomes
 
 
@@ -1497,7 +1632,10 @@ def _select_representative_outcome(
     remaining_horizon: int,
     memo: dict[tuple[int, tuple[tuple, ...]], tuple[float, ...]],
     quality_cache: dict[tuple[str, tuple[str, ...]], list[tuple[float, tuple[float, ...], float]]],
+    lookahead_scope: str = LOOKAHEAD_SCOPE_EXACT,
 ) -> tuple[list[dict], float, tuple[float, ...]] | None:
+    audit = _ACTIVE_ACTION_EV_AUDIT.get()
+    started_at = time.monotonic() if audit is not None else 0.0
     outcomes = _aggregated_action_outcomes_for_spec(
         inventory,
         game,
@@ -1507,6 +1645,17 @@ def _select_representative_outcome(
         quality_cache=quality_cache,
     )
     if not outcomes:
+        if audit is not None:
+            audit.record_phase(
+                "explain.select_representative_outcome",
+                time.monotonic() - started_at,
+                {
+                    "strategy": spec.strategy,
+                    "target_set": spec.set_label,
+                    "remaining_horizon": remaining_horizon,
+                    "outcome_count": 0,
+                },
+            )
         return None
 
     best: tuple[list[dict], float, tuple[float, ...]] | None = None
@@ -1520,11 +1669,23 @@ def _select_representative_outcome(
                 horizon=remaining_horizon,
                 memo=memo,
                 quality_cache=quality_cache,
+                lookahead_scope=lookahead_scope,
             )
         else:
             value = _cached_best_combo_value(next_inventory, game, character)
         if best is None or value > best[2] or (value == best[2] and probability > best[1]):
             best = (next_inventory, probability, value)
+    if audit is not None:
+        audit.record_phase(
+            "explain.select_representative_outcome",
+            time.monotonic() - started_at,
+            {
+                "strategy": spec.strategy,
+                "target_set": spec.set_label,
+                "remaining_horizon": remaining_horizon,
+                "outcome_count": len(outcomes),
+            },
+        )
     return best
 
 
@@ -1536,24 +1697,49 @@ def _best_followup_spec(
     horizon: int,
     memo: dict[tuple[int, tuple[tuple, ...]], tuple[float, ...]],
     quality_cache: dict[tuple[str, tuple[str, ...]], list[tuple[float, tuple[float, ...], float]]],
+    lookahead_scope: str = LOOKAHEAD_SCOPE_EXACT,
 ) -> ActionSpec | None:
+    audit = _ACTIVE_ACTION_EV_AUDIT.get()
+    started_at = time.monotonic() if audit is not None else 0.0
     current_value = _cached_best_combo_value(inventory, game, character)
     best_spec: ActionSpec | None = None
     best_value = current_value
-    for spec in _lookahead_action_specs(game, character, inventory):
-        value = _expected_action_value(
-            inventory,
-            game,
-            character,
-            probability_model,
-            spec,
-            horizon,
-            memo,
-            quality_cache,
-        )
+    specs = _lookahead_action_specs(game, character, inventory, scope=lookahead_scope)
+    for spec in specs:
+        if lookahead_scope == LOOKAHEAD_SCOPE_TUNING_STATIC:
+            value = _static_expected_action_value(
+                inventory,
+                game,
+                character,
+                probability_model,
+                spec,
+                quality_cache=quality_cache,
+            )
+        else:
+            value = _expected_action_value(
+                inventory,
+                game,
+                character,
+                probability_model,
+                spec,
+                horizon,
+                memo,
+                quality_cache,
+                lookahead_scope=lookahead_scope,
+            )
         if value > best_value:
             best_value = value
             best_spec = spec
+    if audit is not None:
+        audit.record_phase(
+            "explain.best_followup_spec",
+            time.monotonic() - started_at,
+            {
+                "horizon": horizon,
+                "spec_count": len(specs),
+                "selected": _action_progress_label(best_spec, game) if best_spec is not None else "-",
+            },
+        )
     return best_spec
 
 
@@ -1566,9 +1752,33 @@ def _representative_action_plan_labels(
     horizon: int,
     memo: dict[tuple[int, tuple[tuple, ...]], tuple[float, ...]],
     quality_cache: dict[tuple[str, tuple[str, ...]], list[tuple[float, tuple[float, ...], float]]],
+    lookahead_scope: str = LOOKAHEAD_SCOPE_EXACT,
 ) -> tuple[str, str, str, str, list[dict]]:
+    audit = _ACTIVE_ACTION_EV_AUDIT.get()
+    started_at = time.monotonic() if audit is not None else 0.0
+
+    def finish(
+        result: tuple[str, str, str, str, list[dict]],
+        *,
+        reason: str = "",
+        final_combo_count: int = 0,
+    ) -> tuple[str, str, str, str, list[dict]]:
+        if audit is not None:
+            audit.record_phase(
+                "explain.representative_action_plan_labels",
+                time.monotonic() - started_at,
+                {
+                    "strategy": first_spec.strategy,
+                    "target_set": first_spec.set_label,
+                    "horizon": horizon,
+                    "reason": reason,
+                    "final_combo_count": final_combo_count,
+                },
+            )
+        return result
+
     if not _cached_best_combo_value(inventory, game, character):
-        return "-", "-", "-", "-", []
+        return finish(("-", "-", "-", "-", []), reason="empty_current")
     if first_spec.strategy == "随机位置":
         positions = " / ".join(game.position_name(rule.id) for rule in game.positions)
         if horizon > 1:
@@ -1578,12 +1788,15 @@ def _representative_action_plan_labels(
             )
         else:
             path = f"随机位置是 {positions} 的概率混合；horizon=1 只评估单步 outcome"
-        return (
-            path,
-            _MIXED_RANDOM_LOADOUT_LABEL,
-            "请查看 H=2 方案条件分支；固定位置行可辅助审计",
-            "混合动作：每个条件分支分别验算套装硬约束",
-            [],
+        return finish(
+            (
+                path,
+                _MIXED_RANDOM_LOADOUT_LABEL,
+                "请查看 H=2 方案条件分支；固定位置行可辅助审计",
+                "混合动作：每个条件分支分别验算套装硬约束",
+                [],
+            ),
+            reason="random_position",
         )
 
     current_inventory = inventory
@@ -1604,6 +1817,7 @@ def _representative_action_plan_labels(
             steps - step_index,
             memo,
             quality_cache,
+            lookahead_scope=lookahead_scope,
         )
         if selected is None:
             path_parts.append(f"第{step_index}步 {_action_progress_label(current_spec, game)} 无可用命中")
@@ -1622,6 +1836,11 @@ def _representative_action_plan_labels(
         current_inventory = next_inventory
         if step_index >= steps:
             break
+        followup_kwargs = (
+            {"lookahead_scope": lookahead_scope}
+            if lookahead_scope != LOOKAHEAD_SCOPE_EXACT
+            else {}
+        )
         current_spec = _best_followup_spec(
             current_inventory,
             game,
@@ -1630,11 +1849,15 @@ def _representative_action_plan_labels(
             steps - step_index,
             memo,
             quality_cache,
+            **followup_kwargs,
         )
 
     final_combo = _best_combo_rows(current_inventory, game, character)
     if not final_combo:
-        return "；".join(path_parts) if path_parts else "-", "-", "-", "-", []
+        return finish(
+            ("；".join(path_parts) if path_parts else "-", "-", "-", "-", []),
+            reason="no_final_combo",
+        )
 
     selected_action_rows = _rows_present_in_combo(action_rows, final_combo)
     complement_rows = _combo_without_rows(final_combo, selected_action_rows)
@@ -1645,7 +1868,11 @@ def _representative_action_plan_labels(
         complement_label = _combo_loadout_label(complement_rows, game)
     else:
         complement_label = "代表新盘未进入最终搭配；" + _combo_loadout_label(final_combo, game)
-    return path_label, loadout_label, complement_label, set_plan_status, [dict(row) for row in final_combo]
+    return finish(
+        (path_label, loadout_label, complement_label, set_plan_status, [dict(row) for row in final_combo]),
+        reason="ok",
+        final_combo_count=len(final_combo),
+    )
 
 
 def _action_plan_label(spec: ActionSpec, game: GameRules) -> str:
@@ -1691,9 +1918,23 @@ def _best_followup_decision(
     horizon: int,
     memo: dict[tuple[int, tuple[tuple, ...]], tuple[float, ...]],
     quality_cache: dict[tuple[str, tuple[str, ...]], list[tuple[float, tuple[float, ...], float]]],
+    lookahead_scope: str = LOOKAHEAD_SCOPE_EXACT,
 ) -> tuple[ActionSpec | None, str, str]:
+    audit = _ACTIVE_ACTION_EV_AUDIT.get()
+    started_at = time.monotonic() if audit is not None else 0.0
     if horizon <= 0:
+        if audit is not None:
+            audit.record_phase(
+                "explain.best_followup_decision",
+                time.monotonic() - started_at,
+                {"horizon": horizon, "terminal": True},
+            )
         return None, "-", "没有剩余步数"
+    followup_kwargs = (
+        {"lookahead_scope": lookahead_scope}
+        if lookahead_scope != LOOKAHEAD_SCOPE_EXACT
+        else {}
+    )
     followup_spec = _best_followup_spec(
         inventory,
         game,
@@ -1702,14 +1943,30 @@ def _best_followup_decision(
         horizon,
         memo,
         quality_cache,
+        **followup_kwargs,
     )
     if followup_spec is None:
-        return None, "-", f"该 outcome state 下 exact horizon={horizon} lookahead 未找到正提升 action"
-    return (
+        if audit is not None:
+            audit.record_phase(
+                "explain.best_followup_decision",
+                time.monotonic() - started_at,
+                {"horizon": horizon, "selected": "-"},
+            )
+        scope_label = "static tuning" if lookahead_scope == LOOKAHEAD_SCOPE_TUNING_STATIC else "exact"
+        return None, "-", f"该 outcome state 下 {scope_label} horizon={horizon} lookahead 未找到正提升 action"
+    scope_label = "static tuning" if lookahead_scope == LOOKAHEAD_SCOPE_TUNING_STATIC else "exact"
+    result = (
         followup_spec,
         _action_plan_label(followup_spec, game),
-        f"来自该 outcome state 的 exact horizon={horizon} lookahead",
+        f"来自该 outcome state 的 {scope_label} horizon={horizon} lookahead",
     )
+    if audit is not None:
+        audit.record_phase(
+            "explain.best_followup_decision",
+            time.monotonic() - started_at,
+            {"horizon": horizon, "selected": _action_progress_label(followup_spec, game)},
+        )
+    return result
 
 
 def _representative_final_loadout_after_followup(
@@ -1721,7 +1978,10 @@ def _representative_final_loadout_after_followup(
     followup_horizon: int,
     memo: dict[tuple[int, tuple[tuple, ...]], tuple[float, ...]],
     quality_cache: dict[tuple[str, tuple[str, ...]], list[tuple[float, tuple[float, ...], float]]],
+    lookahead_scope: str = LOOKAHEAD_SCOPE_EXACT,
 ) -> tuple[str, str]:
+    audit = _ACTIVE_ACTION_EV_AUDIT.get()
+    started_at = time.monotonic() if audit is not None else 0.0
     final_inventory = inventory
     if followup_spec is not None:
         selected = _select_representative_outcome(
@@ -1733,11 +1993,23 @@ def _representative_final_loadout_after_followup(
             max(followup_horizon - 1, 0),
             memo,
             quality_cache,
+            lookahead_scope=lookahead_scope,
         )
         if selected is not None:
             final_inventory = selected[0]
     final_combo = _best_combo_rows(final_inventory, game, character)
-    return _combo_loadout_label(final_combo, game), _set_plan_status_label(final_combo, character)
+    result = _combo_loadout_label(final_combo, game), _set_plan_status_label(final_combo, character)
+    if audit is not None:
+        audit.record_phase(
+            "explain.representative_final_loadout_after_followup",
+            time.monotonic() - started_at,
+            {
+                "followup": _action_progress_label(followup_spec, game) if followup_spec is not None else "-",
+                "followup_horizon": followup_horizon,
+                "final_combo_count": len(final_combo),
+            },
+        )
+    return result
 
 
 def _representative_branch_summary(
@@ -1749,7 +2021,10 @@ def _representative_branch_summary(
     horizon: int,
     memo: dict[tuple[int, tuple[tuple, ...]], tuple[float, ...]],
     quality_cache: dict[tuple[str, tuple[str, ...]], list[tuple[float, tuple[float, ...], float]]],
+    lookahead_scope: str = LOOKAHEAD_SCOPE_EXACT,
 ) -> dict[str, Any]:
+    audit = _ACTIVE_ACTION_EV_AUDIT.get()
+    started_at = time.monotonic() if audit is not None else 0.0
     selected = _select_representative_outcome(
         inventory,
         game,
@@ -1759,6 +2034,7 @@ def _representative_branch_summary(
         max(horizon - 1, 0),
         memo,
         quality_cache,
+        lookahead_scope=lookahead_scope,
     )
     if selected is None:
         second_step = "-"
@@ -1772,14 +2048,27 @@ def _representative_branch_summary(
             max(horizon - 1, 0),
             memo,
             quality_cache,
+            lookahead_scope=lookahead_scope,
         )
         second_step = followup_label if followup_label != "-" else f"-（{reason}）"
-    return {
+    result = {
         "方案类型": "代表路径",
         "第二步策略摘要": second_step,
         "条件分支": [],
         "代表路径说明": _REPRESENTATIVE_PATH_NOTE,
     }
+    if audit is not None:
+        audit.record_phase(
+            "explain.representative_branch_summary",
+            time.monotonic() - started_at,
+            {
+                "strategy": first_spec.strategy,
+                "target_set": first_spec.set_label,
+                "horizon": horizon,
+                "selected": selected is not None,
+            },
+        )
+    return result
 
 
 def _random_position_condition_branches(
@@ -1791,8 +2080,17 @@ def _random_position_condition_branches(
     horizon: int,
     memo: dict[tuple[int, tuple[tuple, ...]], tuple[float, ...]],
     quality_cache: dict[tuple[str, tuple[str, ...]], list[tuple[float, tuple[float, ...], float]]],
+    lookahead_scope: str = LOOKAHEAD_SCOPE_EXACT,
 ) -> list[dict[str, Any]]:
+    audit = _ACTIVE_ACTION_EV_AUDIT.get()
+    started_at = time.monotonic() if audit is not None else 0.0
     if not game.positions:
+        if audit is not None:
+            audit.record_phase(
+                "explain.random_position_condition_branches",
+                time.monotonic() - started_at,
+                {"horizon": horizon, "branch_count": 0},
+            )
         return []
     condition_probability = 1.0 / len(game.positions)
     branches: list[dict[str, Any]] = []
@@ -1807,6 +2105,7 @@ def _random_position_condition_branches(
             max(horizon - 1, 0),
             memo,
             quality_cache,
+            lookahead_scope=lookahead_scope,
         )
         condition = f"第1步命中 {game.position_name(rule.id)}"
         if selected is None:
@@ -1833,6 +2132,7 @@ def _random_position_condition_branches(
             max(horizon - 1, 0),
             memo,
             quality_cache,
+            lookahead_scope=lookahead_scope,
         )
         final_loadout, set_plan_status = _representative_final_loadout_after_followup(
             next_inventory,
@@ -1843,6 +2143,7 @@ def _random_position_condition_branches(
             max(horizon - 1, 0),
             memo,
             quality_cache,
+            lookahead_scope=lookahead_scope,
         )
         branches.append(
             {
@@ -1854,6 +2155,16 @@ def _random_position_condition_branches(
                 "代表最终搭配": final_loadout,
                 "套装约束": set_plan_status,
             }
+        )
+    if audit is not None:
+        audit.record_phase(
+            "explain.random_position_condition_branches",
+            time.monotonic() - started_at,
+            {
+                "horizon": horizon,
+                "branch_count": len(branches),
+                "target_set": first_spec.set_label,
+            },
         )
     return branches
 
@@ -1867,16 +2178,38 @@ def _action_plan_explain_fields(
     horizon: int,
     memo: dict[tuple[int, tuple[tuple, ...]], tuple[float, ...]],
     quality_cache: dict[tuple[str, tuple[str, ...]], list[tuple[float, tuple[float, ...], float]]],
+    lookahead_scope: str = LOOKAHEAD_SCOPE_EXACT,
 ) -> dict[str, Any]:
+    audit = _ACTIVE_ACTION_EV_AUDIT.get()
+    started_at = time.monotonic() if audit is not None else 0.0
+
+    def finish(result: dict[str, Any], *, plan_type: str) -> dict[str, Any]:
+        if audit is not None:
+            audit.record_phase(
+                "explain.action_plan_explain_fields",
+                time.monotonic() - started_at,
+                {
+                    "strategy": spec.strategy,
+                    "target_set": spec.set_label,
+                    "horizon": horizon,
+                    "plan_type": plan_type,
+                    "branch_count": len(result.get("条件分支") or []),
+                },
+            )
+        return result
+
     first_action = _action_plan_label(spec, game)
     if horizon <= 1:
-        return {
-            "方案类型": "单步",
-            "第一步 action": first_action,
-            "第二步策略摘要": "-",
-            "条件分支": [],
-            "代表路径说明": "-",
-        }
+        return finish(
+            {
+                "方案类型": "单步",
+                "第一步 action": first_action,
+                "第二步策略摘要": "-",
+                "条件分支": [],
+                "代表路径说明": "-",
+            },
+            plan_type="单步",
+        )
     if spec.strategy == "随机位置":
         branches = _random_position_condition_branches(
             inventory,
@@ -1887,14 +2220,21 @@ def _action_plan_explain_fields(
             horizon,
             memo,
             quality_cache,
+            lookahead_scope=lookahead_scope,
         )
-        return {
-            "方案类型": "条件策略",
-            "第一步 action": first_action,
-            "第二步策略摘要": f"按命中位置分 {len(branches)} 个条件分支；第二步来自 exact lookahead",
-            "条件分支": branches,
-            "代表路径说明": "随机位置是混合结果，不存在唯一代表最终搭配；请查看条件分支。",
-        }
+        return finish(
+            {
+                "方案类型": "条件策略",
+                "第一步 action": first_action,
+                "第二步策略摘要": (
+                    f"按命中位置分 {len(branches)} 个条件分支；第二步来自 "
+                    f"{'static tuning' if lookahead_scope == LOOKAHEAD_SCOPE_TUNING_STATIC else 'exact'} lookahead"
+                ),
+                "条件分支": branches,
+                "代表路径说明": "随机位置是混合结果，不存在唯一代表最终搭配；请查看条件分支。",
+            },
+            plan_type="条件策略",
+        )
 
     fields = _representative_branch_summary(
         inventory,
@@ -1905,9 +2245,10 @@ def _action_plan_explain_fields(
         horizon,
         memo,
         quality_cache,
+        lookahead_scope=lookahead_scope,
     )
     fields["第一步 action"] = first_action
-    return fields
+    return finish(fields, plan_type=str(fields.get("方案类型") or "-"))
 
 
 def _action_position_items(
@@ -2016,6 +2357,307 @@ def _candidate_distribution_for_action(
             generated=len(distribution) - before_count,
         )
     return distribution
+
+
+def _static_expected_fresh_candidate_row(
+    game: GameRules,
+    character: CharacterPreset,
+    probability_model: ProbabilityModel,
+    position: str | int,
+    set_name: str,
+    main_stat: str,
+    required_substats: tuple[str, ...] = (),
+    quality_cache: dict[tuple[str, tuple[str, ...]], list[tuple[float, tuple[float, ...], float]]] | None = None,
+) -> dict:
+    cache_key = (main_stat, required_substats)
+    cached = quality_cache.get(cache_key) if quality_cache is not None else None
+    if cached is None:
+        cached = [
+            (outcome.quality_score, outcome.quality_vector, outcome.probability)
+            for outcome in fresh_piece_quality_distribution(
+                game,
+                character,
+                probability_model,
+                main_stat,
+                required_substats,
+            )
+        ]
+        if quality_cache is not None:
+            quality_cache[cache_key] = cached
+
+    expected_score = 0.0
+    expected_vector = list(_zero_vector(character))
+    for quality_score, quality_vector, probability in cached:
+        expected_score += quality_score * probability
+        for index, value in enumerate(quality_vector):
+            expected_vector[index] += value * probability
+    preferred_mains = character.preferred_mains_for(position)
+    return {
+        "position": position,
+        "set_name": set_name,
+        "main_stat": main_stat,
+        "level": game.enhancement.max_level,
+        "main_preferred": not preferred_mains or main_stat in preferred_mains,
+        "effective_rolls": round(expected_score, 6),
+        "quality_score": round(expected_score, 6),
+        "quality_vector": tuple(round(value, 6) for value in expected_vector),
+        "locked": False,
+        "source": _SOURCE_OUTCOME,
+        "_static_expected_outcome": True,
+    }
+
+
+def _static_expected_action_value(
+    inventory: list[dict],
+    game: GameRules,
+    character: CharacterPreset,
+    probability_model: ProbabilityModel,
+    spec: ActionSpec,
+    quality_cache: dict[tuple[str, tuple[str, ...]], list[tuple[float, tuple[float, ...], float]]] | None = None,
+    progress_callback: ProgressCallback | None = None,
+    progress_depth: int = 0,
+) -> tuple[float, ...]:
+    audit = _ACTIVE_ACTION_EV_AUDIT.get()
+    started_at = time.monotonic() if audit is not None else 0.0
+    current_value = _cached_best_combo_value(inventory, game, character)
+    expected = tuple(0.0 for _ in current_value)
+    if not current_value:
+        if audit is not None:
+            audit.record_phase(
+                "inventory.static_expected_action_value",
+                time.monotonic() - started_at,
+                {
+                    "strategy": spec.strategy,
+                    "target_set": spec.set_label,
+                    "depth": progress_depth,
+                    "empty_current": True,
+                },
+            )
+        return expected
+
+    work_items: list[tuple[str | int, float, str, float, str, float]] = []
+    for position, position_probability in _action_position_items(game, spec.target_position):
+        valid_main_stats = game.main_stats_for(position)
+        main_stats = [spec.fixed_main_stat] if spec.fixed_main_stat else valid_main_stats
+        for set_name, set_probability in _set_distribution(probability_model, list(spec.set_options)):
+            if not game.set_available_for_position(set_name, position):
+                continue
+            for main_stat in main_stats:
+                if main_stat not in valid_main_stats:
+                    continue
+                main_probability = (
+                    1.0
+                    if spec.fixed_main_stat
+                    else game.main_stat_probability(position, main_stat)
+                )
+                probability = position_probability * set_probability * main_probability
+                if probability > 0:
+                    work_items.append(
+                        (
+                            position,
+                            position_probability,
+                            set_name,
+                            set_probability,
+                            main_stat,
+                            main_probability,
+                        )
+                    )
+
+    _emit_progress(
+        progress_callback,
+        "static_candidate_generation_start",
+        depth=progress_depth,
+        completed=0,
+        total=len(work_items),
+    )
+    total_probability = 0.0
+    for work_index, (
+        position,
+        position_probability,
+        set_name,
+        set_probability,
+        main_stat,
+        main_probability,
+    ) in enumerate(work_items, start=1):
+        probability = position_probability * set_probability * main_probability
+        candidate_row = _static_expected_fresh_candidate_row(
+            game,
+            character,
+            probability_model,
+            position,
+            set_name,
+            main_stat,
+            required_substats=spec.required_substats,
+            quality_cache=quality_cache,
+        )
+        next_inventory = _normalise_inventory_rows([*inventory, candidate_row], game, character)
+        next_value = _cached_best_combo_value(next_inventory, game, character)
+        expected = _add_vectors(expected, _scale_vector(next_value, probability))
+        total_probability += probability
+        _emit_progress(
+            progress_callback,
+            "static_candidate_generation_step_done",
+            depth=progress_depth,
+            completed=work_index,
+            total=len(work_items),
+            action_position=position,
+            action_set=set_name,
+            action_main_stat=main_stat,
+        )
+
+    if total_probability < 1.0:
+        expected = _add_vectors(expected, _scale_vector(current_value, 1.0 - total_probability))
+    if audit is not None:
+        audit.record_phase(
+            "inventory.static_expected_action_value",
+            time.monotonic() - started_at,
+            {
+                "strategy": spec.strategy,
+                "target_set": spec.set_label,
+                "depth": progress_depth,
+                "static_candidate_count": len(work_items),
+            },
+        )
+    return expected
+
+
+def _static_action_gain(
+    inventory: list[dict],
+    game: GameRules,
+    character: CharacterPreset,
+    probability_model: ProbabilityModel,
+    spec: ActionSpec,
+    current_value: tuple[float, ...],
+    quality_cache: dict[tuple[str, tuple[str, ...]], list[tuple[float, tuple[float, ...], float]]],
+) -> tuple[float, ...]:
+    value = _static_expected_action_value(
+        inventory,
+        game,
+        character,
+        probability_model,
+        spec,
+        quality_cache=quality_cache,
+    )
+    return _positive_gain(value, current_value)
+
+
+def _resource_audit_label(
+    spec: ActionSpec,
+    game: GameRules,
+    character: CharacterPreset,
+    marginal: tuple[float, ...],
+    *,
+    resource_name: str,
+    resource_cost: float,
+) -> str:
+    effective = marginal[-2] if marginal else 0.0
+    quality = marginal[-1] if marginal else 0.0
+    if effective <= _VECTOR_EPSILON and quality <= _VECTOR_EPSILON:
+        return f"{resource_name}静态审计：{_action_plan_label(spec, game)} 无额外正收益"
+    gain = _quality_vector_label(marginal, character)
+    cost_label = f"{resource_name}/次 {resource_cost:.3g}" if resource_cost else f"{resource_name}/次 0"
+    return f"{resource_name}静态审计：{_action_plan_label(spec, game)}；边际 {gain}；{cost_label}"
+
+
+def _annotate_h2_static_resource_audit(
+    base_fixed_rows: list[tuple[ActionSpec, dict[str, float | str]]],
+    inventory_rows: list[dict],
+    game: GameRules,
+    character: CharacterPreset,
+    probability_model: ProbabilityModel,
+    quality_cache: dict[tuple[str, tuple[str, ...]], list[tuple[float, tuple[float, ...], float]]],
+) -> None:
+    current_value = _cached_best_combo_value(inventory_rows, game, character)
+    if not current_value:
+        return
+    candidates = [
+        (spec, row)
+        for spec, row in base_fixed_rows
+        if _is_recommendable_action_row(row) and _row_has_positive_gain(row)
+    ]
+    if not candidates:
+        candidates = [
+            (spec, row)
+            for spec, row in base_fixed_rows
+            if not str(row.get("套装约束") or "").startswith("未满足")
+        ]
+    top_candidates = sorted(
+        candidates,
+        key=lambda item: _row_sort_vector(item[1]),
+        reverse=True,
+    )[:H2_STATIC_RESOURCE_AUDIT_TOP_N]
+    tuner_cost = probability_model.resource_cost("tuner_per_fixed_main_attempt", 1.0)
+    for spec, row in top_candidates:
+        base_gain = _static_action_gain(
+            inventory_rows,
+            game,
+            character,
+            probability_model,
+            spec,
+            current_value,
+            quality_cache,
+        )
+        fixed_main_specs = _fixed_main_refinement_action_specs(game, character, spec)
+        fixed_main_options: list[tuple[tuple[float, ...], ActionSpec, tuple[float, ...]]] = []
+        for fixed_main_spec in fixed_main_specs:
+            fixed_main_gain = _static_action_gain(
+                inventory_rows,
+                game,
+                character,
+                probability_model,
+                fixed_main_spec,
+                current_value,
+                quality_cache,
+            )
+            marginal = _subtract_vectors(fixed_main_gain, base_gain)
+            fixed_main_options.append((marginal, fixed_main_spec, fixed_main_gain))
+        if not fixed_main_options:
+            row["锁主审计"] = "TOP3静态审计：该位置无需锁主属性"
+            row["锁副审计"] = "TOP3静态审计：该位置无需锁副属性"
+            continue
+        best_main_marginal, best_main_spec, best_main_gain = max(
+            fixed_main_options,
+            key=lambda item: item[0],
+        )
+        row["锁主审计"] = _resource_audit_label(
+            best_main_spec,
+            game,
+            character,
+            best_main_marginal,
+            resource_name="校音器",
+            resource_cost=tuner_cost,
+        )
+        fixed_substat_options: list[tuple[tuple[float, ...], ActionSpec]] = []
+        for fixed_substat_spec in _fixed_substat_refinement_action_specs(game, character, best_main_spec):
+            fixed_substat_gain = _static_action_gain(
+                inventory_rows,
+                game,
+                character,
+                probability_model,
+                fixed_substat_spec,
+                current_value,
+                quality_cache,
+            )
+            marginal = _subtract_vectors(fixed_substat_gain, best_main_gain)
+            fixed_substat_options.append((marginal, fixed_substat_spec))
+        if not fixed_substat_options:
+            row["锁副审计"] = "TOP3静态审计：该主属性无可锁副属性组合"
+            continue
+        best_substat_marginal, best_substat_spec = max(
+            fixed_substat_options,
+            key=lambda item: item[0],
+        )
+        row["锁副审计"] = _resource_audit_label(
+            best_substat_spec,
+            game,
+            character,
+            best_substat_marginal,
+            resource_name="共鸣核",
+            resource_cost=_fixed_substat_extra_resource_cost(
+                probability_model,
+                len(best_substat_spec.required_substats),
+            ),
+        )
 
 
 def _roll_state_from_piece(game: GameRules, piece: GearPiece) -> tuple[tuple[str, int], ...]:
@@ -2287,17 +2929,20 @@ def _dominant_generation_specs_for_target(
     set_label: str,
     set_options: tuple[str, ...],
     position: str | int,
+    *,
+    include_fixed_main: bool = True,
+    include_fixed_substats: bool = True,
 ) -> list[ActionSpec]:
     if not _set_options_available_for_position(game, set_options, position):
         return []
     main_options = _main_stat_action_options(game, character, position)
-    if len(game.main_stats_for(position)) <= 1:
+    if not include_fixed_main or len(game.main_stats_for(position)) <= 1:
         return [ActionSpec("固定位置", set_label, set_options, position)]
 
     specs: list[ActionSpec] = []
     for main_stat in main_options:
         substat_options = _fixed_substat_action_options(game, character, main_stat)
-        if substat_options:
+        if include_fixed_substats and substat_options:
             specs.append(
                 ActionSpec(
                     "固定位置 + 固定主属性 + 固定副属性",
@@ -2324,6 +2969,9 @@ def _dominant_generation_specs_for_target(
 def _dominant_generation_action_specs(
     game: GameRules,
     character: CharacterPreset,
+    *,
+    include_fixed_main: bool = True,
+    include_fixed_substats: bool = True,
 ) -> list[ActionSpec]:
     specs: list[ActionSpec] = []
     for set_label, set_options_list in _set_action_groups(character):
@@ -2337,6 +2985,8 @@ def _dominant_generation_action_specs(
                     label,
                     set_options,
                     rule.id,
+                    include_fixed_main=include_fixed_main,
+                    include_fixed_substats=include_fixed_substats,
                 )
             )
     return specs
@@ -2350,6 +3000,9 @@ def _set_plan_frontier_action_specs(
     game: GameRules,
     character: CharacterPreset,
     inventory: list[dict],
+    *,
+    include_fixed_main: bool = True,
+    include_fixed_substats: bool = True,
 ) -> list[ActionSpec]:
     plan = character.active_set_plan()
     if plan is None or plan.is_unrestricted:
@@ -2384,6 +3037,8 @@ def _set_plan_frontier_action_specs(
                         label,
                         set_options,
                         rule.id,
+                        include_fixed_main=include_fixed_main,
+                        include_fixed_substats=include_fixed_substats,
                     )
                 )
         return _dedupe_action_specs(specs)
@@ -2421,6 +3076,8 @@ def _set_plan_frontier_action_specs(
                         label,
                         set_options,
                         position,
+                        include_fixed_main=include_fixed_main,
+                        include_fixed_substats=include_fixed_substats,
                     )
                 )
 
@@ -2451,7 +3108,28 @@ def _lookahead_action_specs(
     game: GameRules,
     character: CharacterPreset,
     inventory: list[dict],
+    scope: str = LOOKAHEAD_SCOPE_EXACT,
 ) -> list[ActionSpec]:
+    if scope == LOOKAHEAD_SCOPE_TUNING_STATIC:
+        return _dedupe_action_specs(
+            [
+                *_dominant_generation_action_specs(
+                    game,
+                    character,
+                    include_fixed_main=False,
+                    include_fixed_substats=False,
+                ),
+                *_set_plan_frontier_action_specs(
+                    game,
+                    character,
+                    inventory,
+                    include_fixed_main=False,
+                    include_fixed_substats=False,
+                ),
+            ]
+        )
+    if scope != LOOKAHEAD_SCOPE_EXACT:
+        raise ValueError(f"Unknown lookahead scope: {scope}")
     return _dedupe_action_specs(
         [
             *_dominant_generation_action_specs(game, character),
@@ -2641,10 +3319,25 @@ def expected_state_action_value(
     quality_cache: dict[tuple[str, tuple[str, ...]], list[tuple[float, tuple[float, ...], float]]] | None = None,
     progress_callback: ProgressCallback | None = None,
     progress_depth: int = 0,
+    lookahead_scope: str = LOOKAHEAD_SCOPE_EXACT,
 ) -> tuple[float, ...]:
+    audit = _ACTIVE_ACTION_EV_AUDIT.get()
+    started_at = time.monotonic() if audit is not None else 0.0
     current_value = state.best_loadout_value(game, character)
     expected = tuple(0.0 for _ in current_value)
     if not current_value:
+        if audit is not None:
+            audit.record_phase(
+                "state_dp.expected_action_value",
+                time.monotonic() - started_at,
+                {
+                    "strategy": spec.strategy,
+                    "target_set": spec.set_label,
+                    "horizon": horizon,
+                    "depth": progress_depth,
+                    "empty_current": True,
+                },
+            )
         return expected
 
     memo = memo if memo is not None else {}
@@ -2677,6 +3370,7 @@ def expected_state_action_value(
             quality_cache=quality_cache,
             progress_callback=progress_callback,
             progress_depth=progress_depth + 1,
+            lookahead_scope=lookahead_scope,
         )
         expected = _add_vectors(expected, _scale_vector(next_value, probability))
         _emit_progress(
@@ -2687,6 +3381,18 @@ def expected_state_action_value(
             completed=transition_index,
             total=len(transitions),
             probability=probability,
+        )
+    if audit is not None:
+        audit.record_phase(
+            "state_dp.expected_action_value",
+            time.monotonic() - started_at,
+            {
+                "strategy": spec.strategy,
+                "target_set": spec.set_label,
+                "horizon": horizon,
+                "depth": progress_depth,
+                "transition_count": len(transitions),
+            },
         )
     return expected
 
@@ -2701,9 +3407,19 @@ def lookahead_state_value(
     quality_cache: dict[tuple[str, tuple[str, ...]], list[tuple[float, tuple[float, ...], float]]] | None = None,
     progress_callback: ProgressCallback | None = None,
     progress_depth: int = 0,
+    lookahead_scope: str = LOOKAHEAD_SCOPE_EXACT,
 ) -> tuple[float, ...]:
+    audit = _ACTIVE_ACTION_EV_AUDIT.get()
+    started_at = time.monotonic() if audit is not None else 0.0
     if horizon <= 0:
-        return state.best_loadout_value(game, character)
+        value = state.best_loadout_value(game, character)
+        if audit is not None:
+            audit.record_phase(
+                "state_dp.lookahead_value",
+                time.monotonic() - started_at,
+                {"horizon": horizon, "depth": progress_depth, "terminal": True},
+            )
+        return value
 
     memo = memo if memo is not None else {}
     key = (horizon, state.signature)
@@ -2714,10 +3430,22 @@ def lookahead_state_value(
             depth=progress_depth,
             horizon=horizon,
         )
+        if audit is not None:
+            audit.record_phase(
+                "state_dp.lookahead_value",
+                time.monotonic() - started_at,
+                {"horizon": horizon, "depth": progress_depth, "memo": "hit"},
+            )
         return memo[key]
 
     current_value = state.best_loadout_value(game, character)
-    specs = _lookahead_action_specs(game, character, state.to_inventory_rows())
+    state_rows = state.to_inventory_rows()
+    specs = _lookahead_action_specs(
+        game,
+        character,
+        state_rows,
+        scope=lookahead_scope,
+    )
     values = []
     _emit_progress(
         progress_callback,
@@ -2738,20 +3466,35 @@ def lookahead_state_value(
             action_strategy=spec.strategy,
             action_set=spec.set_label,
         )
-        values.append(
-            expected_state_action_value(
-                state,
-                game,
-                character,
-                probability_model,
-                spec,
-                horizon,
-                memo=memo,
-                quality_cache=quality_cache,
-                progress_callback=progress_callback,
-                progress_depth=progress_depth,
+        if lookahead_scope == LOOKAHEAD_SCOPE_TUNING_STATIC:
+            values.append(
+                _static_expected_action_value(
+                    state_rows,
+                    game,
+                    character,
+                    probability_model,
+                    spec,
+                    quality_cache=quality_cache,
+                    progress_callback=progress_callback,
+                    progress_depth=progress_depth,
+                )
             )
-        )
+        else:
+            values.append(
+                expected_state_action_value(
+                    state,
+                    game,
+                    character,
+                    probability_model,
+                    spec,
+                    horizon,
+                    memo=memo,
+                    quality_cache=quality_cache,
+                    progress_callback=progress_callback,
+                    progress_depth=progress_depth,
+                    lookahead_scope=lookahead_scope,
+                )
+            )
         _emit_progress(
             progress_callback,
             "state_action_done",
@@ -2770,6 +3513,17 @@ def lookahead_state_value(
         horizon=horizon,
         total=len(specs),
     )
+    if audit is not None:
+        audit.record_phase(
+            "state_dp.lookahead_value",
+            time.monotonic() - started_at,
+            {
+                "horizon": horizon,
+                "depth": progress_depth,
+                "spec_count": len(specs),
+                "memo": "miss",
+            },
+        )
     return memo[key]
 
 
@@ -2781,6 +3535,7 @@ def lookahead_inventory_value_state_dp(
     horizon: int = 1,
     current_count: int = 0,
     memo: dict[tuple[int, tuple[tuple, ...]], tuple[float, ...]] | None = None,
+    lookahead_scope: str = LOOKAHEAD_SCOPE_EXACT,
 ) -> tuple[float, ...]:
     state = EvState.from_inventory(
         inventory,
@@ -2795,6 +3550,7 @@ def lookahead_inventory_value_state_dp(
         probability_model,
         horizon=horizon,
         memo=memo,
+        lookahead_scope=lookahead_scope,
     )
 
 
@@ -2816,7 +3572,9 @@ def _expected_state_action_value_worker(payload: tuple) -> ParallelActionValueRe
         probability_model,
         spec,
         horizon,
+        *rest,
     ) = payload
+    lookahead_scope = rest[0] if rest else LOOKAHEAD_SCOPE_EXACT
     started = time.perf_counter()
     try:
         state = EvState.from_rows(rows, game, character)
@@ -2829,6 +3587,7 @@ def _expected_state_action_value_worker(payload: tuple) -> ParallelActionValueRe
             horizon,
             memo={},
             quality_cache={},
+            lookahead_scope=lookahead_scope,
         )
         return ParallelActionValueResult(
             spec=spec,
@@ -2851,13 +3610,14 @@ def parallel_expected_state_action_values(
     specs: Sequence[ActionSpec],
     horizon: int,
     workers: int | None = None,
+    lookahead_scope: str = LOOKAHEAD_SCOPE_EXACT,
 ) -> list[ParallelActionValueResult]:
     worker_count = configured_action_ev_workers() if workers is None else max(1, workers)
     rows = state.to_inventory_rows()
     if worker_count <= 1 or len(specs) <= 1:
         return [
             _expected_state_action_value_worker(
-                (rows, game, character, probability_model, spec, horizon)
+                (rows, game, character, probability_model, spec, horizon, lookahead_scope)
             )
             for spec in specs
         ]
@@ -2867,7 +3627,7 @@ def parallel_expected_state_action_values(
         future_to_index = {
             executor.submit(
                 _expected_state_action_value_worker,
-                (rows, game, character, probability_model, spec, horizon),
+                (rows, game, character, probability_model, spec, horizon, lookahead_scope),
             ): index
             for index, spec in enumerate(specs)
         }
@@ -2894,10 +3654,25 @@ def _expected_action_value(
     quality_cache: dict[tuple[str, tuple[str, ...]], list[tuple[float, tuple[float, ...], float]]] | None = None,
     progress_callback: ProgressCallback | None = None,
     progress_depth: int = 0,
+    lookahead_scope: str = LOOKAHEAD_SCOPE_EXACT,
 ) -> tuple[float, ...]:
+    audit = _ACTIVE_ACTION_EV_AUDIT.get()
+    started_at = time.monotonic() if audit is not None else 0.0
     current_value = _cached_best_combo_value(inventory, game, character)
     expected = tuple(0.0 for _ in current_value)
     if not current_value:
+        if audit is not None:
+            audit.record_phase(
+                "inventory.expected_action_value",
+                time.monotonic() - started_at,
+                {
+                    "strategy": spec.strategy,
+                    "target_set": spec.set_label,
+                    "horizon": horizon,
+                    "depth": progress_depth,
+                    "empty_current": True,
+                },
+            )
         return expected
 
     total_probability = 0.0
@@ -2931,6 +3706,7 @@ def _expected_action_value(
             quality_cache=quality_cache,
             progress_callback=progress_callback,
             progress_depth=progress_depth + 1,
+            lookahead_scope=lookahead_scope,
         )
         expected = _add_vectors(expected, _scale_vector(next_value, probability))
         total_probability += probability
@@ -2955,8 +3731,21 @@ def _expected_action_value(
             quality_cache=quality_cache,
             progress_callback=progress_callback,
             progress_depth=progress_depth + 1,
+            lookahead_scope=lookahead_scope,
         )
         expected = _add_vectors(expected, _scale_vector(fallback_value, 1.0 - total_probability))
+    if audit is not None:
+        audit.record_phase(
+            "inventory.expected_action_value",
+            time.monotonic() - started_at,
+            {
+                "strategy": spec.strategy,
+                "target_set": spec.set_label,
+                "horizon": horizon,
+                "depth": progress_depth,
+                "outcome_count": outcome_total,
+            },
+        )
     return expected
 
 
@@ -2970,10 +3759,25 @@ def lookahead_inventory_value(
     quality_cache: dict[tuple[str, tuple[str, ...]], list[tuple[float, tuple[float, ...], float]]] | None = None,
     progress_callback: ProgressCallback | None = None,
     progress_depth: int = 0,
+    lookahead_scope: str = LOOKAHEAD_SCOPE_EXACT,
 ) -> tuple[float, ...]:
+    audit = _ACTIVE_ACTION_EV_AUDIT.get()
+    started_at = time.monotonic() if audit is not None else 0.0
     rows = _coerce_inventory_rows(inventory, game, character)
     if horizon <= 0:
-        return _cached_best_combo_value(rows, game, character)
+        value = _cached_best_combo_value(rows, game, character)
+        if audit is not None:
+            audit.record_phase(
+                "inventory.lookahead_value",
+                time.monotonic() - started_at,
+                {
+                    "horizon": horizon,
+                    "depth": progress_depth,
+                    "terminal": True,
+                    "inventory_count": len(rows),
+                },
+            )
+        return value
 
     memo = memo if memo is not None else {}
     key = (horizon, _inventory_signature(rows))
@@ -2984,10 +3788,21 @@ def lookahead_inventory_value(
             depth=progress_depth,
             horizon=horizon,
         )
+        if audit is not None:
+            audit.record_phase(
+                "inventory.lookahead_value",
+                time.monotonic() - started_at,
+                {
+                    "horizon": horizon,
+                    "depth": progress_depth,
+                    "memo": "hit",
+                    "inventory_count": len(rows),
+                },
+            )
         return memo[key]
 
     current_value = _cached_best_combo_value(rows, game, character)
-    specs = _lookahead_action_specs(game, character, rows)
+    specs = _lookahead_action_specs(game, character, rows, scope=lookahead_scope)
     values = []
     _emit_progress(
         progress_callback,
@@ -3008,20 +3823,35 @@ def lookahead_inventory_value(
             action_strategy=spec.strategy,
             action_set=spec.set_label,
         )
-        values.append(
-            _expected_action_value(
-                rows,
-                game,
-                character,
-                probability_model,
-                spec,
-                horizon,
-                memo,
-                quality_cache,
-                progress_callback=progress_callback,
-                progress_depth=progress_depth,
+        if lookahead_scope == LOOKAHEAD_SCOPE_TUNING_STATIC:
+            values.append(
+                _static_expected_action_value(
+                    rows,
+                    game,
+                    character,
+                    probability_model,
+                    spec,
+                    quality_cache=quality_cache,
+                    progress_callback=progress_callback,
+                    progress_depth=progress_depth,
+                )
             )
-        )
+        else:
+            values.append(
+                _expected_action_value(
+                    rows,
+                    game,
+                    character,
+                    probability_model,
+                    spec,
+                    horizon,
+                    memo,
+                    quality_cache,
+                    progress_callback=progress_callback,
+                    progress_depth=progress_depth,
+                    lookahead_scope=lookahead_scope,
+                )
+            )
         _emit_progress(
             progress_callback,
             "state_action_done",
@@ -3040,6 +3870,18 @@ def lookahead_inventory_value(
         horizon=horizon,
         total=len(specs),
     )
+    if audit is not None:
+        audit.record_phase(
+            "inventory.lookahead_value",
+            time.monotonic() - started_at,
+            {
+                "horizon": horizon,
+                "depth": progress_depth,
+                "spec_count": len(specs),
+                "memo": "miss",
+                "inventory_count": len(rows),
+            },
+        )
     return memo[key]
 
 
@@ -3305,6 +4147,7 @@ def _action_ev_cache_key(
     horizon: int = 1,
     use_state_dp: bool = False,
     action_mode: str = DEFAULT_ACTION_EV_MODE,
+    lookahead_scope: str = LOOKAHEAD_SCOPE_EXACT,
 ) -> str:
     action_mode = normalize_action_ev_mode(action_mode)
     plan = character.active_set_plan()
@@ -3341,6 +4184,7 @@ def _action_ev_cache_key(
         "horizon": horizon,
         "engine": "state_dp" if use_state_dp else "inventory_recursive",
         "action_mode": action_mode,
+        "lookahead_scope": lookahead_scope,
         "scores": [
             {
                 "position": score.position,
@@ -4050,12 +4894,19 @@ def position_strategy_efficiency_rows(
     action_mode: str = DEFAULT_ACTION_EV_MODE,
 ) -> list[dict[str, float | str]]:
     action_mode = normalize_action_ev_mode(action_mode)
+    uses_static_h2_lookahead = horizon > 1
+    lookahead_scope = (
+        LOOKAHEAD_SCOPE_TUNING_STATIC
+        if uses_static_h2_lookahead
+        else LOOKAHEAD_SCOPE_EXACT
+    )
     inventory_rows = (
         inventory_rows_from_pieces(
             inventory_pieces,
             game,
             character,
             current_count=len(analysis.scores),
+            include_upgrade_expectation=uses_static_h2_lookahead,
         )
         if inventory_pieces is not None
         else _current_inventory_rows(analysis, character)
@@ -4069,6 +4920,7 @@ def position_strategy_efficiency_rows(
         horizon=horizon,
         use_state_dp=use_state_dp,
         action_mode=action_mode,
+        lookahead_scope=lookahead_scope,
     )
     cached = _lru_get(_ACTION_EV_ROWS_CACHE, cache_key)
     if cached is not None:
@@ -4116,7 +4968,7 @@ def position_strategy_efficiency_rows(
     ]
     upgrade_specs = (
         _upgrade_action_specs(inventory_rows, game)
-        if action_mode == ACTION_EV_EXACT_MODE
+        if action_mode == ACTION_EV_EXACT_MODE and not uses_static_h2_lookahead
         else []
     )
     base_specs = [
@@ -4206,6 +5058,8 @@ def position_strategy_efficiency_rows(
                 "outcome_aggregate_done",
                 "candidate_generation_step_done",
                 "upgrade_generation_done",
+                "static_candidate_generation_start",
+                "static_candidate_generation_step_done",
                 "state_transition_cache_hit",
                 "state_transition_cache_miss",
             }:
@@ -4268,6 +5122,7 @@ def position_strategy_efficiency_rows(
                 memo=state_memo,
                 quality_cache=quality_cache,
                 progress_callback=unit_progress,
+                lookahead_scope=lookahead_scope,
             )
         else:
             value = _expected_action_value(
@@ -4280,6 +5135,7 @@ def position_strategy_efficiency_rows(
                 memo,
                 quality_cache,
                 progress_callback=unit_progress,
+                lookahead_scope=lookahead_scope,
             )
         completed_units += 1
         _emit_progress(
@@ -4323,6 +5179,7 @@ def position_strategy_efficiency_rows(
                 unit_horizon,
                 memo=state_memo,
                 quality_cache=quality_cache,
+                lookahead_scope=lookahead_scope,
             )
         else:
             value = _expected_action_value(
@@ -4334,6 +5191,7 @@ def position_strategy_efficiency_rows(
                 unit_horizon,
                 memo,
                 quality_cache,
+                lookahead_scope=lookahead_scope,
             )
         action_value_cache[(spec, unit_horizon)] = value
         return value
@@ -4462,14 +5320,15 @@ def position_strategy_efficiency_rows(
         effective_gain = gain[-2] if gain else 0.0
         quality_efficiency = efficiency[-1] if efficiency else 0.0
         effective_efficiency = efficiency[-2] if efficiency else 0.0
-        (
-            representative_path,
-            representative_loadout,
-            complement_loadout,
-            set_plan_status,
-            representative_loadout_rows,
-        ) = (
-            _representative_action_plan_labels(
+        has_positive_gain = any(value > _VECTOR_EPSILON for value in gain)
+        if horizon <= 1 or (current_value and has_positive_gain):
+            (
+                representative_path,
+                representative_loadout,
+                complement_loadout,
+                set_plan_status,
+                representative_loadout_rows,
+            ) = _representative_action_plan_labels(
                 inventory_rows,
                 game,
                 character,
@@ -4478,18 +5337,48 @@ def position_strategy_efficiency_rows(
                 horizon,
                 memo,
                 quality_cache,
+                lookahead_scope=lookahead_scope,
             )
-        )
-        explain_fields = _action_plan_explain_fields(
-            inventory_rows,
-            game,
-            character,
-            probability_model,
-            spec,
-            horizon,
-            memo,
-            quality_cache,
-        )
+            explain_fields = _action_plan_explain_fields(
+                inventory_rows,
+                game,
+                character,
+                probability_model,
+                spec,
+                horizon,
+                memo,
+                quality_cache,
+                lookahead_scope=lookahead_scope,
+            )
+        else:
+            with _audit_phase(
+                "explain.skipped_zero_gain",
+                strategy=spec.strategy,
+                target_set=spec.set_label,
+                horizon=horizon,
+                reason="no_complete_loadout" if not current_value else "zero_gain",
+            ):
+                current_combo = _best_combo_rows(inventory_rows, game, character) if current_value else tuple()
+                representative_loadout_rows = [dict(row) for row in current_combo]
+                representative_loadout = _combo_loadout_label(current_combo, game)
+                complement_loadout = representative_loadout
+                set_plan_status = (
+                    _set_plan_status_label(current_combo, character)
+                    if current_combo
+                    else "未形成完整搭配"
+                )
+                representative_path = (
+                    "当前没有可成型 best_loadout，跳过 H=2 代表路径审计"
+                    if not current_value
+                    else "该 action 的 H=2 主 EV 为 0，跳过代表路径审计"
+                )
+                explain_fields = {
+                    "方案类型": "未成型" if not current_value else "无正收益",
+                    "第一步 action": _action_plan_label(spec, game),
+                    "第二步策略摘要": "-",
+                    "条件分支": [],
+                    "代表路径说明": "代表路径只用于审计；无主 EV 时不再额外枚举 outcome。",
+                }
         set_plan_blocked = set_plan_status.startswith("未满足")
         relative = _relative_action_label(
             spec,
@@ -4523,6 +5412,13 @@ def position_strategy_efficiency_rows(
             "方案类型": explain_fields["方案类型"],
             "第一步 action": explain_fields["第一步 action"],
             "第二步策略摘要": explain_fields["第二步策略摘要"],
+            "计算口径": (
+                "H=2静态调律二层；库存强化按期望入库，不生成强化action"
+                if uses_static_h2_lookahead
+                else ("深度精算动态展开" if action_mode == ACTION_EV_EXACT_MODE else "快速推荐")
+            ),
+            "锁主审计": "",
+            "锁副审计": "",
             "代表路径": representative_path,
             "预期搭配": representative_loadout,
             "代表分支搭配": representative_loadout,
@@ -4607,8 +5503,21 @@ def position_strategy_efficiency_rows(
             base_fixed_efficiency_by_target,
             fixed_main_efficiency_by_target,
         )
-        if relative in {"优于随机，才建议固定", "固定位置基准"}:
+        if (
+            not uses_static_h2_lookahead
+            and relative in {"优于随机，才建议固定", "固定位置基准"}
+        ):
             fixed_main_specs.extend(_fixed_main_refinement_action_specs(game, character, spec))
+
+    if uses_static_h2_lookahead:
+        _annotate_h2_static_resource_audit(
+            base_fixed_rows,
+            inventory_rows,
+            game,
+            character,
+            probability_model,
+            quality_cache,
+        )
 
     for spec in upgrade_specs:
         spec_index = specs.index(spec) + 1
@@ -4648,7 +5557,7 @@ def position_strategy_efficiency_rows(
                 winning_fixed_main_specs.append(spec)
 
     fixed_substat_specs: list[ActionSpec] = []
-    if action_mode == ACTION_EV_EXACT_MODE:
+    if action_mode == ACTION_EV_EXACT_MODE and not uses_static_h2_lookahead:
         for spec in winning_fixed_main_specs:
             fixed_substat_specs.extend(_fixed_substat_refinement_action_specs(game, character, spec))
     fixed_substat_specs = _dedupe_action_specs(fixed_substat_specs)

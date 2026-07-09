@@ -6,6 +6,8 @@ from gear_optimizer.profile_action_ev import main as profile_main
 def test_profile_action_ev_writes_json_and_summary(tmp_path):
     output = tmp_path / "action_ev_profile.json"
     summary = tmp_path / "action_ev_profile_summary.md"
+    heatmap = tmp_path / "action_ev_profile_heatmap.csv"
+    phase = tmp_path / "action_ev_profile_phase_heatmap.csv"
 
     assert (
         profile_main(
@@ -16,6 +18,10 @@ def test_profile_action_ev_writes_json_and_summary(tmp_path):
                 str(output),
                 "--summary",
                 str(summary),
+                "--heatmap-csv",
+                str(heatmap),
+                "--phase-csv",
+                str(phase),
             ]
         )
         == 0
@@ -30,12 +36,21 @@ def test_profile_action_ev_writes_json_and_summary(tmp_path):
     assert "aggregated_outcome_cache_misses" in profile
     assert "state_transition_cache_misses" in profile
     assert "top_slow_actions" in profile
+    assert "heatmap_rows" in profile
+    assert "inner_event_counts" in profile
+    assert "phase_seconds" in profile
+    assert "top_slow_phase_calls" in profile
     assert "# Action EV Profile Summary" in summary_text
+    assert "## Phase Seconds" in summary_text
+    assert heatmap.exists()
+    assert phase.exists()
 
 
 def test_profile_action_ev_can_profile_state_dp(tmp_path):
     output = tmp_path / "action_ev_profile_state_dp.json"
     summary = tmp_path / "action_ev_profile_state_dp_summary.md"
+    heatmap = tmp_path / "action_ev_profile_state_dp_heatmap.csv"
+    phase = tmp_path / "action_ev_profile_state_dp_phase_heatmap.csv"
 
     assert (
         profile_main(
@@ -47,6 +62,10 @@ def test_profile_action_ev_can_profile_state_dp(tmp_path):
                 str(output),
                 "--summary",
                 str(summary),
+                "--heatmap-csv",
+                str(heatmap),
+                "--phase-csv",
+                str(phase),
             ]
         )
         == 0
@@ -56,4 +75,7 @@ def test_profile_action_ev_can_profile_state_dp(tmp_path):
     summary_text = summary.read_text(encoding="utf-8")
     assert profile["engine"] == "state_dp"
     assert profile["state_transition_cache_misses"] > 0
+    assert "phase_seconds" in profile
     assert "engine: state_dp" in summary_text
+    assert heatmap.exists()
+    assert phase.exists()

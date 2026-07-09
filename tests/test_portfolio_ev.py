@@ -13,7 +13,12 @@ from gear_optimizer.models import (
     SubstatLine,
     SubstatPriority,
 )
-from gear_optimizer.portfolio_ev import _portfolio_delta_scalar, portfolio_action_rows, portfolio_piece_check_rows
+from gear_optimizer.portfolio_ev import (
+    PortfolioAuditCancelled,
+    _portfolio_delta_scalar,
+    portfolio_action_rows,
+    portfolio_piece_check_rows,
+)
 from gear_optimizer.portfolio_models import PortfolioMode, PortfolioTarget
 from gear_optimizer.position_ev import ActionSpec, action_gain_for_spec
 
@@ -315,6 +320,23 @@ def test_portfolio_rejects_horizon_two_in_phase_one():
         )
 
 
+def test_portfolio_audit_can_be_cancelled_cooperatively():
+    game = _portfolio_game()
+    probability = ProbabilityModel(id="p", game="portfolio", name="P")
+    character = _portfolio_character("agent_template", "代理", "atk", "good")
+    target = PortfolioTarget(agent_id="agent", name="代理", character=character)
+
+    with pytest.raises(PortfolioAuditCancelled):
+        portfolio_action_rows(
+            game,
+            probability,
+            [target],
+            _current_pieces(),
+            [],
+            should_cancel=lambda: True,
+        )
+
+
 def test_single_target_portfolio_matches_existing_horizon_one_scalar_for_same_action():
     game = _portfolio_game()
     probability = ProbabilityModel(
@@ -580,6 +602,40 @@ def test_portfolio_set_frontier_progress_does_not_affect_main_sort_value():
     assert row.ev_per_mother == pytest.approx(0.0)
     assert row.build_progress_probability > 0
     assert "当前可行1件，加入后可行2件" in row.set_progress_detail
+
+
+def test_portfolio_zero_main_ev_tie_prefers_lower_mother_cost():
+    game = _build_progress_game()
+    probability = ProbabilityModel(
+        id="p",
+        game="portfolio",
+        name="P",
+        target_set_probability=1.0,
+        initial_substat_count_probabilities={"3": 1.0, "4": 0.0},
+        resource_costs={
+            "mother_disk_random_position_attempt": 3.0,
+            "mother_disk_fixed_position_attempt": 6.0,
+        },
+    )
+    character = _build_character()
+    target = PortfolioTarget(agent_id="agent", name="建设代理", character=character)
+
+    rows = portfolio_action_rows(
+        game,
+        probability,
+        [target],
+        [_build_piece(1)],
+        [],
+        mode=PortfolioMode.ANY_USEFUL,
+    )
+
+    assert rows[0].portfolio_ev == pytest.approx(0.0)
+    assert rows[0].action_spec.strategy == "随机位置"
+    assert rows[0].mother_cost == pytest.approx(3.0)
+    assert any(
+        row.action_spec.strategy == "固定位置" and row.mother_cost == pytest.approx(6.0)
+        for row in rows
+    )
 
 
 def test_portfolio_fake_set_progress_is_not_counted():

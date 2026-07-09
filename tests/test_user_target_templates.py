@@ -1,11 +1,14 @@
 from gear_optimizer.models import CharacterPreset, SetPlan, SetRequirement, SubstatPriority
 from gear_optimizer.user_target_templates import (
     delete_user_target_template,
+    hide_builtin_target_template,
+    load_hidden_builtin_target_template_ids,
     load_user_target_template_source_agents,
     load_user_target_template_sources,
     load_user_target_templates,
     save_user_target_template,
     target_template_store_path,
+    unhide_builtin_target_template,
 )
 
 
@@ -93,3 +96,24 @@ def test_user_target_template_id_includes_source_to_avoid_same_label_collision(t
         saved_a.id: "agent_a",
         saved_b.id: "agent_b",
     }
+
+
+def test_hidden_builtin_target_templates_survive_user_template_changes(tmp_path):
+    assert hide_builtin_target_template("zzz", "zzz_template_anomaly", tmp_path)
+    assert load_hidden_builtin_target_template_ids("zzz", tmp_path) == {"zzz_template_anomaly"}
+
+    saved = save_user_target_template(
+        "zzz",
+        _preset(),
+        "隐藏后新增目标",
+        source_character_id="base",
+        root=tmp_path,
+    )
+    assert load_hidden_builtin_target_template_ids("zzz", tmp_path) == {"zzz_template_anomaly"}
+
+    assert delete_user_target_template("zzz", saved.id, tmp_path)
+    assert load_user_target_templates("zzz", tmp_path) == []
+    assert load_hidden_builtin_target_template_ids("zzz", tmp_path) == {"zzz_template_anomaly"}
+
+    assert unhide_builtin_target_template("zzz", "zzz_template_anomaly", tmp_path)
+    assert load_hidden_builtin_target_template_ids("zzz", tmp_path) == set()
