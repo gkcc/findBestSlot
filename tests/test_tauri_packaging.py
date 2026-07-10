@@ -6,6 +6,7 @@ import tomllib
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 TAURI_ROOT = PROJECT_ROOT / "desktop" / "src-tauri"
 WINDOWS_BUILD_SCRIPT = PROJECT_ROOT / "scripts" / "build_tauri_windows.ps1"
+PACKAGED_BACKEND_SMOKE = PROJECT_ROOT / "scripts" / "smoke_packaged_backend.py"
 
 
 def test_packaged_tauri_resources_keep_python_data_and_workers_together():
@@ -55,3 +56,4 @@ def test_windows_build_finds_standard_user_toolchain_locations():
     assert 'nodejs\\node.exe' in script
     assert 'npm\\pnpm.cmd' in script
     assert '.cargo\\bin\\cargo.exe' in script
+    assert str(PACKAGED_BACKEND_SMOKE.relative_to(PROJECT_ROOT)).replace("/", "\\") in script

@@ -129,24 +129,22 @@ try {
     $env:GEAR_OPTIMIZER_ACTION_WORKER = $WorkerExe
     & $BackendExe --request-file $RequestPath --response-file $ResponsePath
     Assert-CommandSucceeded "Packaged desktop backend workspace check"
-    $StreamRequestText = Get-Content -LiteralPath $RequestPath -Raw -Encoding UTF8 |
-        ConvertFrom-Json |
-        ConvertTo-Json -Depth 6 -Compress
-    $StreamResponseText = $StreamRequestText | & $BackendExe
-    Assert-CommandSucceeded "Packaged desktop backend NDJSON stream check"
-    $StreamResponse = $StreamResponseText | ConvertFrom-Json
-    if (-not $StreamResponse.ok -or -not $StreamResponse.data.workspace) {
-        throw "Packaged desktop backend returned an invalid NDJSON workspace response."
+    $SmokeResponse = Get-Content -LiteralPath $ResponsePath -Raw -Encoding UTF8 | ConvertFrom-Json
+    if (-not $SmokeResponse.ok -or -not $SmokeResponse.data.workspace) {
+        throw "Packaged desktop backend returned an invalid file-mode workspace response."
     }
+    & $Python.Source @PythonArgs `
+        (Join-Path $Root "scripts\smoke_packaged_backend.py") `
+        --backend $BackendExe `
+        --project-root $Root `
+        --user-data (Join-Path $SmokeRoot "stream-user-data") `
+        --worker $WorkerExe
+    Assert-CommandSucceeded "Packaged desktop backend NDJSON stream check"
 }
 finally {
     $env:GEAR_OPTIMIZER_PROJECT_ROOT = $PreviousProjectRoot
     $env:GEAR_OPTIMIZER_USER_DATA_DIR = $PreviousUserData
     $env:GEAR_OPTIMIZER_ACTION_WORKER = $PreviousWorker
-}
-$SmokeResponse = Get-Content -LiteralPath $ResponsePath -Raw -Encoding UTF8 | ConvertFrom-Json
-if (-not $SmokeResponse.ok -or -not $SmokeResponse.data.workspace) {
-    throw "Packaged desktop backend returned an invalid workspace response."
 }
 
 if ($SidecarsOnly) {
