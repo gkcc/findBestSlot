@@ -17,9 +17,12 @@ from gear_optimizer.position_ev import (
     fixed_substat_gain_ladder_rows,
     fresh_piece_weighted_score_distribution,
     initial_substat_tier_rows,
+    inventory_set_completion_candidates,
     option_piece_gain,
+    position_strategy_efficiency_models,
     position_strategy_efficiency_rows,
     recommended_action_ev_row,
+    top_action_ev_audit_row,
     resource_marginal_ev_rows,
     lookahead_inventory_value,
     _lookahead_action_specs,
@@ -567,8 +570,8 @@ def test_random_horizon_two_condition_followup_uses_exact_helper(monkeypatch):
 
     assert calls == [1] * 6
     assert len(branches) == 6
-    assert all(branch["第二步 action"] == "固定位置 / A / 6号位" for branch in branches)
-    assert all("exact horizon=1 lookahead" in branch["第二步原因"] for branch in branches)
+    assert all(branch.second_action == "固定位置 / A / 6号位" for branch in branches)
+    assert all("exact horizon=1 lookahead" in branch.second_action_reason for branch in branches)
 
 
 def test_horizon_two_condition_followup_hides_internal_upgrade_strategy(monkeypatch):
@@ -611,8 +614,8 @@ def test_horizon_two_condition_followup_hides_internal_upgrade_strategy(monkeypa
     )
 
     assert branches
-    assert all("升级已有库存（非调律）" in branch["第二步 action"] for branch in branches)
-    assert all("强化库存胚子" not in branch["第二步 action"] for branch in branches)
+    assert all("升级已有库存（非调律）" in branch.second_action for branch in branches)
+    assert all("强化库存胚子" not in branch.second_action for branch in branches)
 
 
 def test_single_action_plan_status_uses_inventory_complement_for_four_plus_two():
@@ -649,6 +652,7 @@ def test_single_action_plan_status_uses_inventory_complement_for_four_plus_two()
     )
 
     assert branch_slot6["套装约束"] == "满足云岿如我 4 + 折枝剑歌 2"
+    assert branch_slot6["成型跃迁概率"] > 0
     assert "云岿如我4 + 折枝剑歌2" in branch_slot6["预期搭配"]
     assert "5号位折枝剑歌" in branch_slot6["互补位"]
     assert "6号位折枝剑歌" in branch_slot6["代表路径"]
@@ -656,6 +660,76 @@ def test_single_action_plan_status_uses_inventory_complement_for_four_plus_two()
     assert len(representative_rows) == 6
     assert any(row["set_name"] == "折枝剑歌" and row["position"] == 5 for row in representative_rows)
     assert any(row["set_name"] == "折枝剑歌" and row["position"] == 6 for row in representative_rows)
+
+
+def test_three_plus_three_completion_is_recommended_even_when_raw_quality_gain_is_zero():
+    game, character, probability_model, _analysis = _billy_context()
+    current = [
+        _piece(
+            game,
+            character,
+            position,
+            "云岿如我" if position <= 3 else "折枝剑歌",
+            20,
+        )
+        for position in range(1, 7)
+    ]
+    analysis = analyse_current_gear(current, game, character)
+
+    rows = position_strategy_efficiency_rows(
+        game,
+        character,
+        probability_model,
+        analysis,
+        inventory_pieces=current,
+        horizon=1,
+    )
+    completion_row = next(
+        row
+        for row in rows
+        if row["策略"] == "固定位置"
+        and row["目标套装"] == "云岿如我"
+        and row["位置"] == "4号位"
+    )
+    recommended = recommended_action_ev_row(rows)
+
+    assert completion_row["有效提升"] == 0
+    assert completion_row["成型跃迁概率"] == pytest.approx(1.0)
+    assert completion_row["成型跃迁/母盘"] > 0
+    assert not completion_row["套装约束"].startswith("未满足")
+    assert recommended is not None
+    assert recommended["成型跃迁概率"] > 0
+
+
+def test_inventory_completion_candidates_find_one_piece_four_plus_two_swap():
+    game, character, _probability_model, _analysis = _billy_context()
+    current = [
+        _piece(
+            game,
+            character,
+            position,
+            "云岿如我" if position <= 3 else "折枝剑歌",
+            20,
+        )
+        for position in range(1, 7)
+    ]
+    completion_piece = _piece(game, character, 4, "云岿如我", 1)
+    irrelevant_piece = _piece(game, character, 6, "折枝剑歌", 20)
+
+    candidates = inventory_set_completion_candidates(
+        current,
+        [completion_piece, irrelevant_piece],
+        game,
+        character,
+    )
+
+    assert [candidate.inventory_index for candidate in candidates] == [0]
+    assert candidates[0].position == 4
+    assert candidates[0].set_name == "云岿如我"
+    assert any(
+        row.get("_inventory_id") == f"piece:{len(current)}"
+        for row in candidates[0].loadout_rows
+    )
 
 
 def test_best_loadout_uses_full_inventory_and_migrates_four_plus_two_positions():
@@ -1051,6 +1125,23 @@ def test_revealed_next_substat_separates_state_transition_cache_for_upgrade_sour
         game,
         character,
     )
+    good_transitions[0][0].rows[0]["cache_poison"] = True
+    good_transitions.clear()
+
+    reloaded_good_transitions = position_ev.state_transition_for_action(
+        good_state,
+        game,
+        character,
+        probability_model,
+        spec,
+    )
+
+    assert reloaded_good_transitions
+    assert all(
+        "cache_poison" not in row
+        for next_state, _probability in reloaded_good_transitions
+        for row in next_state.rows
+    )
 
 
 def test_action_ev_cache_key_includes_revealed_next_substat_on_inventory_rows():
@@ -1409,6 +1500,8 @@ def test_aggregated_action_outcomes_cache_matches_manual_distribution(monkeypatc
     )
 
     assert _outcome_signature(cached) == _outcome_signature(manual)
+    cached[0][0][0]["cache_poison"] = True
+    cached[0][0].append({"cache_poison": True})
 
     def fail_distribution(*_args, **_kwargs):
         raise AssertionError("cache miss unexpectedly recomputed action outcomes")
@@ -1425,7 +1518,13 @@ def test_aggregated_action_outcomes_cache_matches_manual_distribution(monkeypatc
         spec,
         quality_cache=quality_cache,
     )
-    assert second is cached
+    assert second is not cached
+    assert _outcome_signature(second) == _outcome_signature(manual)
+    assert all(
+        "cache_poison" not in row
+        for inventory_rows, _probability in second
+        for row in inventory_rows
+    )
 
 
 def test_core_global_caches_enforce_lru_capacity_limits():
@@ -1462,6 +1561,94 @@ def test_core_global_caches_enforce_lru_capacity_limits():
     finally:
         for cache, _max_size, _prefix in cache_specs:
             cache.clear()
+
+
+def test_action_ev_cache_lifecycle_has_public_clear_and_size_api():
+    position_ev.clear_action_ev_caches()
+    assert position_ev.action_ev_cache_sizes() == {
+        "action_ev_rows": 0,
+        "resource_marginal_ev_rows": 0,
+        "best_combo_value": 0,
+        "aggregated_action_outcome": 0,
+        "state_transition": 0,
+    }
+
+    position_ev._lru_set(position_ev._BEST_COMBO_VALUE_CACHE, "probe", (1.0,), 10)
+    assert position_ev.action_ev_cache_sizes()["best_combo_value"] == 1
+
+    previous = position_ev.clear_action_ev_caches()
+    assert previous["best_combo_value"] == 1
+    assert all(size == 0 for size in position_ev.action_ev_cache_sizes().values())
+
+
+def test_action_ev_core_models_use_stable_fields_and_display_adapter_is_compatible():
+    game, character, probability_model, analysis, inventory = _tiny_lock_context()
+    position_ev.clear_action_ev_caches()
+
+    models = position_strategy_efficiency_models(
+        game,
+        character,
+        probability_model,
+        analysis,
+        inventory_pieces=inventory,
+        horizon=1,
+    )
+    display_rows = position_strategy_efficiency_rows(
+        game,
+        character,
+        probability_model,
+        analysis,
+        inventory_pieces=inventory,
+        horizon=1,
+    )
+
+    assert models
+    assert display_rows == [model.to_display_row() for model in models]
+    assert all(
+        all(ord(character) < 128 for character in key)
+        for model in models
+        for key in model.model_dump(mode="python")
+    )
+    assert all(model.strategy for model in models)
+
+
+def test_action_ev_result_cache_does_not_share_nested_rows_with_callers():
+    game, character, probability_model, analysis, inventory = _tiny_lock_context()
+    position_ev.clear_action_ev_caches()
+    first = position_strategy_efficiency_rows(
+        game,
+        character,
+        probability_model,
+        analysis,
+        inventory_pieces=inventory,
+        horizon=1,
+    )
+    assert first
+    first[0]["条件分支"].append({"cache_poison": True})
+    first[0]["_representative_loadout_rows"].append({"cache_poison": True})
+    events = []
+
+    second = position_strategy_efficiency_rows(
+        game,
+        character,
+        probability_model,
+        analysis,
+        inventory_pieces=inventory,
+        horizon=1,
+        progress_callback=events.append,
+    )
+
+    assert any(event.get("event") == "cache_hit" for event in events)
+    assert not any(
+        branch.get("cache_poison")
+        for row in second
+        for branch in row["条件分支"]
+    )
+    assert not any(
+        loadout_row.get("cache_poison")
+        for row in second
+        for loadout_row in row["_representative_loadout_rows"]
+    )
 
 
 def test_action_ev_cache_key_includes_engine_and_config_fingerprints():
@@ -2282,7 +2469,8 @@ def test_action_ev_brief_does_not_present_quality_only_action_as_recommendation(
         }
     ]
 
-    assert recommended_action_ev_row(rows) is rows[0]
+    assert recommended_action_ev_row(rows) is None
+    assert top_action_ev_audit_row(rows) is rows[0]
 
     brief = position_ev.action_ev_brief(rows)
 
@@ -2383,7 +2571,8 @@ def test_action_ev_brief_prioritizes_effective_metric_over_audit_vector():
         "_sort_vector": (1.0, 0.2),
     }
 
-    assert recommended_action_ev_row([high_audit_low_effective, low_audit_high_effective]) is high_audit_low_effective
+    assert top_action_ev_audit_row([high_audit_low_effective, low_audit_high_effective]) is high_audit_low_effective
+    assert recommended_action_ev_row([high_audit_low_effective, low_audit_high_effective]) is low_audit_high_effective
 
     brief = position_ev.action_ev_brief([high_audit_low_effective, low_audit_high_effective])
 

@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 import sys
 
-from gear_optimizer.game_rules import PROJECT_ROOT
+from gear_optimizer.project_paths import PROJECT_ROOT
 
 PYSIDE6_APP_MODULE = "gear_optimizer.pyside6_app"
 PYSIDE6_APP_PATH = PROJECT_ROOT / "src" / "gear_optimizer" / "pyside6_app.py"
@@ -83,7 +83,8 @@ def desktop_smoke_rows() -> list[dict[str, str]]:
         # Constructing the full QApplication is intentionally avoided here so
         # the check remains safe in headless CI. Importing the module catches
         # missing PySide6 bindings and syntax/import errors in the native UI layer.
-        assert callable(pyside6_app.main)
+        if not callable(getattr(pyside6_app, "main", None)):
+            raise TypeError(f"{PYSIDE6_APP_MODULE}.main is not callable")
     except Exception as exc:
         rows.append({"item": "PySide6 app", "status": "error", "detail": str(exc)})
     else:

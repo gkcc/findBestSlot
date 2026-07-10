@@ -47,6 +47,10 @@ class PortfolioGain(BaseModel):
     useful_probability: float = 0.0
     expected_delta_vector: list[float] = Field(default_factory=list)
     entered_best_loadout_probability: float = 0.0
+    baseline_complete: bool = False
+    baseline_detail: str = "-"
+    completion_probability: float = 0.0
+    direct_completion_probability: float = 0.0
     build_progress_probability: float = 0.0
     build_progress_gain: float = 0.0
     set_progress_detail: str = "-"
@@ -69,6 +73,8 @@ class PortfolioActionRow(BaseModel):
     portfolio_ev: float
     ev_per_mother: float
     useful_probability: float
+    completion_probability: float = 0.0
+    direct_completion_probability: float = 0.0
     build_progress_probability: float = 0.0
     build_progress_gain: float = 0.0
     best_beneficiary_agent: str
@@ -79,10 +85,29 @@ class PortfolioActionRow(BaseModel):
     tuner_cost: float = 0.0
     core_cost: float = 0.0
     entered_best_loadout_summary: str = "-"
+    baseline_summary: str = "-"
+    completion_path_detail: str = "-"
     set_progress_detail: str = "-"
     position_coverage_detail: str = "-"
     main_stat_hit_detail: str = "-"
     candidate_observation_detail: str = "-"
+
+    @property
+    def conditional_gain(self) -> float:
+        if self.useful_probability <= 0:
+            return 0.0
+        return self.portfolio_ev / self.useful_probability
+
+    @property
+    def resource_cost_label(self) -> str:
+        parts = []
+        if self.mother_cost > 0:
+            parts.append(f"母盘 {self.mother_cost:g}")
+        if self.tuner_cost > 0:
+            parts.append(f"调律器 {self.tuner_cost:g}")
+        if self.core_cost > 0:
+            parts.append(f"核心 {self.core_cost:g}")
+        return " + ".join(parts) if parts else "无母盘成本"
 
     def _agent_gain_summary(self) -> str:
         parts = [
@@ -96,10 +121,22 @@ class PortfolioActionRow(BaseModel):
         if self.build_progress_probability <= 0:
             return "-"
         if self.portfolio_ev <= 0:
-            return f"暂不成型，建设方向命中 {self.build_progress_probability:.1%}"
+            return f"无成型收益，建设方向命中 {self.build_progress_probability:.1%}"
         return f"另有建设方向命中 {self.build_progress_probability:.1%}"
 
     def _recommendation_reason(self) -> str:
+        if self.direct_completion_probability > 0:
+            return (
+                f"有 {self.direct_completion_probability:.1%} 的 outcome 可直接补齐当前盘面，"
+                "并形成完整目标搭配；"
+                "best_loadout 有正提升；建设审计不参与排序"
+            )
+        if self.completion_probability > 0:
+            return (
+                f"有 {self.completion_probability:.1%} 的 outcome 命中目标主属性，"
+                "需调用背包候选重配后形成完整目标搭配；"
+                "best_loadout 有正提升；建设审计不参与排序"
+            )
         if self.portfolio_ev > 0:
             beneficiary = self.best_beneficiary_agent or "至少一名代理人"
             return f"{beneficiary} 的 best_loadout 有正提升；建设审计不参与排序"
@@ -115,11 +152,17 @@ class PortfolioActionRow(BaseModel):
             "主属性": self.main_stat,
             "主EV": round(self.portfolio_ev, 3),
             "EV/母盘": round(self.ev_per_mother, 4),
+            "命中后增益": round(self.conditional_gain, 3),
             "成型收益概率": f"{self.useful_probability:.1%}",
+            "盘池成型跃迁概率": f"{self.completion_probability:.1%}",
+            "直装成型概率": f"{self.direct_completion_probability:.1%}",
+            "成型路径": self.completion_path_detail,
+            "资源成本": self.resource_cost_label,
             "主要受益人": self.best_beneficiary_agent or "-",
             "受益人数": self.beneficiary_count,
             "受益明细": self._agent_gain_summary(),
             "建设提示": self._build_hint(),
+            "基线状态": self.baseline_summary,
             "说明": self._recommendation_reason(),
         }
 
@@ -127,7 +170,9 @@ class PortfolioActionRow(BaseModel):
         details = "；".join(
             f"{gain.name}+{gain.expected_gain:.3f}"
             f"(成型p={gain.useful_probability:.1%},入选p={gain.entered_best_loadout_probability:.1%},"
-            f"建设p={gain.build_progress_probability:.1%},w={gain.weight:g})"
+            f"盘池跃迁p={gain.completion_probability:.1%},直装p={gain.direct_completion_probability:.1%},"
+            f"建设p={gain.build_progress_probability:.1%},"
+            f"w={gain.weight:g})"
             for gain in self.target_gains
         )
         return {
@@ -140,13 +185,19 @@ class PortfolioActionRow(BaseModel):
             "固定副属性": self.fixed_substats,
             "portfolio EV": round(self.portfolio_ev, 3),
             "EV/母盘": round(self.ev_per_mother, 4),
+            "命中后平均 gain": round(self.conditional_gain, 3),
             "至少一人成型收益概率": f"{self.useful_probability:.1%}",
+            "盘池未成型到完整搭配概率": f"{self.completion_probability:.1%}",
+            "当前盘面直装成型概率": f"{self.direct_completion_probability:.1%}",
+            "成型路径": self.completion_path_detail,
+            "资源成本": self.resource_cost_label,
             "建设方向推进概率": f"{self.build_progress_probability:.1%}",
             "建设审计 gain": round(self.build_progress_gain, 3),
             "最佳受益代理人": self.best_beneficiary_agent or "-",
             "受益代理人数": self.beneficiary_count,
             "每代理人 gain 明细": details or "-",
             "outcome 入选更优搭配": self.entered_best_loadout_summary,
+            "计算前基线": self.baseline_summary,
             "套装进度审计": self.set_progress_detail,
             "位置覆盖审计": self.position_coverage_detail,
             "主属性命中审计": self.main_stat_hit_detail,

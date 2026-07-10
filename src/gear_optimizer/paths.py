@@ -5,7 +5,7 @@ from pathlib import Path
 import sys
 import tempfile
 
-from gear_optimizer.game_rules import PROJECT_ROOT
+from gear_optimizer.project_paths import PROJECT_ROOT
 
 APP_DIR_NAME = "gacha-gear-optimizer"
 

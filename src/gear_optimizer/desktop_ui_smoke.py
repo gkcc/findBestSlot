@@ -85,9 +85,27 @@ def _assert_combo_popup_rendered(app, window, combo, qtest, timeout_seconds: flo
         raise AssertionError("game selector popup rendered as a blank single-color surface")
 
 
-def run_smoke(*, visible: bool = True, timeout_seconds: float = 30.0, user_data_dir: Path | None = None) -> list[str]:
-    if user_data_dir is None:
-        user_data_dir = Path(tempfile.gettempdir()) / "gear-ui-smoke-user-data"
+def run_smoke(
+    *,
+    visible: bool = True,
+    timeout_seconds: float = 30.0,
+    user_data_dir: Path | None = None,
+) -> list[str]:
+    if user_data_dir is not None:
+        return _run_smoke(
+            visible=visible,
+            timeout_seconds=timeout_seconds,
+            user_data_dir=user_data_dir,
+        )
+    with tempfile.TemporaryDirectory(prefix="gear-ui-smoke-user-data-") as temporary_dir:
+        return _run_smoke(
+            visible=visible,
+            timeout_seconds=timeout_seconds,
+            user_data_dir=Path(temporary_dir),
+        )
+
+
+def _run_smoke(*, visible: bool, timeout_seconds: float, user_data_dir: Path) -> list[str]:
     os.environ["GEAR_OPTIMIZER_USER_DATA_DIR"] = str(user_data_dir)
     if visible:
         os.environ.pop("QT_QPA_PLATFORM", None)
@@ -105,9 +123,12 @@ def run_smoke(*, visible: bool = True, timeout_seconds: float = 30.0, user_data_
         QPushButton,
     )
 
+    from gear_optimizer.agents import GlobalInventoryStore, save_global_inventory_store
+    from gear_optimizer.inventory_service import add_inventory_piece, equip_inventory_item
     from gear_optimizer.pyside6_app import OptimizerWindow, _default_piece, ui_runtime_log_path
 
     app = QApplication.instance() or QApplication(sys.argv[:1])
+    save_global_inventory_store(GlobalInventoryStore(game="zzz"), user_data_dir)
     window = OptimizerWindow(width=1200, height=760)
     messages: list[str] = []
     window.show()
@@ -146,9 +167,14 @@ def run_smoke(*, visible: bool = True, timeout_seconds: float = 30.0, user_data_
         game = window.selected_game()
         character = window.selected_character()
         current_piece = _default_piece(game, character, game.positions[0].id)
-        window.current_table.set_context(game, character, [current_piece])
-        window.inventory_table.set_context(game, character, [])
-        window._current_changed()
+        current_item = add_inventory_piece(game.id, current_piece, user_data_dir)
+        equip_inventory_item(
+            game.id,
+            window.selected_storage_character_id(),
+            current_item.item_id,
+            user_data_dir,
+        )
+        window._reload_character_context()
         app.processEvents()
         unequip_buttons = [
             button
@@ -200,6 +226,14 @@ def run_smoke(*, visible: bool = True, timeout_seconds: float = 30.0, user_data_
             )
         if "多代理人调律建议已计算完成" not in window.progress_label.text():
             raise AssertionError("multi-agent tuning finished without success status")
+        portfolio_headers = {
+            window.portfolio_table.horizontalHeaderItem(index).text()
+            for index in range(window.portfolio_table.columnCount())
+        }
+        if not {"盘池成型", "直装成型"}.issubset(portfolio_headers):
+            raise AssertionError(
+                "multi-agent tuning table does not distinguish pool and direct completion"
+            )
         messages.append(f"multi-agent tuning completed with {window.portfolio_table.rowCount()} rows")
 
         log_path = ui_runtime_log_path()
@@ -207,6 +241,8 @@ def run_smoke(*, visible: bool = True, timeout_seconds: float = 30.0, user_data_
         for marker in ("current_piece_unequipped", "portfolio_compute_start", "portfolio_compute_finished"):
             if marker not in log_text:
                 raise AssertionError(f"runtime log missing {marker}")
+        if "direct_completion_probability" not in log_text:
+            raise AssertionError("runtime log does not record direct completion probability")
         messages.append(f"runtime log captured operations: {log_path}")
         return messages
     finally:

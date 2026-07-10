@@ -9,16 +9,14 @@ from pathlib import Path
 import time
 from typing import Any
 
+from gear_optimizer.action_ev_protocol import ActionEvRowPayload
 from gear_optimizer.game_rules import load_characters, load_game, load_probability_models
 from gear_optimizer.position_ev import (
-    _ACTION_EV_ROWS_CACHE,
-    _AGGREGATED_ACTION_OUTCOME_CACHE,
-    _BEST_COMBO_VALUE_CACHE,
-    _RESOURCE_MARGINAL_EV_ROWS_CACHE,
-    _STATE_TRANSITION_CACHE,
     DEFAULT_ACTION_EV_MODE,
+    action_ev_cache_sizes,
+    clear_action_ev_caches,
     normalize_action_ev_mode,
-    position_strategy_efficiency_rows,
+    position_strategy_efficiency_models,
 )
 from gear_optimizer.presets import load_current_example
 from gear_optimizer.scoring import analyse_current_gear
@@ -164,9 +162,9 @@ class ActionEvProfiler:
                 }
             )
 
-    def result(self, rows: list[dict[str, Any]], horizon: int) -> dict[str, Any]:
+    def result(self, rows: list[ActionEvRowPayload], horizon: int) -> dict[str, Any]:
         total_seconds = time.perf_counter() - self.started_at
-        row_strategy_counts = Counter(str(row.get("策略") or "unknown") for row in rows)
+        row_strategy_counts = Counter(row.strategy or "unknown" for row in rows)
         action_unit_seconds_total = sum(float(value) for value in self.action_type_seconds.values())
         performance_audit = self.performance_audit if isinstance(self.performance_audit, dict) else {}
         phase_seconds = performance_audit.get("phase_seconds")
@@ -220,13 +218,7 @@ class ActionEvProfiler:
             ),
             "top_slow_phase_calls": list(top_phase_calls) if isinstance(top_phase_calls, list) else [],
             "performance_audit": performance_audit,
-            "max_cache_sizes": {
-                "action_ev_rows": len(_ACTION_EV_ROWS_CACHE),
-                "resource_marginal_ev_rows": len(_RESOURCE_MARGINAL_EV_ROWS_CACHE),
-                "best_combo_value": len(_BEST_COMBO_VALUE_CACHE),
-                "aggregated_action_outcome": len(_AGGREGATED_ACTION_OUTCOME_CACHE),
-                "state_transition": len(_STATE_TRANSITION_CACHE),
-            },
+            "max_cache_sizes": action_ev_cache_sizes(),
         }
 
 
@@ -344,14 +336,6 @@ def _summary_markdown(profile: dict[str, Any]) -> str:
     )
 
 
-def _clear_action_ev_caches() -> None:
-    _ACTION_EV_ROWS_CACHE.clear()
-    _RESOURCE_MARGINAL_EV_ROWS_CACHE.clear()
-    _BEST_COMBO_VALUE_CACHE.clear()
-    _AGGREGATED_ACTION_OUTCOME_CACHE.clear()
-    _STATE_TRANSITION_CACHE.clear()
-
-
 def _latest_user_current_pieces(game_id: str, agent_id: str) -> list:
     items = load_user_current_gears(game_id, agent_id)
     return list(items[-1]["pieces"]) if items else []
@@ -444,7 +428,7 @@ def run_profile(
     clear_caches: bool = True,
 ) -> dict[str, Any]:
     if clear_caches:
-        _clear_action_ev_caches()
+        clear_action_ev_caches()
     action_mode = normalize_action_ev_mode(action_mode)
     game = load_game(game_id)
     character = _pick_by_id(load_characters(game_id), character_id, "character")
@@ -464,7 +448,7 @@ def run_profile(
     analysis = analyse_current_gear(current_pieces, game, character)
     inventory_pieces = [*current_pieces, *inventory_only_pieces]
     profiler = ActionEvProfiler()
-    rows = position_strategy_efficiency_rows(
+    rows = position_strategy_efficiency_models(
         game,
         character,
         probability_model,

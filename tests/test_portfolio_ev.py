@@ -535,6 +535,310 @@ def test_portfolio_zero_current_incomplete_pool_reports_build_progress_only():
     assert "当前可行1件，加入后可行2件" in row.set_progress_detail
 
 
+def test_portfolio_incomplete_pool_outcome_that_completes_loadout_counts_as_main_ev():
+    game = _build_progress_game()
+    probability = ProbabilityModel(
+        id="p",
+        game="portfolio",
+        name="P",
+        target_set_probability=1.0,
+        initial_substat_count_probabilities={"3": 1.0, "4": 0.0},
+    )
+    character = _build_character()
+    target = PortfolioTarget(
+        agent_id="agent",
+        name="成型代理",
+        character=character,
+        current_pieces=[],
+    )
+
+    row = _fixed_position_row(
+        portfolio_action_rows(
+            game,
+            probability,
+            [target],
+            [],
+            [_build_piece(1), _build_piece(2), _build_piece(3)],
+            mode=PortfolioMode.ANY_USEFUL,
+        ),
+        4,
+    )
+
+    assert row.portfolio_ev > 0
+    assert row.useful_probability == pytest.approx(1.0)
+    assert row.target_gains[0].immediate_gain > 0
+    assert row.target_gains[0].entered_best_loadout_probability == pytest.approx(1.0)
+    assert row.build_progress_gain == pytest.approx(0.0)
+    assert row.to_recommendation_row()["建设提示"] == "-"
+    assert "best_loadout 有正提升" in row.to_recommendation_row()["说明"]
+
+
+def test_portfolio_unfinished_pieces_count_toward_box_loadout_frontier():
+    game = _build_progress_game().model_copy(
+        update={"enhancement": EnhancementRule(max_level=3, step=3, initial_add_level=3)}
+    )
+    probability = ProbabilityModel(
+        id="p",
+        game="portfolio",
+        name="P",
+        target_set_probability=1.0,
+        initial_substat_count_probabilities={"3": 1.0, "4": 0.0},
+    )
+    character = _build_character()
+    target = PortfolioTarget(
+        agent_id="agent",
+        name="胚子代理",
+        character=character,
+        current_pieces=[],
+    )
+
+    row = _fixed_position_row(
+        portfolio_action_rows(
+            game,
+            probability,
+            [target],
+            [],
+            [
+                _build_piece(1, good_rolls=0),
+                _build_piece(2, good_rolls=0),
+                _build_piece(3, good_rolls=0),
+            ],
+            mode=PortfolioMode.ANY_USEFUL,
+        ),
+        4,
+    )
+
+    assert row.portfolio_ev > 0
+    assert row.useful_probability == pytest.approx(1.0)
+    assert row.target_gains[0].immediate_gain > 0
+    assert row.build_progress_gain == pytest.approx(0.0)
+
+
+def test_portfolio_missing_slot_that_completes_four_plus_two_outranks_other_positions():
+    game = GameRules(
+        id="portfolio",
+        name="Portfolio",
+        gear_name="Disk",
+        sets=["X", "Y", "OffPlan"],
+        positions=[
+            PositionRule(id=position, name=f"{position}号位", main_stats=["main"])
+            for position in range(1, 7)
+        ],
+        sub_stats=["good", "bad1", "bad2", "bad3"],
+        main_stat_probabilities={
+            str(position): {"main": 1.0}
+            for position in range(1, 7)
+        },
+        sub_stat_probabilities={"good": 1.0, "bad1": 1.0, "bad2": 1.0, "bad3": 1.0},
+        enhancement=EnhancementRule(max_level=3, step=3, initial_add_level=3),
+    )
+    character = CharacterPreset(
+        id="four_plus_two",
+        game="portfolio",
+        name="缺五号位代理",
+        target_set="X",
+        substat_priority=SubstatPriority(core=["good"], usable=[]),
+        preferred_main_stats={str(position): ["main"] for position in range(1, 7)},
+        set_plans=[
+            SetPlan(
+                id="x4_y2",
+                name="X4 + Y2",
+                requirements=[
+                    SetRequirement(set_name="X", pieces=4),
+                    SetRequirement(set_name="Y", pieces=2),
+                ],
+            )
+        ],
+        default_set_plan="x4_y2",
+    )
+    probability = ProbabilityModel(
+        id="p",
+        game="portfolio",
+        name="P",
+        target_set_probability=1.0,
+        initial_substat_count_probabilities={"3": 1.0, "4": 0.0},
+    )
+
+    def piece(position: int, set_name: str) -> GearPiece:
+        return GearPiece(
+            position=position,
+            set_name=set_name,
+            main_stat="main",
+            level=0,
+            substats=[
+                SubstatLine(stat="good", rolls=0),
+                SubstatLine(stat="bad1", rolls=0),
+                SubstatLine(stat="bad2", rolls=0),
+            ],
+            initial_substat_count=3,
+        )
+
+    current = [
+        piece(1, "Y"),
+        piece(2, "X"),
+        piece(3, "Y"),
+        piece(4, "X"),
+        piece(6, "X"),
+    ]
+    inventory = [
+        piece(1, "X"),
+        piece(5, "OffPlan"),
+    ]
+    target = PortfolioTarget(
+        agent_id="agent",
+        name="缺五号位代理",
+        character=character,
+        current_pieces=current,
+    )
+
+    rows = portfolio_action_rows(
+        game,
+        probability,
+        [target],
+        current,
+        inventory,
+        mode=PortfolioMode.ANY_USEFUL,
+    )
+    x_slot_3 = next(
+        row
+        for row in rows
+        if row.action_spec.strategy == "固定位置"
+        and row.action_spec.set_options == ("X",)
+        and row.action_spec.target_position == 3
+    )
+    x_slot_5 = next(
+        row
+        for row in rows
+        if row.action_spec.strategy == "固定位置"
+        and row.action_spec.set_options == ("X",)
+        and row.action_spec.target_position == 5
+    )
+    y_slot_5 = next(
+        row
+        for row in rows
+        if row.action_spec.strategy == "固定位置"
+        and row.action_spec.set_options == ("Y",)
+        and row.action_spec.target_position == 5
+    )
+
+    assert x_slot_3.portfolio_ev == pytest.approx(0.0)
+    assert x_slot_3.completion_probability == pytest.approx(0.0)
+    assert x_slot_5.portfolio_ev > 0
+    assert x_slot_5.useful_probability == pytest.approx(1.0)
+    assert x_slot_5.completion_probability == pytest.approx(1.0)
+    assert x_slot_5.direct_completion_probability == pytest.approx(1.0)
+    assert x_slot_5.target_gains[0].baseline_complete is False
+    assert x_slot_5.target_gains[0].completion_probability == pytest.approx(1.0)
+    assert x_slot_5.target_gains[0].direct_completion_probability == pytest.approx(1.0)
+    assert "当前装备 5/6（缺5号位）" in x_slot_5.baseline_summary
+    assert "可直接补齐当前盘面" in x_slot_5.to_recommendation_row()["说明"]
+    assert "可直接补当前盘面成型" in x_slot_5.completion_path_detail
+    assert y_slot_5.portfolio_ev == pytest.approx(x_slot_5.portfolio_ev)
+    assert y_slot_5.completion_probability == pytest.approx(1.0)
+    assert y_slot_5.direct_completion_probability == pytest.approx(0.0)
+    assert "不能直接接入当前盘面" in y_slot_5.completion_path_detail
+    assert "需调用背包候选重配" in y_slot_5.to_recommendation_row()["说明"]
+    assert rows.index(x_slot_5) < rows.index(y_slot_5)
+    assert rows[0].action_spec.target_position == 5
+
+
+def test_portfolio_missing_slot_only_counts_target_main_outcomes_as_completed_gain():
+    game = _build_progress_game().model_copy(
+        update={
+            "main_stat_probabilities": {
+                "1": {"main": 1.0},
+                "2": {"main": 1.0},
+                "3": {"main": 1.0},
+                "4": {"atk": 0.5, "hp": 0.5, "def": 0.0},
+            }
+        }
+    )
+    probability = ProbabilityModel(
+        id="p",
+        game="portfolio",
+        name="P",
+        target_set_probability=1.0,
+        initial_substat_count_probabilities={"3": 1.0, "4": 0.0},
+    )
+    character = _build_character()
+    current = [_build_piece(1), _build_piece(2), _build_piece(3)]
+    target = PortfolioTarget(
+        agent_id="agent",
+        name="缺四号位代理",
+        character=character,
+        current_pieces=current,
+    )
+
+    rows = portfolio_action_rows(
+        game,
+        probability,
+        [target],
+        current,
+        [],
+        mode=PortfolioMode.ANY_USEFUL,
+    )
+    random_main = next(
+        row
+        for row in rows
+        if row.action_spec.strategy == "固定位置"
+        and row.action_spec.target_position == 4
+    )
+    fixed_main = next(
+        row
+        for row in rows
+        if row.action_spec.strategy == "固定位置 + 固定主属性"
+        and row.action_spec.target_position == 4
+        and row.action_spec.fixed_main_stat == "atk"
+    )
+
+    assert random_main.useful_probability == pytest.approx(0.5)
+    assert random_main.completion_probability == pytest.approx(0.5)
+    assert random_main.direct_completion_probability == pytest.approx(0.5)
+    assert random_main.portfolio_ev == pytest.approx(fixed_main.portfolio_ev * 0.5)
+    assert random_main.conditional_gain == pytest.approx(fixed_main.conditional_gain)
+    assert fixed_main.useful_probability == pytest.approx(1.0)
+    assert fixed_main.completion_probability == pytest.approx(1.0)
+    assert fixed_main.direct_completion_probability == pytest.approx(1.0)
+    assert random_main.to_recommendation_row()["命中后增益"] > 0
+    assert random_main.to_recommendation_row()["资源成本"] == "母盘 6"
+    assert fixed_main.to_recommendation_row()["资源成本"] == "母盘 6 + 调律器 1"
+
+
+def test_portfolio_full_fallback_without_target_plan_is_not_main_ev_baseline():
+    game = _build_progress_game()
+    probability = ProbabilityModel(
+        id="p",
+        game="portfolio",
+        name="P",
+        target_set_probability=1.0,
+        initial_substat_count_probabilities={"3": 1.0, "4": 0.0},
+    )
+    character = _build_character()
+    target = PortfolioTarget(agent_id="agent", name="目标套装代理", character=character)
+
+    row = _fixed_position_row(
+        portfolio_action_rows(
+            game,
+            probability,
+            [target],
+            [],
+            [
+                _build_piece(1),
+                _build_piece(2),
+                _build_piece(3, set_name="Y"),
+                _build_piece(4),
+            ],
+            mode=PortfolioMode.ANY_USEFUL,
+        ),
+        3,
+    )
+
+    assert row.portfolio_ev > 0
+    assert row.useful_probability == pytest.approx(1.0)
+    assert row.build_progress_gain == pytest.approx(0.0)
+    assert row.to_recommendation_row()["建设提示"] == "-"
+
+
 def test_portfolio_incomplete_pool_does_not_expand_full_substat_outcomes(monkeypatch):
     game = _build_progress_game()
     probability = ProbabilityModel(
@@ -700,7 +1004,7 @@ def test_portfolio_piece_check_reports_immediate_gain_for_actual_drop():
     assert by_name["生百代理"].immediate_gain == pytest.approx(0.0)
 
 
-def test_portfolio_piece_check_keeps_unfinished_piece_out_of_loadout_but_values_upgrade():
+def test_portfolio_piece_check_separates_unfinished_piece_immediate_and_upgrade_value():
     game = _upgrade_portfolio_game()
     probability = ProbabilityModel(id="p", game="portfolio", name="P")
     piece = GearPiece(

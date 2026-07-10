@@ -27,6 +27,8 @@ def test_resource_check_rows_cover_required_local_assets():
     assert by_item["acceptance report script"]["status"] == "ok"
     assert by_item["Windows packaging script"]["status"] == "ok"
     assert by_item["release gate script"]["status"] == "ok"
+    assert by_item["runtime event log"]["status"] in {"ok", "notice"}
+    assert "ui-runtime.log" in by_item["runtime event log"]["detail"]
     assert by_item["zzz set icon files"]["status"] == "ok"
     assert "configured" in by_item["zzz set icon files"]["detail"]
     assert "files ok" in by_item["zzz set icon files"]["detail"]

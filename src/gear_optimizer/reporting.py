@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from gear_optimizer.action_ev_protocol import ActionEvRowPayload
 from gear_optimizer.models import (
     CandidateEvaluation,
     CandidatePiece,
@@ -28,17 +29,16 @@ from gear_optimizer.conclusions import (
 )
 from gear_optimizer.recommendation import (
     resource_decision_text,
-    set_plan_next_action_rows,
     set_plan_stage_rows,
     strategy_alignment_text,
 )
 from gear_optimizer.position_ev import (
-    action_ev_brief,
+    action_ev_model_brief,
     fixed_main_gain_ladder_rows,
     fixed_substat_gain_ladder_rows,
     initial_substat_tier_rows,
-    position_strategy_efficiency_rows,
-    recommended_action_ev_row,
+    position_strategy_efficiency_models,
+    recommended_action_ev_model,
     resource_marginal_ev_rows,
 )
 from gear_optimizer.strategy import (
@@ -123,57 +123,6 @@ def _current_gear_conclusion_markdown(
     )
 
 
-def _conclusion_by_question(rows: list[dict[str, str]]) -> dict[str, dict[str, str]]:
-    return {row["问题"]: row for row in rows}
-
-
-def _current_acceptance_markdown(
-    analysis: CurrentGearAnalysis,
-    current_best: StrategyRow | None,
-    long_term_best: StrategyRow | None,
-    tuner_best: StrategyRow | None,
-    core_best: StrategyRow | None,
-    action_ev_rows: list[dict[str, float | str]] | None = None,
-) -> list[str]:
-    rows = current_gear_conclusion_rows(
-        analysis,
-        current_best,
-        long_term_best,
-        tuner_best,
-        core_best,
-        include_strategy_resources=True,
-    )
-    by_question = _conclusion_by_question(rows)
-    items = [
-        ("我当前 6 件盘哪件最差？", "当前哪件最弱", "看当前装备评分和柱状图。"),
-        ("这个新胚子还值不值得强化？", None, "切到候选胚子评估页，看候选验收速览。"),
-        ("现在应该固定几号位？", "现在优先固定/刷哪里", "看调律策略比较的全局推荐和随机 vs 固定位置表。"),
-        ("校音器该不该用？", "校音器该不该用", "只对应固定主属性，先看是否和长期目标一致。"),
-        ("共鸣核该不该留？", "共鸣核该不该留", "只对应固定副属性，默认作为极限毕业资源。"),
-        ("长期最优和当前提升是否冲突？", "长期和当前是否冲突", "看长期绝对最优与当前补弱是否同目标。"),
-    ]
-    table_rows = [
-        [
-            question,
-            by_question.get(source, {}).get("结论", "见候选页")
-            if source
-            else "见候选页",
-            next_step,
-        ]
-        for question, source, next_step in items
-    ]
-    if action_ev_rows:
-        for row in table_rows:
-            if row[0] == "现在应该固定几号位？":
-                row[1] = action_ev_brief(action_ev_rows)
-                row[2] = "看攻略结论和随机 vs 固定位置收益效率。"
-                break
-    return _markdown_table(
-        ["验收问题", "当前答案", "怎么继续看"],
-        table_rows,
-    )
-
-
 def _first_version_acceptance_markdown(
     game: GameRules,
     character: CharacterPreset,
@@ -184,7 +133,7 @@ def _first_version_acceptance_markdown(
     long_term_best: StrategyRow | None,
     tuner_best: StrategyRow | None,
     core_best: StrategyRow | None,
-    action_ev_rows: list[dict[str, float | str]] | None = None,
+    action_ev_rows: list[ActionEvRowPayload] | None = None,
 ) -> list[str]:
     rows = first_version_acceptance_rows(
         game,
@@ -201,7 +150,7 @@ def _first_version_acceptance_markdown(
     if action_ev_rows:
         for row in rows:
             if row["验收问题"] == "现在应该固定几号位？":
-                row["当前答案"] = action_ev_brief(action_ev_rows)
+                row["当前答案"] = action_ev_model_brief(action_ev_rows)
                 row["依据"] = "Action EV 按完整概率分布枚举；固定位置只有单位母盘收益高于随机位置时才推荐。"
                 row["入口"] = "调律策略比较 -> 攻略结论 / 随机 vs 固定位置收益效率"
                 break
@@ -253,16 +202,6 @@ def _set_plan_stage_markdown(
             for row in rows
         ],
     )
-
-
-def _next_action_markdown(
-    game: GameRules,
-    analysis: CurrentGearAnalysis,
-    current_best: StrategyRow | None,
-    long_term_best: StrategyRow | None,
-) -> list[str]:
-    rows = set_plan_next_action_rows(game, analysis, current_best, long_term_best)
-    return _action_rows_markdown(rows)
 
 
 def _action_rows_markdown(rows: list[dict]) -> list[str]:
@@ -336,29 +275,29 @@ def _compact_resource_action(tuner_text: str, core_text: str) -> str:
     return f"{tuner_action}；{core_action}"
 
 
-def _action_ev_guide_text(action_ev_rows: list[dict[str, float | str]]) -> tuple[str, str]:
-    row = recommended_action_ev_row(action_ev_rows)
+def _action_ev_guide_text(action_ev_rows: list[ActionEvRowPayload]) -> tuple[str, str]:
+    row = recommended_action_ev_model(action_ev_rows)
     if row is None:
         return "暂无母盘 action", "缺少概率模型或当前盘面。"
-    action = str(row.get("策略") or "随机位置")
-    target_parts = [str(row["目标套装"]), str(row["位置"])]
-    main_stat = str(row.get("主属性") or "")
-    substats = str(row.get("固定副属性") or "")
+    action = row.strategy or "随机位置"
+    target_parts = [row.target_set, row.position]
+    main_stat = row.main_stat
+    substats = row.fixed_substats
     if main_stat and main_stat != "不固定":
         target_parts.append(main_stat)
     if substats and substats != "不固定":
         target_parts.append(substats)
     target = " ".join(target_parts)
     reason = (
-        f"有效/母盘 {row['有效/母盘']}；"
-        f"{row.get('比较口径', row.get('相对随机', '-'))}。"
-        f"审计排序向量/母盘 {row.get('排序向量/母盘', '-')}。"
+        f"有效/母盘 {row.effective_per_mother}；"
+        f"{row.comparison_scope or row.relative_to_random or '-'}。"
+        f"审计排序向量/母盘 {row.sort_vector_label or '-'}。"
     )
     return f"{action}：{target}", reason
 
 
 def _strategy_guide_markdown(
-    action_ev_rows: list[dict[str, float | str]],
+    action_ev_rows: list[ActionEvRowPayload],
     analysis: CurrentGearAnalysis,
     current_best: StrategyRow | None,
     long_term_best: StrategyRow | None,
@@ -451,11 +390,8 @@ def _probability_model_assumption_markdown(model: ProbabilityModel | None) -> li
     )
 
 
-def _effective_gain_label(row: dict[str, float | str]) -> str:
-    try:
-        effective = float(row.get("有效提升") or 0.0)
-    except (TypeError, ValueError):
-        return "-"
+def _effective_gain_label(row: ActionEvRowPayload) -> str:
+    effective = row.effective_gain
     if abs(effective) <= 0.0005:
         return "无有效提升"
     sign = "+" if effective > 0 else ""
@@ -470,15 +406,17 @@ def _position_strategy_efficiency_markdown(
 ) -> list[str]:
     if probability_model is None:
         return ["暂无概率模型，无法计算随机/固定位置收益。"]
-    rows = position_strategy_efficiency_rows(game, character, probability_model, analysis)
+    rows = position_strategy_efficiency_models(game, character, probability_model, analysis)
 
-    def action_type(row: dict[str, float | str]) -> str:
-        return str(row.get("动作类型") or ("库存升级机会" if row.get("策略") == "强化库存胚子" else "调律母盘"))
+    def action_type(row: ActionEvRowPayload) -> str:
+        return row.action_type or (
+            "库存升级机会" if row.strategy == "强化库存胚子" else "调律母盘"
+        )
 
-    def action_name(row: dict[str, float | str]) -> str:
-        if row.get("策略") == "强化库存胚子":
+    def action_name(row: ActionEvRowPayload) -> str:
+        if row.strategy == "强化库存胚子":
             return "非调律：升级已有库存"
-        return str(row.get("策略") or "-")
+        return row.strategy or "-"
 
     return _markdown_table(
         [
@@ -516,33 +454,33 @@ def _position_strategy_efficiency_markdown(
             [
                 action_type(row),
                 action_name(row),
-                row["目标套装"],
-                row["位置"],
-                row.get("主属性", "不固定"),
-                row.get("固定副属性", "不固定"),
-                row.get("horizon", 1),
-                row.get("immediate_EV", row["期望提升"]),
-                row.get("option_EV", "0"),
-                row.get("horizon_EV", row["期望提升"]),
+                row.target_set,
+                row.position,
+                row.main_stat or "不固定",
+                row.fixed_substats or "不固定",
+                row.horizon,
+                row.immediate_ev or row.expected_gain,
+                row.option_ev or "0",
+                row.horizon_ev or row.expected_gain,
                 _effective_gain_label(row),
-                row["期望提升"],
-                row.get("方案类型", "-"),
-                row.get("第二步策略摘要", "-"),
-                row.get("代表路径", "-"),
-                row.get("代表分支搭配", row.get("预期搭配", "-")),
-                row.get("互补位", "-"),
-                row.get("套装约束", "-"),
-                row["质量提升"],
-                row["有效提升"],
-                row["母盘/次"],
-                row.get("校音器/次", 0.0),
-                row.get("共鸣核/次", 0.0),
-                row.get("高级素材/次", 0.0),
-                row["质量/母盘"],
-                row["有效/母盘"],
-                row["排序向量/母盘"],
-                row.get("比较口径", row.get("相对随机", "-")),
-                row["相对随机"],
+                row.expected_gain,
+                row.plan_type or "-",
+                row.second_step_summary or "-",
+                row.representative_path or "-",
+                row.representative_branch_loadout or row.expected_loadout or "-",
+                row.complement_slots or "-",
+                row.set_constraint or "-",
+                row.quality_gain,
+                row.effective_gain,
+                row.mother_cost,
+                row.tuner_cost,
+                row.resonance_core_cost,
+                row.advanced_material_cost,
+                row.quality_per_mother,
+                row.effective_per_mother,
+                row.sort_vector_label,
+                row.comparison_scope or row.relative_to_random or "-",
+                row.relative_to_random,
             ]
             for row in rows
         ],
@@ -973,7 +911,7 @@ def first_version_acceptance_report_markdown(
     probability_model: ProbabilityModel | None = None,
 ) -> str:
     action_ev_rows = (
-        position_strategy_efficiency_rows(game, character, probability_model, analysis)
+        position_strategy_efficiency_models(game, character, probability_model, analysis)
         if probability_model
         else []
     )
@@ -1137,7 +1075,7 @@ def current_analysis_report_markdown(
     input_audit_text: str | None = None,
 ) -> str:
     action_ev_rows = (
-        position_strategy_efficiency_rows(game, character, probability_model, analysis)
+        position_strategy_efficiency_models(game, character, probability_model, analysis)
         if probability_model
         else []
     )

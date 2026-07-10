@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
-from typing import Any
-
 from gear_optimizer.models import CharacterPreset, GameRules, ProbabilityModel, position_key
 from gear_optimizer.probability import normalise_weights
 
@@ -48,7 +46,7 @@ def _weighted_draws(stats: list[str], weights: dict[str, float]) -> list[tuple[s
     return list(normalise_weights(stats, weights).items())
 
 
-def _initial_roll_states(
+def initial_roll_states(
     game: GameRules,
     main_stat: str,
     line_count: int,
@@ -74,7 +72,7 @@ def _initial_roll_states(
     return states
 
 
-def _advance_roll_states(
+def advance_roll_states(
     game: GameRules,
     main_stat: str,
     states: dict[tuple[tuple[str, int], ...], float],
@@ -201,13 +199,13 @@ def fresh_piece_quality_distribution(
     distribution: defaultdict[tuple[float, tuple[float, ...]], float] = defaultdict(float)
     for count_text, count_probability in probability_model.initial_substat_count_probabilities.items():
         initial_count = int(count_text)
-        initial_states = _initial_roll_states(
+        initial_states = initial_roll_states(
             game,
             main_stat,
             initial_count,
             required_substats,
         )
-        final_states = _advance_roll_states(game, main_stat, initial_states, initial_count)
+        final_states = advance_roll_states(game, main_stat, initial_states, initial_count)
         for state, probability in final_states.items():
             quality_score, quality_vector = quality_from_roll_state(state, character)
             distribution[(quality_score, quality_vector)] += count_probability * probability

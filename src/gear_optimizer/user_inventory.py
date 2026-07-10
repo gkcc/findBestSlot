@@ -2,12 +2,16 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import yaml
-
 from gear_optimizer.exporting import current_gear_export_data
 from gear_optimizer.models import GearPiece
 from gear_optimizer.paths import app_data_root
 from gear_optimizer.presets import current_gear_data_to_pieces
+from gear_optimizer.storage_io import (
+    USER_STORE_SCHEMA_VERSION,
+    read_yaml_mapping,
+    update_yaml_mapping_locked,
+    validate_store_schema_version,
+)
 
 SHARED_INVENTORY_ID = "_shared"
 LEGACY_GLOBAL_INVENTORY_ID = "global"
@@ -44,10 +48,8 @@ def legacy_user_inventory_store_paths(
 
 
 def _load_inventory_file(path: Path, game_id: str) -> list[GearPiece]:
-    with path.open("r", encoding="utf-8") as handle:
-        data = yaml.safe_load(handle) or {}
-    if not isinstance(data, dict):
-        raise ValueError(f"Expected YAML mapping in {path}")
+    data = read_yaml_mapping(path)
+    validate_store_schema_version(data, path)
     return current_gear_data_to_pieces(data, game_id=game_id)
 
 
@@ -119,8 +121,8 @@ def save_user_inventory(
         pieces,
         label=f"{game_id} shared inventory",
     )
-    with path.open("w", encoding="utf-8") as handle:
-        yaml.safe_dump(data, handle, allow_unicode=True, sort_keys=False)
+    data["schema_version"] = USER_STORE_SCHEMA_VERSION
+    update_yaml_mapping_locked(path, lambda _current: data, backup_existing=True)
     return path
 
 
@@ -138,6 +140,6 @@ def save_legacy_user_inventory(
         pieces,
         label=f"{character_id} inventory",
     )
-    with path.open("w", encoding="utf-8") as handle:
-        yaml.safe_dump(data, handle, allow_unicode=True, sort_keys=False)
+    data["schema_version"] = USER_STORE_SCHEMA_VERSION
+    update_yaml_mapping_locked(path, lambda _current: data, backup_existing=True)
     return path

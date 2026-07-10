@@ -5,8 +5,9 @@ from typing import Any
 
 import yaml
 
-from gear_optimizer.game_rules import PROJECT_ROOT, load_game
+from gear_optimizer.game_rules import load_game
 from gear_optimizer.models import CandidatePiece, CharacterPreset, GearPiece, ProbabilityModel
+from gear_optimizer.project_paths import PROJECT_ROOT
 
 
 def _example_metadata(path: Path) -> dict:
@@ -33,7 +34,7 @@ def _game_supports_revealed_next_substat(game_id: str | None) -> bool:
         return True
     try:
         return load_game(game_id).enhancement.revealed_next_substat_supported
-    except Exception:
+    except (FileNotFoundError, KeyError):
         return True
 
 
@@ -52,7 +53,7 @@ def _revealed_next_substat_repeats_known_stat(item: dict[str, Any]) -> bool:
     return False
 
 
-def _sanitize_piece_data_for_game(item: Any, game_id: str | None) -> Any:
+def sanitize_piece_data_for_game(item: Any, game_id: str | None) -> Any:
     if not isinstance(item, dict):
         return item
     if "revealed_next_substat" not in item:
@@ -74,7 +75,7 @@ def current_gear_data_to_pieces(data: dict, game_id: str | None = None) -> list[
         raise ValueError("Current gear YAML must contain a pieces list")
     source_game_id = game_id or str(data.get("game") or "")
     return [
-        GearPiece.model_validate(_sanitize_piece_data_for_game(item, source_game_id))
+        GearPiece.model_validate(sanitize_piece_data_for_game(item, source_game_id))
         for item in pieces
     ]
 
@@ -97,7 +98,7 @@ def candidate_data_to_piece(data: dict, game_id: str | None = None) -> Candidate
     if not isinstance(data, dict):
         raise ValueError("Candidate YAML must be a mapping")
     source_game_id = game_id or str(data.get("game") or "")
-    return CandidatePiece.model_validate(_sanitize_piece_data_for_game(data, source_game_id))
+    return CandidatePiece.model_validate(sanitize_piece_data_for_game(data, source_game_id))
 
 
 def load_candidate_yaml_text(text: str) -> tuple[dict, CandidatePiece]:

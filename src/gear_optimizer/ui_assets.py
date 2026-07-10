@@ -5,8 +5,8 @@ from pathlib import Path
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QIcon, QPixmap
 
-from gear_optimizer.game_rules import PROJECT_ROOT
 from gear_optimizer.models import GameRules
+from gear_optimizer.project_paths import PROJECT_ROOT
 
 _PIXMAP_CACHE: dict[tuple[str, int], QPixmap | None] = {}
 _ICON_CACHE: dict[tuple[str, int], QIcon | None] = {}

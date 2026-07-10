@@ -11,14 +11,22 @@ import uuid
 import yaml
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from gear_optimizer.game_rules import PROJECT_ROOT, load_characters, read_yaml
+from gear_optimizer.game_rules import load_characters, read_yaml
 from gear_optimizer.models import CharacterPreset, GearPiece, position_key
 from gear_optimizer.paths import app_data_root
 from gear_optimizer.presets import current_gear_data_to_pieces
+from gear_optimizer.project_paths import PROJECT_ROOT
+from gear_optimizer.storage_io import (
+    USER_STORE_SCHEMA_VERSION,
+    atomic_compare_and_swap_yaml,
+    safe_storage_id,
+)
 from gear_optimizer.user_inventory import (
     SHARED_INVENTORY_ID,
+    legacy_user_inventory_store_paths,
     load_legacy_user_inventory,
     load_user_inventory,
+    user_inventory_store_path,
 )
 
 MULTI_AGENT_SCHEMA_VERSION = 1
@@ -32,11 +40,6 @@ def _base_root(root: Path | None = None) -> Path:
 
 def _now_text() -> str:
     return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
-
-
-def _safe_id(value: str) -> str:
-    text = "".join(char.lower() if char.isalnum() else "_" for char in value)
-    return "_".join(part for part in text.split("_") if part) or "agent"
 
 
 def _safe_timestamp_path(value: str) -> str:
@@ -88,7 +91,7 @@ class AgentMetadata(BaseModel):
     @classmethod
     def fallback_for_character(cls, character: CharacterPreset) -> "AgentMetadata":
         return cls(
-            agent_id=f"fallback_{_safe_id(character.id)}",
+            agent_id=f"fallback_{safe_storage_id(character.id, fallback='agent')}",
             name=character.name,
             character_preset_id=character.id,
         )
@@ -116,6 +119,8 @@ class AgentUserState(BaseModel):
 
 class AgentUserStateStore(BaseModel):
     game: str
+    schema_version: int = Field(default=USER_STORE_SCHEMA_VERSION, ge=1, le=USER_STORE_SCHEMA_VERSION)
+    revision: int = Field(default=0, ge=0, strict=True)
     agents: dict[str, AgentUserState] = Field(default_factory=dict)
 
 
@@ -137,7 +142,8 @@ class InventoryItem(BaseModel):
 
 class GlobalInventoryStore(BaseModel):
     game: str
-    schema_version: int = MULTI_AGENT_SCHEMA_VERSION
+    schema_version: int = Field(default=MULTI_AGENT_SCHEMA_VERSION, ge=1, le=MULTI_AGENT_SCHEMA_VERSION)
+    revision: int = Field(default=0, ge=0, strict=True)
     items: list[InventoryItem] = Field(default_factory=list)
 
     @model_validator(mode="after")
@@ -163,7 +169,8 @@ class AgentLoadout(BaseModel):
 class AgentLoadoutStore(BaseModel):
     game: str
     agent_id: str
-    schema_version: int = MULTI_AGENT_SCHEMA_VERSION
+    schema_version: int = Field(default=MULTI_AGENT_SCHEMA_VERSION, ge=1, le=MULTI_AGENT_SCHEMA_VERSION)
+    revision: int = Field(default=0, ge=0, strict=True)
     loadouts: list[AgentLoadout] = Field(default_factory=list)
 
     @model_validator(mode="after")
@@ -189,6 +196,7 @@ class MigrationIssue(BaseModel):
 class MigrationReport(BaseModel):
     game: str
     dry_run: bool
+    inventory_revision: int = Field(default=0, ge=0, strict=True)
     inventory_items: list[InventoryItem] = Field(default_factory=list)
     loadout_stores: list[AgentLoadoutStore] = Field(default_factory=list)
     exact_duplicate_groups: list[MigrationDuplicateGroup] = Field(default_factory=list)
@@ -335,9 +343,13 @@ def save_agent_user_state_store(
     root: Path | None = None,
 ) -> Path:
     path = agent_user_state_store_path(store.game, root)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as handle:
-        yaml.safe_dump(store.model_dump(mode="json"), handle, allow_unicode=True, sort_keys=False)
+    validated = AgentUserStateStore.model_validate(store.model_dump(mode="json"))
+    store.revision = atomic_compare_and_swap_yaml(
+        path,
+        validated.model_dump(mode="json"),
+        expected_revision=validated.revision,
+        backup_existing=True,
+    )
     return path
 
 
@@ -370,10 +382,13 @@ def save_global_inventory_store(
     root: Path | None = None,
 ) -> Path:
     path = global_inventory_store_path(store.game, root)
-    path.parent.mkdir(parents=True, exist_ok=True)
     validated = GlobalInventoryStore.model_validate(store.model_dump(mode="json"))
-    with path.open("w", encoding="utf-8") as handle:
-        yaml.safe_dump(validated.model_dump(mode="json"), handle, allow_unicode=True, sort_keys=False)
+    store.revision = atomic_compare_and_swap_yaml(
+        path,
+        validated.model_dump(mode="json"),
+        expected_revision=validated.revision,
+        backup_existing=True,
+    )
     return path
 
 
@@ -393,10 +408,13 @@ def save_agent_loadout_store(
     root: Path | None = None,
 ) -> Path:
     path = agent_loadout_store_path(store.game, store.agent_id, root)
-    path.parent.mkdir(parents=True, exist_ok=True)
     validated = AgentLoadoutStore.model_validate(store.model_dump(mode="json"))
-    with path.open("w", encoding="utf-8") as handle:
-        yaml.safe_dump(validated.model_dump(mode="json"), handle, allow_unicode=True, sort_keys=False)
+    store.revision = atomic_compare_and_swap_yaml(
+        path,
+        validated.model_dump(mode="json"),
+        expected_revision=validated.revision,
+        backup_existing=True,
+    )
     return path
 
 
@@ -408,19 +426,34 @@ def load_inventory_items_compatible(
     global_path = global_inventory_store_path(game_id, root)
     if global_path.exists():
         return load_global_inventory_store(game_id, root).items
-    pieces = load_user_inventory(game_id, character_id, root)
-    return [
-        new_inventory_item(
-            piece,
-            item_id=_stable_migration_item_id(
-                "legacy-compatible",
-                f"{character_id}:{index}",
-                piece,
-            ),
-            migrated_from={"kind": "legacy_inventory", "character_id": character_id, "row": index},
-        )
-        for index, piece in enumerate(pieces, start=1)
-    ]
+    base = _base_root(root)
+    shared_path = user_inventory_store_path(game_id, SHARED_INVENTORY_ID, base)
+    if shared_path.exists():
+        sources = [
+            (
+                shared_path,
+                load_user_inventory(game_id, SHARED_INVENTORY_ID, base),
+                "shared_inventory",
+            )
+        ]
+    else:
+        sources = [
+            (path, load_legacy_user_inventory(game_id, path.stem, base), "legacy_inventory")
+            for path in legacy_user_inventory_store_paths(game_id, base)
+        ]
+
+    items: list[InventoryItem] = []
+    for source_path, pieces, source_kind in sources:
+        source_text = _relative_text(source_path, base)
+        for index, piece in enumerate(pieces, start=1):
+            items.append(
+                new_inventory_item(
+                    piece,
+                    item_id=_stable_migration_item_id(source_text, str(index), piece),
+                    migrated_from={"kind": source_kind, "path": source_text, "row": index},
+                )
+            )
+    return items
 
 
 def expand_agent_loadout(
@@ -564,6 +597,27 @@ def _legacy_inventory_files(game_id: str, root: Path) -> list[Path]:
     return sorted(path for path in folder.glob("*.yaml") if path.stem not in ignored)
 
 
+def _inventory_migration_files(game_id: str, root: Path) -> list[Path]:
+    shared_path = user_inventory_store_path(game_id, SHARED_INVENTORY_ID, root)
+    if shared_path.exists():
+        return [shared_path]
+    return _legacy_inventory_files(game_id, root)
+
+
+def _inventory_backup_files(game_id: str, root: Path) -> list[Path]:
+    shared_path = user_inventory_store_path(game_id, SHARED_INVENTORY_ID, root)
+    return [
+        *([shared_path] if shared_path.exists() else []),
+        *_legacy_inventory_files(game_id, root),
+    ]
+
+
+def _load_inventory_migration_file(path: Path, game_id: str, root: Path) -> list[GearPiece]:
+    if path.stem == SHARED_INVENTORY_ID:
+        return load_user_inventory(game_id, SHARED_INVENTORY_ID, root)
+    return load_legacy_user_inventory(game_id, path.stem, root)
+
+
 def _legacy_current_files(game_id: str, root: Path) -> list[Path]:
     folder = root / "current_gear" / game_id
     if not folder.exists():
@@ -601,16 +655,16 @@ def _character_id_from_legacy_path(path: Path) -> str:
 def _agent_for_character(
     character_id: str,
     characters_by_id: dict[str, CharacterPreset],
-    metadata_by_character: dict[str, AgentMetadata],
+    metadata_by_storage_id: dict[str, AgentMetadata],
 ) -> AgentMetadata:
-    metadata = metadata_by_character.get(character_id)
+    metadata = metadata_by_storage_id.get(character_id)
     if metadata is not None:
         return metadata
     character = characters_by_id.get(character_id)
     if character is not None:
         return AgentMetadata.fallback_for_character(character)
     return AgentMetadata(
-        agent_id=f"fallback_{_safe_id(character_id)}",
+        agent_id=f"fallback_{safe_storage_id(character_id, fallback='agent')}",
         name=character_id,
         character_preset_id=character_id,
     )
@@ -627,17 +681,38 @@ def dry_run_multi_agent_migration(
     characters = load_characters(game_id)
     characters_by_id = {character.id: character for character in characters}
     catalog = load_agent_catalog(game_id, project_root)
-    metadata_by_character = {agent.character_preset_id: agent for agent in catalog.agents}
+    metadata_by_storage_id: dict[str, AgentMetadata] = {}
+    for agent in catalog.agents:
+        metadata_by_storage_id[agent.agent_id] = agent
+        if agent.character_preset_id:
+            metadata_by_storage_id.setdefault(agent.character_preset_id, agent)
     issues = missing_agent_asset_issues(catalog.agents, project_root)
 
-    inventory_files = _legacy_inventory_files(game_id, base)
+    inventory_files = _inventory_migration_files(game_id, base)
+    inventory_backup_files = _inventory_backup_files(game_id, base)
+    legacy_agent_inventory_files = _legacy_inventory_files(game_id, base)
+    active_legacy_agent_inventory_files = [
+        path for path in inventory_files if path.stem != SHARED_INVENTORY_ID
+    ]
+    if inventory_files and inventory_files[0].stem == SHARED_INVENTORY_ID and legacy_agent_inventory_files:
+        issues.append(
+            MigrationIssue(
+                severity="warning",
+                code="legacy_agent_inventory_shadowed_by_shared",
+                message=(
+                    "_shared.yaml already exists; legacy agent inventory files are backed up "
+                    "but not imported"
+                ),
+            )
+        )
     current_files = _legacy_current_files(game_id, base)
     legacy_character_ids = {
         _character_id_from_legacy_path(path)
-        for path in [*inventory_files, *current_files]
+        for path in [*active_legacy_agent_inventory_files, *current_files]
     }
     for character_id in sorted(legacy_character_ids):
-        if character_id not in metadata_by_character:
+        metadata = metadata_by_storage_id.get(character_id)
+        if metadata is None:
             issues.append(
                 MigrationIssue(
                     severity="warning",
@@ -645,7 +720,8 @@ def dry_run_multi_agent_migration(
                     message=f"{character_id} has no AgentMetadata; fallback agent will be used",
                 )
             )
-        if character_id not in characters_by_id:
+        target_character_id = metadata.character_preset_id if metadata is not None else character_id
+        if target_character_id and target_character_id not in characters_by_id:
             issues.append(
                 MigrationIssue(
                     severity="warning",
@@ -654,9 +730,33 @@ def dry_run_multi_agent_migration(
                 )
             )
 
-    items: list[InventoryItem] = []
-    row_items: list[tuple[str, GearPiece]] = []
+    global_path = global_inventory_store_path(game_id, base)
+    existing_inventory = (
+        load_global_inventory_store(game_id, base)
+        if global_path.exists()
+        else GlobalInventoryStore(game=game_id)
+    )
+    if global_path.exists() and inventory_files:
+        issues.append(
+            MigrationIssue(
+                severity="warning",
+                code="legacy_inventory_shadowed_by_global",
+                message=(
+                    f"{global_path.name} already exists; legacy/shared inventory files are backed up "
+                    "but not merged automatically"
+                ),
+            )
+        )
+
+    items: list[InventoryItem] = [item.model_copy(deep=True) for item in existing_inventory.items]
+    items_by_id = {item.item_id: item for item in items}
+    row_items: list[tuple[str, GearPiece]] = [
+        (f"{_relative_text(global_path, base)}:{item.item_id}", item.piece)
+        for item in items
+    ]
     signature_to_item_id: dict[str, str] = {}
+    for item in items:
+        signature_to_item_id.setdefault(_piece_signature(item.piece), item.item_id)
 
     def add_item(
         piece: GearPiece,
@@ -666,6 +766,18 @@ def dry_run_multi_agent_migration(
     ) -> str:
         source_text = _relative_text(source_path, base)
         item_id = _stable_migration_item_id(source_text, row_key, piece)
+        existing = items_by_id.get(item_id)
+        if existing is not None:
+            if existing.piece != piece:
+                issues.append(
+                    MigrationIssue(
+                        severity="error",
+                        code="inventory_item_id_conflict",
+                        message=f"{item_id} maps to different pieces in {source_text}:{row_key}",
+                    )
+                )
+            signature_to_item_id.setdefault(_piece_signature(piece), item_id)
+            return item_id
         item = new_inventory_item(
             piece,
             item_id=item_id,
@@ -673,20 +785,24 @@ def dry_run_multi_agent_migration(
             migrated_from=migrated_from,
         )
         items.append(item)
+        items_by_id[item_id] = item
         label = f"{source_text}:{row_key}"
         row_items.append((label, piece))
         signature_to_item_id.setdefault(_piece_signature(piece), item_id)
         return item_id
 
-    for path in inventory_files:
-        character_id = _character_id_from_legacy_path(path)
-        for row_index, piece in enumerate(load_legacy_user_inventory(game_id, character_id, base), start=1):
+    for path in inventory_files if not global_path.exists() else []:
+        source_kind = "shared_inventory" if path.stem == SHARED_INVENTORY_ID else "legacy_inventory"
+        for row_index, piece in enumerate(
+            _load_inventory_migration_file(path, game_id, base),
+            start=1,
+        ):
             add_item(
                 piece,
                 path,
                 str(row_index),
                 {
-                    "kind": "legacy_inventory",
+                    "kind": source_kind,
                     "path": _relative_text(path, base),
                     "row": row_index,
                 },
@@ -695,11 +811,16 @@ def dry_run_multi_agent_migration(
     loadout_stores_by_agent: dict[str, AgentLoadoutStore] = {}
     for path in current_files:
         character_id = _character_id_from_legacy_path(path)
-        agent = _agent_for_character(character_id, characters_by_id, metadata_by_character)
-        store = loadout_stores_by_agent.setdefault(
-            agent.agent_id,
-            AgentLoadoutStore(game=game_id, agent_id=agent.agent_id),
-        )
+        agent = _agent_for_character(character_id, characters_by_id, metadata_by_storage_id)
+        store = loadout_stores_by_agent.get(agent.agent_id)
+        if store is None:
+            existing_loadout_path = agent_loadout_store_path(game_id, agent.agent_id, base)
+            store = (
+                load_agent_loadout_store(game_id, agent.agent_id, base)
+                if existing_loadout_path.exists()
+                else AgentLoadoutStore(game=game_id, agent_id=agent.agent_id)
+            )
+            loadout_stores_by_agent[agent.agent_id] = store
         templates = _load_current_file_templates(path, game_id)
         for template in templates:
             loadout_id = DEFAULT_LOADOUT_ID if len(templates) == 1 else str(template["id"])
@@ -731,14 +852,28 @@ def dry_run_multi_agent_migration(
                         },
                     )
                 slot_items[position_key(piece.position)] = item_id
-            store.loadouts.append(
-                AgentLoadout(
-                    loadout_id=loadout_id,
-                    label=str(template["label"]),
-                    slot_items=slot_items,
-                    updated_at=timestamp,
-                )
+            migrated_loadout = AgentLoadout(
+                loadout_id=loadout_id,
+                label=str(template["label"]),
+                slot_items=slot_items,
+                updated_at=timestamp,
             )
+            existing_loadout = next(
+                (item for item in store.loadouts if item.loadout_id == loadout_id),
+                None,
+            )
+            if existing_loadout is None:
+                store.loadouts.append(migrated_loadout)
+            elif existing_loadout.slot_items != migrated_loadout.slot_items:
+                issues.append(
+                    MigrationIssue(
+                        severity="error",
+                        code="loadout_id_conflict",
+                        message=(
+                            f"{agent.agent_id}/{loadout_id} already exists with different item refs"
+                        ),
+                    )
+                )
 
     inventory_store: GlobalInventoryStore | None = None
     try:
@@ -764,12 +899,13 @@ def dry_run_multi_agent_migration(
     return MigrationReport(
         game=game_id,
         dry_run=True,
+        inventory_revision=existing_inventory.revision,
         inventory_items=items,
         loadout_stores=list(loadout_stores_by_agent.values()),
         exact_duplicate_groups=exact_duplicates,
         unordered_duplicate_groups=unordered_duplicates,
         issues=issues,
-        legacy_inventory_files=[_relative_text(path, base) for path in inventory_files],
+        legacy_inventory_files=[_relative_text(path, base) for path in inventory_backup_files],
         legacy_current_files=[_relative_text(path, base) for path in current_files],
     )
 
@@ -797,7 +933,7 @@ def apply_multi_agent_migration(
 
     backup_root = base / "backups" / "multi_agent_migration" / _safe_timestamp_path(timestamp)
     paths_to_backup = [
-        *_legacy_inventory_files(game_id, base),
+        *_inventory_backup_files(game_id, base),
         *_legacy_current_files(game_id, base),
         global_inventory_store_path(game_id, base),
         *(agent_loadout_store_path(game_id, store.agent_id, base) for store in report.loadout_stores),
@@ -806,7 +942,11 @@ def apply_multi_agent_migration(
         _copy_if_exists(path, backup_root, base)
 
     save_global_inventory_store(
-        GlobalInventoryStore(game=game_id, items=report.inventory_items),
+        GlobalInventoryStore(
+            game=game_id,
+            revision=report.inventory_revision,
+            items=report.inventory_items,
+        ),
         base,
     )
     for store in report.loadout_stores:

@@ -3,12 +3,12 @@ from __future__ import annotations
 from collections import defaultdict
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Literal
 
+from gear_optimizer.action_types import PortfolioActionScope, normalize_portfolio_action_scope
 from gear_optimizer.models import CharacterPreset, GameRules, GearPiece, ProbabilityModel, position_key
 from gear_optimizer.piece_distribution import (
-    _advance_roll_states,
-    _initial_roll_states,
+    advance_roll_states,
+    initial_roll_states,
     quality_from_roll_state,
 )
 from gear_optimizer.portfolio_models import (
@@ -30,13 +30,13 @@ from gear_optimizer.position_ev import (
     _action_type_label,
     _advance_existing_roll_states,
     _best_combo_rows,
-    _cached_best_combo_value,
     _candidate_inventory_row,
+    _combo_value,
     _dedupe_action_specs,
+    _expected_upgrade_loadout_row,
     _fresh_piece_outcome_distribution,
     _generation_action_specs,
     _inventory_piece_id,
-    _inventory_row_signature,
     _is_loadout_candidate,
     _normalise_inventory_rows,
     _piece_contribution_key,
@@ -45,9 +45,9 @@ from gear_optimizer.position_ev import (
     _set_distribution,
     _upgrade_action_specs,
 )
+from gear_optimizer.set_plan_solver import set_plan_satisfied_by_counts
 
 _EPSILON = 1e-9
-PortfolioActionScope = Literal["tuning", "upgrade", "all"]
 _JOINT_QUALITY_DISTRIBUTION_CACHE: dict[
     tuple,
     list[tuple[tuple[tuple[float, tuple[float, ...]], ...], float]],
@@ -71,6 +71,45 @@ def _portfolio_delta_scalar(gain_vector: tuple[float, ...]) -> float:
     return sum(max(float(value), 0.0) for value in gain_vector)
 
 
+def _combo_satisfies_target_plan(combo: Sequence[dict], character: CharacterPreset) -> bool:
+    plan = character.active_set_plan()
+    counts: dict[str, int] = defaultdict(int)
+    for row in combo:
+        counts[str(row["set_name"])] += 1
+    return set_plan_satisfied_by_counts(plan, counts)
+
+
+def _outcome_matches_target_main(
+    target: PortfolioTarget,
+    position: object,
+    main_stat: str,
+) -> bool:
+    preferred_mains = target.character.preferred_mains_for(position)
+    return not preferred_mains or main_stat in preferred_mains
+
+
+def _portfolio_best_loadout_value(
+    rows: list[dict],
+    game: GameRules,
+    character: CharacterPreset,
+) -> tuple[float, ...]:
+    combo = _best_combo_rows(rows, game, character)
+    if not combo or not _combo_satisfies_target_plan(combo, character):
+        return tuple()
+    return _combo_value(combo, character)
+
+
+def _portfolio_positive_gain(
+    new_value: tuple[float, ...],
+    current_value: tuple[float, ...],
+) -> tuple[float, ...]:
+    if not new_value:
+        return tuple(0.0 for _ in current_value)
+    if not current_value:
+        return tuple(max(float(value), 0.0) for value in new_value)
+    return _positive_gain(new_value, current_value)
+
+
 def _add_delta_vectors(left: list[float], right: tuple[float, ...], probability: float) -> list[float]:
     if not left:
         left = [0.0 for _ in right]
@@ -87,7 +126,7 @@ def _portfolio_action_specs(
     action_scope: PortfolioActionScope,
 ) -> list[ActionSpec]:
     specs: list[ActionSpec] = []
-    if action_scope in {"tuning", "all"}:
+    if action_scope in {PortfolioActionScope.TUNING, PortfolioActionScope.ALL}:
         for target in targets:
             specs.extend(
                 _generation_action_specs(
@@ -97,7 +136,7 @@ def _portfolio_action_specs(
                     include_fixed_substats=False,
                 )
             )
-    if action_scope in {"upgrade", "all"}:
+    if action_scope in {PortfolioActionScope.UPGRADE, PortfolioActionScope.ALL}:
         specs.extend(_upgrade_action_specs(base_rows, game))
     return _dedupe_action_specs(specs)
 
@@ -113,11 +152,13 @@ def _target_rows_for_pool(
         row = _candidate_inventory_row(piece, game, character, source="current")
         row["_inventory_id"] = f"current:{index}"
         row["_piece"] = piece
+        row = _expected_upgrade_loadout_row(row, game, character)
         rows.append(row)
     for index, piece in enumerate(inventory_pieces):
         row = _candidate_inventory_row(piece, game, character, source="inventory")
         row["_inventory_id"] = f"inventory:{index}"
         row["_piece"] = piece
+        row = _expected_upgrade_loadout_row(row, game, character)
         rows.append(row)
     return _normalise_inventory_rows(rows, game, character)
 
@@ -134,8 +175,61 @@ def _target_rows(
         row = _candidate_inventory_row(piece, game, character, source=source)
         row["_inventory_id"] = _inventory_piece_id(index)
         row["_piece"] = piece
+        row = _expected_upgrade_loadout_row(row, game, character)
         rows.append(row)
     return _normalise_inventory_rows(rows, game, character)
+
+
+def _target_baseline_detail(
+    target: PortfolioTarget,
+    current_pieces: Sequence[GearPiece],
+    current_value: tuple[float, ...],
+    game: GameRules,
+) -> str:
+    equipped_positions = {position_key(piece.position) for piece in current_pieces}
+    missing_positions = [
+        game.position_name(rule.id)
+        for rule in game.positions
+        if position_key(rule.id) not in equipped_positions
+    ]
+    current_detail = f"当前装备 {len(equipped_positions)}/{len(game.positions)}"
+    if missing_positions:
+        current_detail += f"（缺{'、'.join(missing_positions)}）"
+
+    plan = target.character.active_set_plan()
+    current_set_counts: dict[str, int] = defaultdict(int)
+    for piece in current_pieces:
+        current_set_counts[piece.set_name] += 1
+    ordered_current_sets: list[str] = []
+    if plan is not None:
+        for requirement in plan.requirements:
+            for set_name in requirement.set_names:
+                if set_name in current_set_counts and set_name not in ordered_current_sets:
+                    ordered_current_sets.append(set_name)
+    ordered_current_sets.extend(
+        set_name
+        for set_name in sorted(current_set_counts)
+        if set_name not in ordered_current_sets
+    )
+    if ordered_current_sets:
+        current_detail += "；当前套装 " + " + ".join(
+            f"{set_name}{current_set_counts[set_name]}"
+            for set_name in ordered_current_sets
+        )
+
+    if plan is not None and not plan.is_unrestricted:
+        plan_name = " + ".join(
+            f"{'/'.join(requirement.set_names)} {requirement.pieces}"
+            for requirement in plan.requirements
+        )
+    else:
+        plan_name = "完整搭配"
+    pool_detail = (
+        f"代理人盘池已可形成 {plan_name}"
+        if current_value
+        else f"代理人盘池尚不能形成 {plan_name}"
+    )
+    return f"{target.name}：{current_detail}；{pool_detail}"
 
 
 def _upgrade_piece_distribution(
@@ -298,13 +392,13 @@ def _joint_quality_distribution(
     distribution: defaultdict[tuple[tuple[float, tuple[float, ...]], ...], float] = defaultdict(float)
     for count_text, count_probability in probability_model.initial_substat_count_probabilities.items():
         initial_count = int(count_text)
-        initial_states = _initial_roll_states(
+        initial_states = initial_roll_states(
             game,
             main_stat,
             initial_count,
             required_substats,
         )
-        final_states = _advance_roll_states(game, main_stat, initial_states, initial_count)
+        final_states = advance_roll_states(game, main_stat, initial_states, initial_count)
         for state, probability in final_states.items():
             quality_key = tuple(
                 quality_from_roll_state(state, target.character)
@@ -382,12 +476,6 @@ def _portfolio_quality_row_distribution(
                     )
                     distribution.append((rows_by_agent, audit_piece, probability))
     return distribution
-
-
-def _row_enters_best_loadout(row: dict, inventory: list[dict], game: GameRules, character: CharacterPreset) -> bool:
-    signature = _inventory_row_signature(row)
-    combo = _best_combo_rows(inventory, game, character)
-    return any(_inventory_row_signature(combo_row) == signature for combo_row in combo)
 
 
 def _portfolio_value_row_signature(row: dict) -> tuple:
@@ -574,7 +662,11 @@ def _target_gain_for_outcome(
     outcome_piece: GearPiece,
     value_cache: dict[tuple[str, tuple[tuple, ...]], tuple[float, ...]] | None = None,
 ) -> tuple[float, tuple[float, ...], bool]:
-    if not current_value:
+    if not _outcome_matches_target_main(
+        target,
+        outcome_piece.position,
+        outcome_piece.main_stat,
+    ):
         return 0.0, tuple(), False
     if spec.upgrade_inventory_id:
         original = next(
@@ -614,10 +706,10 @@ def _target_gain_for_outcome(
     if value_cache is not None and cache_key in value_cache:
         next_value = value_cache[cache_key]
     else:
-        next_value = _cached_best_combo_value(next_inventory, game, target.character)
+        next_value = _portfolio_best_loadout_value(next_inventory, game, target.character)
         if value_cache is not None:
             value_cache[cache_key] = next_value
-    gain_vector = _positive_gain(next_value, current_value)
+    gain_vector = _portfolio_positive_gain(next_value, current_value)
     scalar_gain = _portfolio_delta_scalar(gain_vector)
     enters_best = scalar_gain > _EPSILON
     return scalar_gain, gain_vector, enters_best
@@ -631,7 +723,11 @@ def _target_gain_for_outcome_row(
     outcome_row: dict,
     value_cache: dict[tuple[str, tuple[tuple, ...]], tuple[float, ...]] | None = None,
 ) -> tuple[float, tuple[float, ...], bool]:
-    if not current_value:
+    if not _outcome_matches_target_main(
+        target,
+        outcome_row["position"],
+        str(outcome_row["main_stat"]),
+    ):
         return 0.0, tuple(), False
     next_state = state.with_candidate_row(outcome_row, game, target.character)
     if next_state.signature == state.signature:
@@ -642,10 +738,10 @@ def _target_gain_for_outcome_row(
     if value_cache is not None and cache_key in value_cache:
         next_value = value_cache[cache_key]
     else:
-        next_value = _cached_best_combo_value(next_inventory, game, target.character)
+        next_value = _portfolio_best_loadout_value(next_inventory, game, target.character)
         if value_cache is not None:
             value_cache[cache_key] = next_value
-    gain_vector = _positive_gain(next_value, current_value)
+    gain_vector = _portfolio_positive_gain(next_value, current_value)
     scalar_gain = _portfolio_delta_scalar(gain_vector)
     return scalar_gain, gain_vector, scalar_gain > _EPSILON
 
@@ -665,6 +761,30 @@ def _entered_best_loadout_summary(gains: list[PortfolioGain]) -> str:
     return "；".join(parts) if parts else "无 outcome 进入任一代理人更优搭配"
 
 
+def _completion_path_summary(gains: Sequence[PortfolioGain]) -> str:
+    parts: list[str] = []
+    for gain in gains:
+        pool_probability = gain.completion_probability
+        direct_probability = gain.direct_completion_probability
+        if pool_probability <= _EPSILON and direct_probability <= _EPSILON:
+            continue
+        if direct_probability >= pool_probability - _EPSILON:
+            parts.append(f"{gain.name}：{direct_probability:.1%} 可直接补当前盘面成型")
+            continue
+        if direct_probability > _EPSILON:
+            reconfigure_probability = max(pool_probability - direct_probability, 0.0)
+            parts.append(
+                f"{gain.name}：直装成型 {direct_probability:.1%}；"
+                f"另有 {reconfigure_probability:.1%} 需背包重配"
+            )
+            continue
+        parts.append(
+            f"{gain.name}：盘池成型 {pool_probability:.1%}，"
+            "但不能直接接入当前盘面，需背包重配"
+        )
+    return "；".join(parts) if parts else "-"
+
+
 def portfolio_action_rows(
     game: GameRules,
     probability_model: ProbabilityModel,
@@ -674,13 +794,12 @@ def portfolio_action_rows(
     *,
     mode: PortfolioMode = PortfolioMode.ANY_USEFUL,
     horizon: int = 1,
-    action_scope: PortfolioActionScope = "tuning",
+    action_scope: PortfolioActionScope | str = PortfolioActionScope.TUNING,
     should_cancel: Callable[[], bool] | None = None,
 ) -> list[PortfolioActionRow]:
     if horizon != 1:
         raise ValueError("Portfolio/BOX EV Phase 1 only supports horizon=1")
-    if action_scope not in {"tuning", "upgrade", "all"}:
-        raise ValueError("action_scope must be one of: tuning, upgrade, all")
+    action_scope = normalize_portfolio_action_scope(action_scope)
     if not targets:
         return []
 
@@ -689,9 +808,15 @@ def portfolio_action_rows(
             raise PortfolioAuditCancelled("Portfolio/BOX audit cancelled")
 
     inventory_pieces = inventory_pieces or []
+    current_pieces_by_agent = {
+        target.agent_id: list(
+            target.current_pieces if target.current_pieces is not None else current_pieces
+        )
+        for target in targets
+    }
     rows_by_agent = {
         target.agent_id: _target_rows_for_pool(
-            target.current_pieces if target.current_pieces is not None else current_pieces,
+            current_pieces_by_agent[target.agent_id],
             inventory_pieces,
             game,
             target.character,
@@ -706,11 +831,45 @@ def portfolio_action_rows(
         )
         for target in targets
     }
+    direct_rows_by_agent = {
+        target.agent_id: _target_rows_for_pool(
+            current_pieces_by_agent[target.agent_id],
+            [],
+            game,
+            target.character,
+        )
+        for target in targets
+    }
+    direct_states_by_agent = {
+        target.agent_id: EvState.from_rows(
+            direct_rows_by_agent[target.agent_id],
+            game,
+            target.character,
+        )
+        for target in targets
+    }
     current_values = {
-        target.agent_id: _cached_best_combo_value(
+        target.agent_id: _portfolio_best_loadout_value(
             rows_by_agent[target.agent_id],
             game,
             target.character,
+        )
+        for target in targets
+    }
+    direct_current_values = {
+        target.agent_id: _portfolio_best_loadout_value(
+            direct_rows_by_agent[target.agent_id],
+            game,
+            target.character,
+        )
+        for target in targets
+    }
+    baseline_details = {
+        target.agent_id: _target_baseline_detail(
+            target,
+            current_pieces_by_agent[target.agent_id],
+            current_values[target.agent_id],
+            game,
         )
         for target in targets
     }
@@ -726,6 +885,16 @@ def portfolio_action_rows(
         (target.character.id, _portfolio_value_signature(rows_by_agent[target.agent_id])): current_values[target.agent_id]
         for target in targets
     }
+    value_cache.update(
+        {
+            (
+                target.character.id,
+                _portfolio_value_signature(direct_rows_by_agent[target.agent_id]),
+            ): direct_current_values[target.agent_id]
+            for target in targets
+        }
+    )
+    direct_completion_cache: dict[tuple[str, str, str, str], bool] = {}
 
     result_rows: list[PortfolioActionRow] = []
     for spec in specs:
@@ -750,6 +919,10 @@ def portfolio_action_rows(
         expected_delta_by_agent: dict[str, list[float]] = {target.agent_id: [] for target in targets}
         useful_probability_by_agent = {target.agent_id: 0.0 for target in targets}
         entered_probability_by_agent = {target.agent_id: 0.0 for target in targets}
+        completion_probability_by_agent = {target.agent_id: 0.0 for target in targets}
+        direct_completion_probability_by_agent = {
+            target.agent_id: 0.0 for target in targets
+        }
         build_probability_by_agent = {target.agent_id: 0.0 for target in targets}
         build_gain_by_agent = {target.agent_id: 0.0 for target in targets}
         detail_buckets = {
@@ -762,6 +935,8 @@ def portfolio_action_rows(
             for target in targets
         }
         useful_probability = 0.0
+        completion_probability = 0.0
+        direct_completion_probability = 0.0
         build_progress_probability = 0.0
         build_progress_gain = 0.0
         portfolio_ev = 0.0
@@ -775,6 +950,8 @@ def portfolio_action_rows(
                 outcome_piece, probability = outcome
                 outcome_rows_by_agent = {}
             gains: list[tuple[PortfolioTarget, float]] = []
+            completion_hits: list[bool] = []
+            direct_completion_hits: list[bool] = []
             build_hits: list[bool] = []
             for target in targets:
                 outcome_row = outcome_rows_by_agent.get(target.agent_id)
@@ -799,6 +976,46 @@ def portfolio_action_rows(
                         value_cache,
                     )
                 gains.append((target, gain))
+                completion_hit = not current_values[target.agent_id] and gain > _EPSILON
+                completion_hits.append(completion_hit)
+                if completion_hit:
+                    completion_probability_by_agent[target.agent_id] += probability
+                direct_completion_hit = False
+                if (
+                    gain > _EPSILON
+                    and not direct_current_values[target.agent_id]
+                    and not spec.upgrade_inventory_id
+                ):
+                    direct_key = (
+                        target.agent_id,
+                        position_key(outcome_piece.position),
+                        outcome_piece.set_name,
+                        outcome_piece.main_stat,
+                    )
+                    if direct_key not in direct_completion_cache:
+                        direct_outcome_row = outcome_row
+                        if direct_outcome_row is None:
+                            direct_outcome_row = _candidate_inventory_row(
+                                outcome_piece,
+                                game,
+                                target.character,
+                                source="outcome",
+                            )
+                        direct_gain, _direct_vector, _direct_enters = (
+                            _target_gain_for_outcome_row(
+                                direct_states_by_agent[target.agent_id],
+                                direct_current_values[target.agent_id],
+                                target,
+                                game,
+                                direct_outcome_row,
+                                value_cache,
+                            )
+                        )
+                        direct_completion_cache[direct_key] = direct_gain > _EPSILON
+                    direct_completion_hit = direct_completion_cache[direct_key]
+                direct_completion_hits.append(direct_completion_hit)
+                if direct_completion_hit:
+                    direct_completion_probability_by_agent[target.agent_id] += probability
                 expected_delta_by_agent[target.agent_id] = _add_delta_vectors(
                     expected_delta_by_agent[target.agent_id],
                     gain_vector,
@@ -834,6 +1051,10 @@ def portfolio_action_rows(
             portfolio_ev += probability * outcome_portfolio_gain
             if any(gain > _EPSILON for _target, gain in gains):
                 useful_probability += probability
+            if any(completion_hits):
+                completion_probability += probability
+            if any(direct_completion_hits):
+                direct_completion_probability += probability
             if any(build_hits):
                 build_progress_probability += probability
                 build_progress_gain += probability
@@ -853,6 +1074,16 @@ def portfolio_action_rows(
                 ],
                 entered_best_loadout_probability=round(
                     entered_probability_by_agent[target.agent_id],
+                    6,
+                ),
+                baseline_complete=bool(current_values[target.agent_id]),
+                baseline_detail=baseline_details[target.agent_id],
+                completion_probability=round(
+                    completion_probability_by_agent[target.agent_id],
+                    6,
+                ),
+                direct_completion_probability=round(
+                    direct_completion_probability_by_agent[target.agent_id],
                     6,
                 ),
                 build_progress_probability=round(
@@ -877,6 +1108,7 @@ def portfolio_action_rows(
             key=lambda gain: (gain.expected_gain * gain.weight, gain.expected_gain),
             default=None,
         )
+        completion_path_detail = _completion_path_summary(portfolio_gains)
         mother_cost, tuner_cost, core_cost = _action_costs(spec, probability_model)
         ev_per_mother = portfolio_ev / mother_cost if mother_cost > 0 else portfolio_ev
         result_rows.append(
@@ -892,17 +1124,26 @@ def portfolio_action_rows(
                 portfolio_ev=round(portfolio_ev, 6),
                 ev_per_mother=round(ev_per_mother, 6),
                 useful_probability=round(useful_probability, 6),
+                completion_probability=round(completion_probability, 6),
+                direct_completion_probability=round(
+                    direct_completion_probability,
+                    6,
+                ),
                 best_beneficiary_agent=best_beneficiary.name if best_beneficiary else "",
                 beneficiary_count=len(beneficiary_gains),
                 target_gains=portfolio_gains,
                 mode_note=mode.note
                 + " BOX 主 EV 使用 outcome 加入代理人盘池后 best_loadout_value 的正 delta 聚合；"
-                + "建设审计单独展示，不参与主 EV 排序。"
+                + "主收益同分时优先当前盘面可直装成型；建设审计单独展示，不参与主 EV 排序。"
                 + " Phase 1：仅 H=1，不做同队装备互斥精确分配。",
                 mother_cost=mother_cost,
                 tuner_cost=tuner_cost,
                 core_cost=core_cost,
                 entered_best_loadout_summary=_entered_best_loadout_summary(portfolio_gains),
+                baseline_summary=_summarize_details(
+                    gain.baseline_detail for gain in portfolio_gains
+                ),
+                completion_path_detail=completion_path_detail,
                 build_progress_probability=round(build_progress_probability, 6),
                 build_progress_gain=round(build_progress_gain, 6),
                 set_progress_detail=_summarize_details(
@@ -925,6 +1166,7 @@ def portfolio_action_rows(
         key=lambda row: (
             row.ev_per_mother,
             row.portfolio_ev,
+            row.direct_completion_probability,
             row.useful_probability,
             max(
                 (gain.entered_best_loadout_probability for gain in row.target_gains),
@@ -951,7 +1193,7 @@ def _expected_upgrade_piece_gain(
     piece_row["_piece"] = piece
     distribution = _upgrade_piece_distribution(piece_row, game)
     if not distribution:
-        next_value = _cached_best_combo_value([*rows, piece_row], game, character)
+        next_value = _portfolio_best_loadout_value([*rows, piece_row], game, character)
         gain_vector = _positive_gain(next_value, current_value)
         return _portfolio_delta_scalar(gain_vector), gain_vector
 
@@ -961,7 +1203,7 @@ def _expected_upgrade_piece_gain(
         upgraded_row = _candidate_inventory_row(upgraded_piece, game, character, source="outcome")
         upgraded_row["_inventory_id"] = "box_check_piece"
         upgraded_row["_piece"] = upgraded_piece
-        next_value = _cached_best_combo_value([*rows, upgraded_row], game, character)
+        next_value = _portfolio_best_loadout_value([*rows, upgraded_row], game, character)
         gain_vector = _positive_gain(next_value, current_value)
         expected_scalar += probability * _portfolio_delta_scalar(gain_vector)
         expected_vector = _add_delta_vectors(expected_vector, gain_vector, probability)
@@ -981,11 +1223,11 @@ def portfolio_piece_check_rows(
     rows: list[PortfolioPieceCheckRow] = []
     for target in targets:
         inventory_rows = _target_rows(all_pieces, game, target.character, current_count)
-        current_value = _cached_best_combo_value(inventory_rows, game, target.character)
+        current_value = _portfolio_best_loadout_value(inventory_rows, game, target.character)
         piece_row = _candidate_inventory_row(piece, game, target.character, source="outcome")
         piece_row["_inventory_id"] = "box_check_piece"
         piece_row["_piece"] = piece
-        immediate_value = _cached_best_combo_value(
+        immediate_value = _portfolio_best_loadout_value(
             [*inventory_rows, piece_row],
             game,
             target.character,

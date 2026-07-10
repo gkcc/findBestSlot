@@ -7,12 +7,10 @@ from gear_optimizer.models import (
     CharacterPreset,
     CurrentGearAnalysis,
     GameRules,
-    GearPiece,
     ProbabilityModel,
     StrategyRow,
     position_key,
 )
-from gear_optimizer.probability import probability_required_substats
 
 MAIN_STAT_MISMATCH_FIXED_MAIN_BONUS = 30.0
 MAIN_STAT_MISMATCH_POSITION_BONUS = 12.0
@@ -65,36 +63,6 @@ def _fixed_substat_display_label(detail: dict[str, Any]) -> str:
     return f"有效#{rank}" if rank else "有效"
 
 
-def _expected(cost_per_attempt: float, probability: float) -> float:
-    if probability <= 0:
-        return inf
-    return cost_per_attempt / probability
-
-
-def _candidate_probability(
-    game: GameRules,
-    probability_model: ProbabilityModel,
-    target_position: str | int,
-    target_main_stat: str,
-    fixed_position: bool,
-    fixed_main_stat: bool,
-    fixed_substats: list[str],
-) -> float:
-    breakdown = _probability_breakdown(
-        game,
-        probability_model,
-        target_position,
-        target_main_stat,
-        fixed_position,
-        fixed_main_stat,
-        fixed_substats,
-    )
-    probability = 1.0
-    for value in breakdown.values():
-        probability *= value
-    return probability
-
-
 def _probability_breakdown(
     game: GameRules,
     probability_model: ProbabilityModel,
@@ -132,24 +100,6 @@ def _probability_breakdown(
         "main_stat": main_stat_probability,
         "substats": substat_probability,
     }
-
-
-def _initial_substat_probability(
-    game: GameRules,
-    probability_model: ProbabilityModel,
-    target_main_stat: str,
-    fixed_substats: list[str],
-) -> float:
-    available = game.available_substats(target_main_stat)
-    probability = 0.0
-    for count, count_probability in probability_model.initial_substat_count_probabilities.items():
-        probability += count_probability * probability_required_substats(
-            fixed_substats,
-            available,
-            game.sub_stat_probabilities,
-            draw_count=int(count),
-        )
-    return probability
 
 
 def _long_term_score(

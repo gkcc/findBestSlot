@@ -7,7 +7,8 @@ from pathlib import Path
 import shutil
 from typing import Any
 
-from gear_optimizer.game_rules import PROJECT_ROOT, load_characters, load_game, load_probability_models
+from gear_optimizer.game_rules import load_characters, load_game, load_probability_models
+from gear_optimizer.project_paths import PROJECT_ROOT
 from gear_optimizer.position_ev import (
     best_loadout_value,
     fixed_main_gain_ladder_rows,

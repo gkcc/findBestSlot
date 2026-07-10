@@ -8,13 +8,14 @@ import sys
 import tomllib
 
 from gear_optimizer.game_rules import (
-    PROJECT_ROOT,
     load_characters,
     load_games,
     load_probability_models,
 )
 from gear_optimizer.launcher import has_desktop_runtime
 from gear_optimizer.presets import list_candidate_examples, list_current_examples
+from gear_optimizer.project_paths import PROJECT_ROOT
+from gear_optimizer.runtime_logging import runtime_log_path
 
 REQUIRED_PYTHON = (3, 11)
 REQUIRED_RUNTIME_DEPENDENCIES = [
@@ -219,6 +220,7 @@ def _set_icon_rows() -> list[dict[str, str]]:
 
 
 def resource_check_rows() -> list[dict[str, str]]:
+    log_path = runtime_log_path()
     rows = [
         *_runtime_dependency_rows(),
         _path_row("project root", PROJECT_ROOT),
@@ -235,6 +237,15 @@ def resource_check_rows() -> list[dict[str, str]]:
         _path_row("acceptance report script", PROJECT_ROOT / "scripts" / "acceptance_report.ps1"),
         _path_row("Windows packaging script", PROJECT_ROOT / "scripts" / "build_windows_app.ps1"),
         _path_row("release gate script", PROJECT_ROOT / "scripts" / "release_gate.ps1"),
+        {
+            "item": "runtime event log",
+            "status": "ok" if log_path.exists() else "notice",
+            "detail": (
+                f"{log_path} ({log_path.stat().st_size} bytes)"
+                if log_path.exists()
+                else f"created on first desktop event: {log_path}"
+            ),
+        },
         _load_row("games", load_games),
         _load_row("characters", load_characters),
         _load_row("probability models", load_probability_models),

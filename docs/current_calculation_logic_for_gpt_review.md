@@ -105,7 +105,7 @@
 - `_best_combo_value`（value-only DP 路径）
 - `_cached_best_combo_value`
 
-`_candidate_combos` 目前只保留为兼容/测试参考入口，不再执行完整笛卡尔积枚举。
+旧 `_candidate_combos` 兼容包装已移除；笛卡尔积参考实现只保留在小库存等价测试中，不进入生产路径。
 
 流程：
 

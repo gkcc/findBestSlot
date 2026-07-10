@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 import xml.etree.ElementTree as ET
 
-from gear_optimizer.game_rules import PROJECT_ROOT
+from gear_optimizer.project_paths import PROJECT_ROOT
 from gear_optimizer.release_manifest import _manifest_exe_path, manifest_checks_pass, verify_manifest
 
 DEFAULT_ACCEPTANCE_CHECKS = PROJECT_ROOT / "reports" / "acceptance_checks.json"
@@ -70,7 +70,7 @@ def _acceptance_rows(path: Path) -> list[dict[str, str]]:
 
     try:
         data = _read_json(path)
-    except Exception as exc:
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         return [
             {
                 "item": "acceptance checks",
@@ -122,7 +122,7 @@ def _source_app_smoke_rows(path: Path) -> list[dict[str, str]]:
 
     try:
         data = _read_json(path)
-    except Exception as exc:
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         return [
             {
                 "item": "source app smoke",
@@ -237,7 +237,7 @@ def _pytest_rows(path: Path) -> list[dict[str, str]]:
 
     try:
         root = ET.parse(path).getroot()
-    except Exception as exc:
+    except (OSError, UnicodeError, ET.ParseError) as exc:
         return [
             {
                 "item": "pytest report",

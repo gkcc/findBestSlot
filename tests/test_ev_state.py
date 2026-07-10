@@ -17,7 +17,6 @@ from gear_optimizer.scoring import analyse_current_gear
 from gear_optimizer.position_ev import (
     ActionSpec,
     EvState,
-    best_loadout_rows,
     best_loadout_value,
     compare_action_ev_engines,
     configured_action_ev_workers,

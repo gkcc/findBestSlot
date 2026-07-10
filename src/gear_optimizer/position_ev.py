@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import Counter, OrderedDict, defaultdict
 from collections.abc import Callable, Sequence
+from copy import deepcopy
 from contextlib import contextmanager
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from contextvars import ContextVar
@@ -10,13 +11,40 @@ from itertools import combinations
 import json
 from math import inf, isfinite
 import os
+from threading import RLock
 import time
 from typing import Any
 
+from gear_optimizer.action_ev_protocol import (
+    ActionEvConditionBranch,
+    ActionEvPlanExplanation,
+    ActionEvRowPayload,
+)
+from gear_optimizer.action_types import (
+    ACTION_EV_EXACT_MODE,
+    ACTION_EV_FAST_MODE as ACTION_EV_FAST_MODE,
+    ACTION_EV_MODES as ACTION_EV_MODES,
+    DEFAULT_ACTION_EV_MODE,
+    LOOKAHEAD_SCOPE_EXACT,
+    LOOKAHEAD_SCOPE_TUNING_STATIC,
+    ActionEvLookaheadScope,
+    normalize_action_ev_lookahead_scope,
+    normalize_action_ev_mode,
+)
 from gear_optimizer.models import CharacterPreset, CurrentGearAnalysis, GameRules, GearPiece, ProbabilityModel, position_key
-from gear_optimizer.piece_distribution import fresh_piece_quality_distribution
+from gear_optimizer.piece_distribution import (
+    advance_roll_states,
+    fresh_piece_quality_distribution,
+    initial_roll_states,
+    quality_from_roll_state,
+)
 from gear_optimizer.probability import normalise_weights
 from gear_optimizer.scoring import score_piece, score_quality_sort_key, substat_quality_vector
+from gear_optimizer.set_plan_solver import set_plan_satisfied_by_counts
+
+_initial_roll_states = initial_roll_states
+_advance_roll_states = advance_roll_states
+_quality_from_roll_state = quality_from_roll_state
 
 ACTION_EV_ROWS_CACHE_MAX_SIZE = 32
 RESOURCE_MARGINAL_EV_ROWS_CACHE_MAX_SIZE = 32
@@ -24,11 +52,15 @@ BEST_COMBO_VALUE_CACHE_MAX_SIZE = 5000
 AGGREGATED_ACTION_OUTCOME_CACHE_MAX_SIZE = 1000
 STATE_TRANSITION_CACHE_MAX_SIZE = 5000
 
-_ACTION_EV_ROWS_CACHE: OrderedDict[str, list[dict[str, float | str]]] = OrderedDict()
-_RESOURCE_MARGINAL_EV_ROWS_CACHE: OrderedDict[str, list[dict[str, float | str]]] = OrderedDict()
+_ACTION_EV_ROWS_CACHE: OrderedDict[str, list[ActionEvRowPayload]] = OrderedDict()
+_RESOURCE_MARGINAL_EV_ROWS_CACHE: OrderedDict[str, list[dict[str, Any]]] = OrderedDict()
 _BEST_COMBO_VALUE_CACHE: OrderedDict[tuple, tuple[float, ...]] = OrderedDict()
-_AGGREGATED_ACTION_OUTCOME_CACHE: OrderedDict[tuple, list[tuple[list[dict], float]]] = OrderedDict()
-_STATE_TRANSITION_CACHE: OrderedDict[tuple, list[tuple[EvState, float]]] = OrderedDict()
+_AGGREGATED_ACTION_OUTCOME_CACHE: OrderedDict[
+    tuple,
+    tuple[tuple[tuple[dict[str, Any], ...], float], ...],
+] = OrderedDict()
+_STATE_TRANSITION_CACHE: OrderedDict[tuple, tuple[tuple[EvState, float], ...]] = OrderedDict()
+_ACTION_EV_CACHE_LOCK = RLock()
 _VECTOR_EPSILON = 1e-9
 _DISPLAY_EPSILON = 0.0005
 _SOURCE_CURRENT = "current"
@@ -37,12 +69,6 @@ _SOURCE_OUTCOME = "outcome"
 _MIXED_RANDOM_LOADOUT_LABEL = "混合结果，不存在唯一典型搭配"
 _REPRESENTATIVE_PATH_NOTE = "代表路径仅用于审计；真实 H=2 EV 已对所有 outcome 加权。"
 ProgressCallback = Callable[[dict[str, object]], None]
-ACTION_EV_FAST_MODE = "fast"
-ACTION_EV_EXACT_MODE = "exact"
-DEFAULT_ACTION_EV_MODE = ACTION_EV_FAST_MODE
-ACTION_EV_MODES = {ACTION_EV_FAST_MODE, ACTION_EV_EXACT_MODE}
-LOOKAHEAD_SCOPE_EXACT = "exact"
-LOOKAHEAD_SCOPE_TUNING_STATIC = "tuning_static"
 H2_STATIC_RESOURCE_AUDIT_TOP_N = 3
 
 
@@ -188,39 +214,60 @@ def _audit_phase(phase: str, **details: object):
         audit.record_phase(phase, time.monotonic() - started_at, details)
 
 
-def normalize_action_ev_mode(value: object | None) -> str:
-    mode = str(value or DEFAULT_ACTION_EV_MODE).strip().lower()
-    if not mode:
-        mode = DEFAULT_ACTION_EV_MODE
-    aliases = {
-        "quick": ACTION_EV_FAST_MODE,
-        "fast": ACTION_EV_FAST_MODE,
-        "default": ACTION_EV_FAST_MODE,
-        "deep": ACTION_EV_EXACT_MODE,
-        "full": ACTION_EV_EXACT_MODE,
-        "exact": ACTION_EV_EXACT_MODE,
-    }
-    mode = aliases.get(mode, mode)
-    if mode not in ACTION_EV_MODES:
-        allowed = ", ".join(sorted(ACTION_EV_MODES))
-        raise ValueError(f"Unknown Action EV mode: {mode}. Available: {allowed}")
-    return mode
-
-
 def _lru_get(cache: OrderedDict, key: object) -> object | None:
-    try:
-        value = cache[key]
-    except KeyError:
-        return None
-    cache.move_to_end(key)
-    return value
+    with _ACTION_EV_CACHE_LOCK:
+        try:
+            value = cache[key]
+        except KeyError:
+            return None
+        cache.move_to_end(key)
+        return value
 
 
 def _lru_set(cache: OrderedDict, key: object, value: object, max_size: int) -> None:
-    cache[key] = value
-    cache.move_to_end(key)
-    while len(cache) > max_size:
-        cache.popitem(last=False)
+    with _ACTION_EV_CACHE_LOCK:
+        cache[key] = value
+        cache.move_to_end(key)
+        while len(cache) > max_size:
+            cache.popitem(last=False)
+
+
+# Large inner-DP values stay cache-owned. Hot-path callers borrow them read-only;
+# ordinary callers receive defensive copies so mutations cannot poison later runs.
+def _cache_owned_inventory_outcomes(
+    outcomes: Sequence[tuple[Sequence[dict[str, Any]], float]],
+) -> tuple[tuple[tuple[dict[str, Any], ...], float], ...]:
+    copied = deepcopy(outcomes)
+    return tuple((tuple(inventory), float(probability)) for inventory, probability in copied)
+
+
+def _copy_inventory_outcomes_for_caller(
+    outcomes: Sequence[tuple[Sequence[dict[str, Any]], float]],
+) -> list[tuple[list[dict[str, Any]], float]]:
+    copied = deepcopy(outcomes)
+    return [(list(inventory), float(probability)) for inventory, probability in copied]
+
+
+def action_ev_cache_sizes() -> dict[str, int]:
+    with _ACTION_EV_CACHE_LOCK:
+        return {
+            "action_ev_rows": len(_ACTION_EV_ROWS_CACHE),
+            "resource_marginal_ev_rows": len(_RESOURCE_MARGINAL_EV_ROWS_CACHE),
+            "best_combo_value": len(_BEST_COMBO_VALUE_CACHE),
+            "aggregated_action_outcome": len(_AGGREGATED_ACTION_OUTCOME_CACHE),
+            "state_transition": len(_STATE_TRANSITION_CACHE),
+        }
+
+
+def clear_action_ev_caches() -> dict[str, int]:
+    with _ACTION_EV_CACHE_LOCK:
+        previous_sizes = action_ev_cache_sizes()
+        _ACTION_EV_ROWS_CACHE.clear()
+        _RESOURCE_MARGINAL_EV_ROWS_CACHE.clear()
+        _BEST_COMBO_VALUE_CACHE.clear()
+        _AGGREGATED_ACTION_OUTCOME_CACHE.clear()
+        _STATE_TRANSITION_CACHE.clear()
+        return previous_sizes
 
 
 @dataclass(frozen=True)
@@ -241,6 +288,15 @@ class ParallelActionValueResult:
     value: tuple[float, ...] = ()
     seconds: float = 0.0
     error: str | None = None
+
+
+@dataclass(frozen=True)
+class InventorySetCompletionCandidate:
+    inventory_index: int
+    position: str | int
+    set_name: str
+    value: tuple[float, ...]
+    loadout_rows: tuple[dict[str, Any], ...]
 
 
 def _emit_progress(
@@ -323,67 +379,6 @@ def _initial_stat_states(
     return states
 
 
-def _initial_roll_states(
-    game: GameRules,
-    main_stat: str,
-    line_count: int,
-    required_substats: tuple[str, ...] = (),
-) -> dict[tuple[tuple[str, int], ...], float]:
-    required = _canonical_stats(game, tuple(dict.fromkeys(required_substats)))
-    available_required = set(game.available_substats(main_stat))
-    if any(stat not in available_required for stat in required) or len(required) > line_count:
-        return {}
-
-    states: dict[tuple[tuple[str, int], ...], float] = {
-        _canonical_roll_state(game, tuple((stat, 0) for stat in required)): 1.0
-    }
-    for _ in range(line_count - len(required)):
-        next_states: defaultdict[tuple[tuple[str, int], ...], float] = defaultdict(float)
-        for selected, probability in states.items():
-            selected_stats = [stat for stat, _rolls in selected]
-            available = game.available_substats(main_stat, selected_stats)
-            for stat, draw_probability in _weighted_draws(available, game.sub_stat_probabilities):
-                next_state = _canonical_roll_state(game, tuple([*selected, (stat, 0)]))
-                next_states[next_state] += probability * draw_probability
-        states = dict(next_states)
-    return states
-
-
-def _advance_roll_states(
-    game: GameRules,
-    main_stat: str,
-    states: dict[tuple[tuple[str, int], ...], float],
-    initial_count: int,
-) -> dict[tuple[tuple[str, int], ...], float]:
-    roll_states = dict(states)
-    for index, _level in enumerate(game.enhancement.event_levels):
-        next_states: defaultdict[tuple[tuple[str, int], ...], float] = defaultdict(float)
-        is_add_event = initial_count == 3 and index == 0
-        for selected, probability in roll_states.items():
-            if is_add_event:
-                selected_stats = [stat for stat, _rolls in selected]
-                draws = _weighted_draws(
-                    game.available_substats(main_stat, selected_stats),
-                    game.sub_stat_probabilities,
-                )
-                if not draws:
-                    next_states[selected] += probability
-                    continue
-                for stat, draw_probability in draws:
-                    next_state = _canonical_roll_state(game, tuple([*selected, (stat, 0)]))
-                    next_states[next_state] += probability * draw_probability
-                continue
-            if not selected:
-                next_states[selected] += probability
-                continue
-            for stat_index, (stat, rolls) in enumerate(selected):
-                updated = list(selected)
-                updated[stat_index] = (stat, rolls + 1)
-                next_states[_canonical_roll_state(game, tuple(updated))] += probability / len(selected)
-        roll_states = dict(next_states)
-    return roll_states
-
-
 def _fresh_piece_outcome_distribution(
     game: GameRules,
     position: str | int,
@@ -428,29 +423,10 @@ def _fresh_piece_outcome_distribution(
 
 def _set_plan_satisfied(combo: tuple[dict, ...], character: CharacterPreset) -> bool:
     plan = character.active_set_plan()
-    if plan is None or plan.is_unrestricted:
-        return True
     counts: defaultdict[str, int] = defaultdict(int)
     for piece in combo:
         counts[piece["set_name"]] += 1
-
-    requirements = list(plan.requirements)
-
-    def can_satisfy(index: int) -> bool:
-        if index >= len(requirements):
-            return True
-        requirement = requirements[index]
-        for set_name in requirement.set_names:
-            if counts[set_name] < requirement.pieces:
-                continue
-            counts[set_name] -= requirement.pieces
-            if can_satisfy(index + 1):
-                counts[set_name] += requirement.pieces
-                return True
-            counts[set_name] += requirement.pieces
-        return False
-
-    return can_satisfy(0)
+    return set_plan_satisfied_by_counts(plan, counts)
 
 
 def _set_plan_assignment(
@@ -501,12 +477,6 @@ def _zero_vector(character: CharacterPreset) -> tuple[float, ...]:
     if priority is None:
         return tuple(0.0 for _ in range(1 + len(character.priority_stats())))
     return tuple(0.0 for _ in range(2 + len(priority.core) + len(priority.usable)))
-
-
-def _sum_vectors(vectors: list[tuple[float, ...]]) -> tuple[float, ...]:
-    if not vectors:
-        return ()
-    return tuple(sum(vector[index] for vector in vectors) for index in range(len(vectors[0])))
 
 
 def _current_inventory_rows(
@@ -863,29 +833,6 @@ class EvState:
         return self if next_state.signature == self.signature else next_state
 
 
-def _quality_from_roll_state(
-    state: tuple[tuple[str, int], ...],
-    character: CharacterPreset,
-) -> tuple[float, tuple[float, ...]]:
-    counts = {stat: 0.0 for stat in character.priority_stats()}
-    for stat, rolls in state:
-        if stat in counts:
-            counts[stat] += 1 + rolls
-    priority = character.substat_priority
-    if priority is None:
-        total = sum(counts.values())
-        return total, (total, *[counts[stat] for stat in character.priority_stats()])
-    core_total = sum(counts[stat] for stat in priority.core)
-    usable_total = sum(counts[stat] for stat in priority.usable)
-    total = core_total + usable_total
-    return total, (
-        core_total,
-        *[counts[stat] for stat in priority.core],
-        usable_total,
-        *[counts[stat] for stat in priority.usable],
-    )
-
-
 def _fresh_candidate_row_distribution(
     game: GameRules,
     character: CharacterPreset,
@@ -949,10 +896,25 @@ def _row_value(row: dict, character: CharacterPreset) -> tuple[float, ...]:
 
 
 def _combo_value(combo: tuple[dict, ...], character: CharacterPreset) -> tuple[float, ...]:
-    value = tuple(0.0 for _ in _row_value({"main_preferred": False, "quality_vector": _zero_vector(character), "effective_rolls": 0.0, "quality_score": 0.0}, character))
+    value = _zero_loadout_value(character)
     for row in combo:
         value = _add_vectors(value, _row_value(row, character))
     return value
+
+
+def _zero_loadout_value(character: CharacterPreset) -> tuple[float, ...]:
+    return tuple(
+        0.0
+        for _ in _row_value(
+            {
+                "main_preferred": False,
+                "quality_vector": _zero_vector(character),
+                "effective_rolls": 0.0,
+                "quality_score": 0.0,
+            },
+            character,
+        )
+    )
 
 
 def _is_upgrade_source(row: dict, game: GameRules) -> bool:
@@ -1016,27 +978,8 @@ def _count_state_satisfies_plan(
     character: CharacterPreset,
 ) -> bool:
     plan = character.active_set_plan()
-    if plan is None or plan.is_unrestricted:
-        return True
-
     counts = {set_name: state[index] for index, set_name in enumerate(set_names)}
-    requirements = list(plan.requirements)
-
-    def can_satisfy(index: int) -> bool:
-        if index >= len(requirements):
-            return True
-        requirement = requirements[index]
-        for set_name in requirement.set_names:
-            if counts.get(set_name, 0) < requirement.pieces:
-                continue
-            counts[set_name] -= requirement.pieces
-            if can_satisfy(index + 1):
-                counts[set_name] += requirement.pieces
-                return True
-            counts[set_name] += requirement.pieces
-        return False
-
-    return can_satisfy(0)
+    return set_plan_satisfied_by_counts(plan, counts)
 
 
 def _best_loadout_dp(
@@ -1044,6 +987,7 @@ def _best_loadout_dp(
     game: GameRules,
     character: CharacterPreset,
     return_combo: bool = False,
+    require_set_plan: bool = False,
 ) -> tuple[float, ...] | tuple[dict, ...]:
     options = _loadout_options_by_position(inventory, game)
     if not options:
@@ -1051,6 +995,8 @@ def _best_loadout_dp(
 
     if all(len(choices) == 1 for choices in options):
         combo = tuple(choices[0] for choices in options)
+        if require_set_plan and not _set_plan_satisfied(combo, character):
+            return tuple()
         return combo if return_combo else _combo_value(combo, character)
 
     if character.active_set_plan() is None or character.active_set_plan().is_unrestricted:
@@ -1061,15 +1007,7 @@ def _best_loadout_dp(
     set_index = {set_name: index for index, set_name in enumerate(set_names)}
     max_count = len(game.positions)
     initial_state = tuple(0 for _ in set_names)
-    zero_value = tuple(0.0 for _ in _row_value(
-        {
-            "main_preferred": False,
-            "quality_vector": _zero_vector(character),
-            "effective_rolls": 0.0,
-            "quality_score": 0.0,
-        },
-        character,
-    ))
+    zero_value = _zero_loadout_value(character)
 
     if return_combo:
         value_states: dict[tuple[int, ...], tuple[float, ...]] = {initial_state: zero_value}
@@ -1095,6 +1033,8 @@ def _best_loadout_dp(
             for count_state in value_states
             if _count_state_satisfies_plan(count_state, set_names, character)
         ]
+        if require_set_plan and not satisfied_states:
+            return tuple()
         candidate_states = satisfied_states or list(value_states)
         best_state = max(candidate_states, key=lambda count_state: value_states[count_state])
         combo_reversed = []
@@ -1123,16 +1063,9 @@ def _best_loadout_dp(
         for count_state, value in value_states.items()
         if _count_state_satisfies_plan(count_state, set_names, character)
     ]
+    if require_set_plan and not satisfied_values:
+        return tuple()
     return max(satisfied_values or list(value_states.values()))
-
-
-def _candidate_combos(
-    inventory: list[dict],
-    game: GameRules,
-    character: CharacterPreset,
-) -> list[tuple[dict, ...]]:
-    combo = _best_loadout_dp(inventory, game, character, return_combo=True)
-    return [combo] if combo else []
 
 
 def _best_combo_rows(
@@ -1151,9 +1084,17 @@ def _best_combo_value(
     inventory: list[dict],
     game: GameRules,
     character: CharacterPreset,
+    *,
+    require_set_plan: bool = False,
 ) -> tuple[float, ...]:
     with _audit_phase("best_combo.value_dp", inventory_count=len(inventory)):
-        return _best_loadout_dp(inventory, game, character, return_combo=False)
+        return _best_loadout_dp(
+            inventory,
+            game,
+            character,
+            return_combo=False,
+            require_set_plan=require_set_plan,
+        )
 
 
 def best_loadout_value(
@@ -1301,15 +1242,6 @@ def _inventory_signature(inventory: list[dict]) -> tuple[tuple, ...]:
     )
 
 
-def _set_plan_cache_key(character: CharacterPreset) -> str | None:
-    plan = character.active_set_plan()
-    return (
-        json.dumps(plan.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)
-        if plan
-        else None
-    )
-
-
 def _game_cache_key(game: GameRules) -> tuple:
     return (
         game.id,
@@ -1337,21 +1269,29 @@ def _best_combo_cache_key(
     inventory: list[dict],
     game: GameRules,
     character: CharacterPreset,
+    require_set_plan: bool = False,
 ) -> tuple:
-    return (_game_cache_key(game), _character_cache_key(character), _inventory_signature(inventory))
+    return (
+        require_set_plan,
+        _game_cache_key(game),
+        _character_cache_key(character),
+        _inventory_signature(inventory),
+    )
 
 
 def _cached_best_combo_value(
     inventory: list[dict],
     game: GameRules,
     character: CharacterPreset,
+    *,
+    require_set_plan: bool = False,
 ) -> tuple[float, ...]:
     audit = _ACTIVE_ACTION_EV_AUDIT.get()
     started_at = time.monotonic() if audit is not None else 0.0
     if audit is not None:
         audit.best_loadout_value_calls += 1
     key_started_at = time.monotonic() if audit is not None else 0.0
-    key = _best_combo_cache_key(inventory, game, character)
+    key = _best_combo_cache_key(inventory, game, character, require_set_plan)
     if audit is not None:
         audit.record_phase(
             "best_combo.cache_key",
@@ -1371,7 +1311,12 @@ def _cached_best_combo_value(
     if audit is not None:
         audit.best_loadout_cache_misses += 1
     compute_started_at = time.monotonic() if audit is not None else 0.0
-    value = _best_combo_value(inventory, game, character)
+    value = _best_combo_value(
+        inventory,
+        game,
+        character,
+        require_set_plan=require_set_plan,
+    )
     if audit is not None:
         audit.record_phase(
             "best_combo.cache_miss_compute",
@@ -1386,6 +1331,131 @@ def _cached_best_combo_value(
             {"inventory_count": len(inventory), "cache": "miss"},
         )
     return value
+
+
+def _cached_complete_set_plan_value(
+    inventory: list[dict],
+    game: GameRules,
+    character: CharacterPreset,
+) -> tuple[float, ...]:
+    return _cached_best_combo_value(
+        inventory,
+        game,
+        character,
+        require_set_plan=True,
+    )
+
+
+def inventory_set_completion_candidates(
+    current_pieces: Sequence[GearPiece],
+    inventory_pieces: Sequence[GearPiece],
+    game: GameRules,
+    character: CharacterPreset,
+) -> list[InventorySetCompletionCandidate]:
+    """Return one-inventory-piece swaps that turn an incomplete set plan into a valid one."""
+
+    current_rows = inventory_rows_from_pieces(
+        current_pieces,
+        game,
+        character,
+        current_count=len(current_pieces),
+        include_upgrade_expectation=True,
+    )
+    if _cached_complete_set_plan_value(current_rows, game, character):
+        return []
+
+    candidates: list[InventorySetCompletionCandidate] = []
+    candidate_inventory_id = _inventory_piece_id(len(current_pieces))
+    for inventory_index, piece in enumerate(inventory_pieces):
+        rows = inventory_rows_from_pieces(
+            [*current_pieces, piece],
+            game,
+            character,
+            current_count=len(current_pieces),
+            include_upgrade_expectation=True,
+        )
+        combo = _best_loadout_dp(
+            rows,
+            game,
+            character,
+            return_combo=True,
+            require_set_plan=True,
+        )
+        if not combo or not any(
+            row.get("_inventory_id") == candidate_inventory_id
+            for row in combo
+        ):
+            continue
+        candidates.append(
+            InventorySetCompletionCandidate(
+                inventory_index=inventory_index,
+                position=piece.position,
+                set_name=piece.set_name,
+                value=_combo_value(combo, character),
+                loadout_rows=tuple(dict(row) for row in combo),
+            )
+        )
+    return sorted(candidates, key=lambda candidate: candidate.value, reverse=True)
+
+
+def _set_plan_structure_candidate_row(
+    position: str | int,
+    set_name: str,
+    character: CharacterPreset,
+) -> dict[str, Any]:
+    return {
+        "position": position,
+        "set_name": set_name,
+        "main_preferred": False,
+        "effective_rolls": 0.0,
+        "quality_score": 0.0,
+        "quality_vector": _zero_vector(character),
+        "locked": False,
+        "source": _SOURCE_OUTCOME,
+    }
+
+
+def _action_set_completion_probability(
+    inventory: list[dict],
+    game: GameRules,
+    character: CharacterPreset,
+    probability_model: ProbabilityModel,
+    spec: ActionSpec,
+) -> float:
+    plan = character.active_set_plan()
+    if (
+        plan is None
+        or plan.is_unrestricted
+        or spec.upgrade_inventory_id
+        or _cached_complete_set_plan_value(inventory, game, character)
+    ):
+        return 0.0
+
+    probability = 0.0
+    for position, position_probability in _action_position_items(
+        game,
+        spec.target_position,
+    ):
+        if spec.fixed_main_stat and spec.fixed_main_stat not in game.main_stats_for(position):
+            continue
+        for set_name, set_probability in _set_distribution(
+            probability_model,
+            list(spec.set_options),
+        ):
+            if not game.set_available_for_position(set_name, position):
+                continue
+            candidate_row = _set_plan_structure_candidate_row(
+                position,
+                set_name,
+                character,
+            )
+            if _cached_complete_set_plan_value(
+                [*inventory, candidate_row],
+                game,
+                character,
+            ):
+                probability += position_probability * set_probability
+    return min(max(probability, 0.0), 1.0)
 
 
 def _aggregate_inventory_outcomes(
@@ -1418,7 +1488,8 @@ def _aggregated_action_outcomes_for_spec(
     quality_cache: dict[tuple[str, tuple[str, ...]], list[tuple[float, tuple[float, ...], float]]] | None = None,
     progress_callback: ProgressCallback | None = None,
     progress_depth: int = 0,
-) -> list[tuple[list[dict], float]]:
+    _borrow_cached_value: bool = False,
+) -> Sequence[tuple[Sequence[dict[str, Any]], float]]:
     audit = _ACTIVE_ACTION_EV_AUDIT.get()
     started_at = time.monotonic() if audit is not None else 0.0
     key_started_at = time.monotonic() if audit is not None else 0.0
@@ -1459,7 +1530,9 @@ def _aggregated_action_outcomes_for_spec(
             "aggregated_outcome_cache_hit",
             depth=progress_depth,
         )
-        return cached
+        if _borrow_cached_value:
+            return cached
+        return _copy_inventory_outcomes_for_caller(cached)
     if audit is not None:
         audit.outcome_cache_misses += 1
     _emit_progress(
@@ -1522,7 +1595,7 @@ def _aggregated_action_outcomes_for_spec(
     _lru_set(
         _AGGREGATED_ACTION_OUTCOME_CACHE,
         key,
-        outcomes,
+        _cache_owned_inventory_outcomes(outcomes),
         AGGREGATED_ACTION_OUTCOME_CACHE_MAX_SIZE,
     )
     _emit_progress(
@@ -1632,7 +1705,7 @@ def _select_representative_outcome(
     remaining_horizon: int,
     memo: dict[tuple[int, tuple[tuple, ...]], tuple[float, ...]],
     quality_cache: dict[tuple[str, tuple[str, ...]], list[tuple[float, tuple[float, ...], float]]],
-    lookahead_scope: str = LOOKAHEAD_SCOPE_EXACT,
+    lookahead_scope: ActionEvLookaheadScope | str = LOOKAHEAD_SCOPE_EXACT,
 ) -> tuple[list[dict], float, tuple[float, ...]] | None:
     audit = _ACTIVE_ACTION_EV_AUDIT.get()
     started_at = time.monotonic() if audit is not None else 0.0
@@ -1643,6 +1716,7 @@ def _select_representative_outcome(
         probability_model,
         spec,
         quality_cache=quality_cache,
+        _borrow_cached_value=True,
     )
     if not outcomes:
         if audit is not None:
@@ -1697,7 +1771,7 @@ def _best_followup_spec(
     horizon: int,
     memo: dict[tuple[int, tuple[tuple, ...]], tuple[float, ...]],
     quality_cache: dict[tuple[str, tuple[str, ...]], list[tuple[float, tuple[float, ...], float]]],
-    lookahead_scope: str = LOOKAHEAD_SCOPE_EXACT,
+    lookahead_scope: ActionEvLookaheadScope | str = LOOKAHEAD_SCOPE_EXACT,
 ) -> ActionSpec | None:
     audit = _ACTIVE_ACTION_EV_AUDIT.get()
     started_at = time.monotonic() if audit is not None else 0.0
@@ -1752,7 +1826,7 @@ def _representative_action_plan_labels(
     horizon: int,
     memo: dict[tuple[int, tuple[tuple, ...]], tuple[float, ...]],
     quality_cache: dict[tuple[str, tuple[str, ...]], list[tuple[float, tuple[float, ...], float]]],
-    lookahead_scope: str = LOOKAHEAD_SCOPE_EXACT,
+    lookahead_scope: ActionEvLookaheadScope | str = LOOKAHEAD_SCOPE_EXACT,
 ) -> tuple[str, str, str, str, list[dict]]:
     audit = _ACTIVE_ACTION_EV_AUDIT.get()
     started_at = time.monotonic() if audit is not None else 0.0
@@ -1918,7 +1992,7 @@ def _best_followup_decision(
     horizon: int,
     memo: dict[tuple[int, tuple[tuple, ...]], tuple[float, ...]],
     quality_cache: dict[tuple[str, tuple[str, ...]], list[tuple[float, tuple[float, ...], float]]],
-    lookahead_scope: str = LOOKAHEAD_SCOPE_EXACT,
+    lookahead_scope: ActionEvLookaheadScope | str = LOOKAHEAD_SCOPE_EXACT,
 ) -> tuple[ActionSpec | None, str, str]:
     audit = _ACTIVE_ACTION_EV_AUDIT.get()
     started_at = time.monotonic() if audit is not None else 0.0
@@ -1978,7 +2052,7 @@ def _representative_final_loadout_after_followup(
     followup_horizon: int,
     memo: dict[tuple[int, tuple[tuple, ...]], tuple[float, ...]],
     quality_cache: dict[tuple[str, tuple[str, ...]], list[tuple[float, tuple[float, ...], float]]],
-    lookahead_scope: str = LOOKAHEAD_SCOPE_EXACT,
+    lookahead_scope: ActionEvLookaheadScope | str = LOOKAHEAD_SCOPE_EXACT,
 ) -> tuple[str, str]:
     audit = _ACTIVE_ACTION_EV_AUDIT.get()
     started_at = time.monotonic() if audit is not None else 0.0
@@ -2021,8 +2095,8 @@ def _representative_branch_summary(
     horizon: int,
     memo: dict[tuple[int, tuple[tuple, ...]], tuple[float, ...]],
     quality_cache: dict[tuple[str, tuple[str, ...]], list[tuple[float, tuple[float, ...], float]]],
-    lookahead_scope: str = LOOKAHEAD_SCOPE_EXACT,
-) -> dict[str, Any]:
+    lookahead_scope: ActionEvLookaheadScope | str = LOOKAHEAD_SCOPE_EXACT,
+) -> ActionEvPlanExplanation:
     audit = _ACTIVE_ACTION_EV_AUDIT.get()
     started_at = time.monotonic() if audit is not None else 0.0
     selected = _select_representative_outcome(
@@ -2051,12 +2125,11 @@ def _representative_branch_summary(
             lookahead_scope=lookahead_scope,
         )
         second_step = followup_label if followup_label != "-" else f"-（{reason}）"
-    result = {
-        "方案类型": "代表路径",
-        "第二步策略摘要": second_step,
-        "条件分支": [],
-        "代表路径说明": _REPRESENTATIVE_PATH_NOTE,
-    }
+    result = ActionEvPlanExplanation(
+        plan_type="代表路径",
+        second_step_summary=second_step,
+        representative_path_note=_REPRESENTATIVE_PATH_NOTE,
+    )
     if audit is not None:
         audit.record_phase(
             "explain.representative_branch_summary",
@@ -2080,8 +2153,8 @@ def _random_position_condition_branches(
     horizon: int,
     memo: dict[tuple[int, tuple[tuple, ...]], tuple[float, ...]],
     quality_cache: dict[tuple[str, tuple[str, ...]], list[tuple[float, tuple[float, ...], float]]],
-    lookahead_scope: str = LOOKAHEAD_SCOPE_EXACT,
-) -> list[dict[str, Any]]:
+    lookahead_scope: ActionEvLookaheadScope | str = LOOKAHEAD_SCOPE_EXACT,
+) -> list[ActionEvConditionBranch]:
     audit = _ACTIVE_ACTION_EV_AUDIT.get()
     started_at = time.monotonic() if audit is not None else 0.0
     if not game.positions:
@@ -2093,7 +2166,7 @@ def _random_position_condition_branches(
             )
         return []
     condition_probability = 1.0 / len(game.positions)
-    branches: list[dict[str, Any]] = []
+    branches: list[ActionEvConditionBranch] = []
     for rule in game.positions:
         branch_spec = _fixed_position_branch_spec(first_spec, rule.id)
         selected = _select_representative_outcome(
@@ -2111,15 +2184,15 @@ def _random_position_condition_branches(
         if selected is None:
             combo = _best_combo_rows(inventory, game, character)
             branches.append(
-                {
-                    "条件": condition,
-                    "条件概率": condition_probability,
-                    "代表新盘": "无可用代表 outcome",
-                    "第二步 action": "-",
-                    "第二步原因": "第一步无可用代表 outcome，无法生成条件后续 action",
-                    "代表最终搭配": _combo_loadout_label(combo, game),
-                    "套装约束": _set_plan_status_label(combo, character),
-                }
+                ActionEvConditionBranch(
+                    condition=condition,
+                    probability=condition_probability,
+                    representative_piece="无可用代表 outcome",
+                    second_action="-",
+                    second_action_reason="第一步无可用代表 outcome，无法生成条件后续 action",
+                    representative_final_loadout=_combo_loadout_label(combo, game),
+                    set_constraint=_set_plan_status_label(combo, character),
+                )
             )
             continue
 
@@ -2146,15 +2219,20 @@ def _random_position_condition_branches(
             lookahead_scope=lookahead_scope,
         )
         branches.append(
-            {
-                "条件": condition,
-                "条件概率": condition_probability,
-                "代表新盘": _representative_new_piece_label(inventory, next_inventory, game, probability),
-                "第二步 action": followup_label,
-                "第二步原因": reason,
-                "代表最终搭配": final_loadout,
-                "套装约束": set_plan_status,
-            }
+            ActionEvConditionBranch(
+                condition=condition,
+                probability=condition_probability,
+                representative_piece=_representative_new_piece_label(
+                    inventory,
+                    next_inventory,
+                    game,
+                    probability,
+                ),
+                second_action=followup_label,
+                second_action_reason=reason,
+                representative_final_loadout=final_loadout,
+                set_constraint=set_plan_status,
+            )
         )
     if audit is not None:
         audit.record_phase(
@@ -2178,12 +2256,12 @@ def _action_plan_explain_fields(
     horizon: int,
     memo: dict[tuple[int, tuple[tuple, ...]], tuple[float, ...]],
     quality_cache: dict[tuple[str, tuple[str, ...]], list[tuple[float, tuple[float, ...], float]]],
-    lookahead_scope: str = LOOKAHEAD_SCOPE_EXACT,
-) -> dict[str, Any]:
+    lookahead_scope: ActionEvLookaheadScope | str = LOOKAHEAD_SCOPE_EXACT,
+) -> ActionEvPlanExplanation:
     audit = _ACTIVE_ACTION_EV_AUDIT.get()
     started_at = time.monotonic() if audit is not None else 0.0
 
-    def finish(result: dict[str, Any], *, plan_type: str) -> dict[str, Any]:
+    def finish(result: ActionEvPlanExplanation) -> ActionEvPlanExplanation:
         if audit is not None:
             audit.record_phase(
                 "explain.action_plan_explain_fields",
@@ -2192,8 +2270,8 @@ def _action_plan_explain_fields(
                     "strategy": spec.strategy,
                     "target_set": spec.set_label,
                     "horizon": horizon,
-                    "plan_type": plan_type,
-                    "branch_count": len(result.get("条件分支") or []),
+                    "plan_type": result.plan_type,
+                    "branch_count": len(result.condition_branches),
                 },
             )
         return result
@@ -2201,14 +2279,12 @@ def _action_plan_explain_fields(
     first_action = _action_plan_label(spec, game)
     if horizon <= 1:
         return finish(
-            {
-                "方案类型": "单步",
-                "第一步 action": first_action,
-                "第二步策略摘要": "-",
-                "条件分支": [],
-                "代表路径说明": "-",
-            },
-            plan_type="单步",
+            ActionEvPlanExplanation(
+                plan_type="单步",
+                first_action=first_action,
+                second_step_summary="-",
+                representative_path_note="-",
+            )
         )
     if spec.strategy == "随机位置":
         branches = _random_position_condition_branches(
@@ -2223,17 +2299,16 @@ def _action_plan_explain_fields(
             lookahead_scope=lookahead_scope,
         )
         return finish(
-            {
-                "方案类型": "条件策略",
-                "第一步 action": first_action,
-                "第二步策略摘要": (
+            ActionEvPlanExplanation(
+                plan_type="条件策略",
+                first_action=first_action,
+                second_step_summary=(
                     f"按命中位置分 {len(branches)} 个条件分支；第二步来自 "
                     f"{'static tuning' if lookahead_scope == LOOKAHEAD_SCOPE_TUNING_STATIC else 'exact'} lookahead"
                 ),
-                "条件分支": branches,
-                "代表路径说明": "随机位置是混合结果，不存在唯一代表最终搭配；请查看条件分支。",
-            },
-            plan_type="条件策略",
+                condition_branches=branches,
+                representative_path_note="随机位置是混合结果，不存在唯一代表最终搭配；请查看条件分支。",
+            )
         )
 
     fields = _representative_branch_summary(
@@ -2247,8 +2322,8 @@ def _action_plan_explain_fields(
         quality_cache,
         lookahead_scope=lookahead_scope,
     )
-    fields["第一步 action"] = first_action
-    return finish(fields, plan_type=str(fields.get("方案类型") or "-"))
+    fields.first_action = first_action
+    return finish(fields)
 
 
 def _action_position_items(
@@ -2560,7 +2635,7 @@ def _resource_audit_label(
 
 
 def _annotate_h2_static_resource_audit(
-    base_fixed_rows: list[tuple[ActionSpec, dict[str, float | str]]],
+    base_fixed_rows: list[tuple[ActionSpec, ActionEvRowPayload]],
     inventory_rows: list[dict],
     game: GameRules,
     character: CharacterPreset,
@@ -2579,7 +2654,7 @@ def _annotate_h2_static_resource_audit(
         candidates = [
             (spec, row)
             for spec, row in base_fixed_rows
-            if not str(row.get("套装约束") or "").startswith("未满足")
+            if not row.set_constraint.startswith("未满足")
         ]
     top_candidates = sorted(
         candidates,
@@ -2612,14 +2687,14 @@ def _annotate_h2_static_resource_audit(
             marginal = _subtract_vectors(fixed_main_gain, base_gain)
             fixed_main_options.append((marginal, fixed_main_spec, fixed_main_gain))
         if not fixed_main_options:
-            row["锁主审计"] = "TOP3静态审计：该位置无需锁主属性"
-            row["锁副审计"] = "TOP3静态审计：该位置无需锁副属性"
+            row.fixed_main_audit = "TOP3静态审计：该位置无需锁主属性"
+            row.fixed_substat_audit = "TOP3静态审计：该位置无需锁副属性"
             continue
         best_main_marginal, best_main_spec, best_main_gain = max(
             fixed_main_options,
             key=lambda item: item[0],
         )
-        row["锁主审计"] = _resource_audit_label(
+        row.fixed_main_audit = _resource_audit_label(
             best_main_spec,
             game,
             character,
@@ -2641,13 +2716,13 @@ def _annotate_h2_static_resource_audit(
             marginal = _subtract_vectors(fixed_substat_gain, best_main_gain)
             fixed_substat_options.append((marginal, fixed_substat_spec))
         if not fixed_substat_options:
-            row["锁副审计"] = "TOP3静态审计：该主属性无可锁副属性组合"
+            row.fixed_substat_audit = "TOP3静态审计：该主属性无可锁副属性组合"
             continue
         best_substat_marginal, best_substat_spec = max(
             fixed_substat_options,
             key=lambda item: item[0],
         )
-        row["锁副审计"] = _resource_audit_label(
+        row.fixed_substat_audit = _resource_audit_label(
             best_substat_spec,
             game,
             character,
@@ -3108,8 +3183,9 @@ def _lookahead_action_specs(
     game: GameRules,
     character: CharacterPreset,
     inventory: list[dict],
-    scope: str = LOOKAHEAD_SCOPE_EXACT,
+    scope: ActionEvLookaheadScope | str = LOOKAHEAD_SCOPE_EXACT,
 ) -> list[ActionSpec]:
+    scope = normalize_action_ev_lookahead_scope(scope)
     if scope == LOOKAHEAD_SCOPE_TUNING_STATIC:
         return _dedupe_action_specs(
             [
@@ -3128,8 +3204,6 @@ def _lookahead_action_specs(
                 ),
             ]
         )
-    if scope != LOOKAHEAD_SCOPE_EXACT:
-        raise ValueError(f"Unknown lookahead scope: {scope}")
     return _dedupe_action_specs(
         [
             *_dominant_generation_action_specs(game, character),
@@ -3244,7 +3318,8 @@ def state_transition_for_action(
     quality_cache: dict[tuple[str, tuple[str, ...]], list[tuple[float, tuple[float, ...], float]]] | None = None,
     progress_callback: ProgressCallback | None = None,
     progress_depth: int = 0,
-) -> list[tuple[EvState, float]]:
+    _borrow_cached_value: bool = False,
+) -> Sequence[tuple[EvState, float]]:
     cache_key = _state_transition_cache_key(state, game, character, probability_model, spec)
     cached = _lru_get(_STATE_TRANSITION_CACHE, cache_key)
     if cached is not None:
@@ -3255,7 +3330,9 @@ def state_transition_for_action(
             action_strategy=spec.strategy,
             action_set=spec.set_label,
         )
-        return cached
+        if _borrow_cached_value:
+            return cached
+        return list(deepcopy(cached))
 
     _emit_progress(
         progress_callback,
@@ -3304,7 +3381,12 @@ def state_transition_for_action(
         for next_state, probability in transitions.values()
         if probability > 1e-12
     ]
-    _lru_set(_STATE_TRANSITION_CACHE, cache_key, result, STATE_TRANSITION_CACHE_MAX_SIZE)
+    _lru_set(
+        _STATE_TRANSITION_CACHE,
+        cache_key,
+        tuple(deepcopy(result)),
+        STATE_TRANSITION_CACHE_MAX_SIZE,
+    )
     return result
 
 
@@ -3319,7 +3401,7 @@ def expected_state_action_value(
     quality_cache: dict[tuple[str, tuple[str, ...]], list[tuple[float, tuple[float, ...], float]]] | None = None,
     progress_callback: ProgressCallback | None = None,
     progress_depth: int = 0,
-    lookahead_scope: str = LOOKAHEAD_SCOPE_EXACT,
+    lookahead_scope: ActionEvLookaheadScope | str = LOOKAHEAD_SCOPE_EXACT,
 ) -> tuple[float, ...]:
     audit = _ACTIVE_ACTION_EV_AUDIT.get()
     started_at = time.monotonic() if audit is not None else 0.0
@@ -3350,6 +3432,7 @@ def expected_state_action_value(
         quality_cache=quality_cache,
         progress_callback=progress_callback,
         progress_depth=progress_depth,
+        _borrow_cached_value=True,
     )
     _emit_progress(
         progress_callback,
@@ -3407,7 +3490,7 @@ def lookahead_state_value(
     quality_cache: dict[tuple[str, tuple[str, ...]], list[tuple[float, tuple[float, ...], float]]] | None = None,
     progress_callback: ProgressCallback | None = None,
     progress_depth: int = 0,
-    lookahead_scope: str = LOOKAHEAD_SCOPE_EXACT,
+    lookahead_scope: ActionEvLookaheadScope | str = LOOKAHEAD_SCOPE_EXACT,
 ) -> tuple[float, ...]:
     audit = _ACTIVE_ACTION_EV_AUDIT.get()
     started_at = time.monotonic() if audit is not None else 0.0
@@ -3535,7 +3618,7 @@ def lookahead_inventory_value_state_dp(
     horizon: int = 1,
     current_count: int = 0,
     memo: dict[tuple[int, tuple[tuple, ...]], tuple[float, ...]] | None = None,
-    lookahead_scope: str = LOOKAHEAD_SCOPE_EXACT,
+    lookahead_scope: ActionEvLookaheadScope | str = LOOKAHEAD_SCOPE_EXACT,
 ) -> tuple[float, ...]:
     state = EvState.from_inventory(
         inventory,
@@ -3594,7 +3677,7 @@ def _expected_state_action_value_worker(payload: tuple) -> ParallelActionValueRe
             value=value,
             seconds=round(time.perf_counter() - started, 6),
         )
-    except BaseException as exc:
+    except Exception as exc:
         return ParallelActionValueResult(
             spec=spec,
             seconds=round(time.perf_counter() - started, 6),
@@ -3610,7 +3693,7 @@ def parallel_expected_state_action_values(
     specs: Sequence[ActionSpec],
     horizon: int,
     workers: int | None = None,
-    lookahead_scope: str = LOOKAHEAD_SCOPE_EXACT,
+    lookahead_scope: ActionEvLookaheadScope | str = LOOKAHEAD_SCOPE_EXACT,
 ) -> list[ParallelActionValueResult]:
     worker_count = configured_action_ev_workers() if workers is None else max(1, workers)
     rows = state.to_inventory_rows()
@@ -3635,7 +3718,7 @@ def parallel_expected_state_action_values(
             index = future_to_index[future]
             try:
                 results_by_index[index] = future.result()
-            except BaseException as exc:
+            except Exception as exc:
                 results_by_index[index] = ParallelActionValueResult(
                     spec=specs[index],
                     error=f"{type(exc).__name__}: {exc}",
@@ -3654,7 +3737,7 @@ def _expected_action_value(
     quality_cache: dict[tuple[str, tuple[str, ...]], list[tuple[float, tuple[float, ...], float]]] | None = None,
     progress_callback: ProgressCallback | None = None,
     progress_depth: int = 0,
-    lookahead_scope: str = LOOKAHEAD_SCOPE_EXACT,
+    lookahead_scope: ActionEvLookaheadScope | str = LOOKAHEAD_SCOPE_EXACT,
 ) -> tuple[float, ...]:
     audit = _ACTIVE_ACTION_EV_AUDIT.get()
     started_at = time.monotonic() if audit is not None else 0.0
@@ -3685,6 +3768,7 @@ def _expected_action_value(
         quality_cache=quality_cache,
         progress_callback=progress_callback,
         progress_depth=progress_depth,
+        _borrow_cached_value=True,
     )
     outcome_total = len(outcomes)
     _emit_progress(
@@ -3759,7 +3843,7 @@ def lookahead_inventory_value(
     quality_cache: dict[tuple[str, tuple[str, ...]], list[tuple[float, tuple[float, ...], float]]] | None = None,
     progress_callback: ProgressCallback | None = None,
     progress_depth: int = 0,
-    lookahead_scope: str = LOOKAHEAD_SCOPE_EXACT,
+    lookahead_scope: ActionEvLookaheadScope | str = LOOKAHEAD_SCOPE_EXACT,
 ) -> tuple[float, ...]:
     audit = _ACTIVE_ACTION_EV_AUDIT.get()
     started_at = time.monotonic() if audit is not None else 0.0
@@ -3885,42 +3969,6 @@ def lookahead_inventory_value(
     return memo[key]
 
 
-def lookahead_action_gain(
-    inventory: Sequence[GearPiece | dict],
-    game: GameRules,
-    character: CharacterPreset,
-    probability_model: ProbabilityModel,
-    set_options: list[str],
-    target_position: str | int | None,
-    horizon: int = 1,
-    fixed_main_stat: str | None = None,
-    required_substats: tuple[str, ...] = (),
-) -> tuple[float, ...]:
-    rows = _coerce_inventory_rows(inventory, game, character)
-    current_value = _cached_best_combo_value(rows, game, character)
-    if not current_value:
-        return tuple()
-    spec = ActionSpec(
-        "自定义 action",
-        " / ".join(set_options),
-        tuple(set_options),
-        target_position,
-        fixed_main_stat=fixed_main_stat,
-        required_substats=required_substats,
-    )
-    value = _expected_action_value(
-        rows,
-        game,
-        character,
-        probability_model,
-        spec,
-        max(horizon, 1),
-        memo={},
-        quality_cache={},
-    )
-    return _positive_gain(value, current_value)
-
-
 def immediate_piece_gain(
     inventory: Sequence[GearPiece | dict],
     piece: GearPiece | dict,
@@ -3956,44 +4004,6 @@ def option_piece_gain(
         quality_cache={},
     )
     return _positive_gain(future_value, immediate_value)
-
-
-def _expected_action_gain(
-    game: GameRules,
-    character: CharacterPreset,
-    probability_model: ProbabilityModel,
-    analysis: CurrentGearAnalysis,
-    set_options: list[str],
-    target_position: str | int | None,
-    quality_cache: dict[tuple[str, tuple[str, ...]], list[tuple[float, tuple[float, ...], float]]] | None = None,
-    inventory_rows: list[dict] | None = None,
-) -> tuple[float, ...]:
-    current_inventory = (
-        [dict(row) for row in inventory_rows]
-        if inventory_rows is not None
-        else _current_inventory_rows(analysis, character)
-    )
-    current_value = _cached_best_combo_value(current_inventory, game, character)
-    expected = tuple(0.0 for _ in current_value)
-    if not current_value:
-        return expected
-
-    for candidate_row, probability in _candidate_distribution_for_action(
-        game,
-        character,
-        probability_model,
-        set_options,
-        target_position,
-        quality_cache=quality_cache,
-    ):
-        next_value = _cached_best_combo_value(
-            [*current_inventory, candidate_row],
-            game,
-            character,
-        )
-        gain = _positive_gain(next_value, current_value)
-        expected = _add_vectors(expected, _scale_vector(gain, probability))
-    return expected
 
 
 def action_gain_for_spec(
@@ -4147,7 +4157,7 @@ def _action_ev_cache_key(
     horizon: int = 1,
     use_state_dp: bool = False,
     action_mode: str = DEFAULT_ACTION_EV_MODE,
-    lookahead_scope: str = LOOKAHEAD_SCOPE_EXACT,
+    lookahead_scope: ActionEvLookaheadScope | str = LOOKAHEAD_SCOPE_EXACT,
 ) -> str:
     action_mode = normalize_action_ev_mode(action_mode)
     plan = character.active_set_plan()
@@ -4398,24 +4408,6 @@ def _advance_stat_states(
     for (effective_score, weighted_score, weights, _selected), probability in stat_states.items():
         score_states[(effective_score, weighted_score, weights)] += probability
     return dict(score_states)
-
-
-def expected_fresh_piece_weighted_score(
-    game: GameRules,
-    character: CharacterPreset,
-    probability_model: ProbabilityModel,
-    main_stat: str,
-) -> float:
-    distribution = fresh_piece_weighted_score_distribution(
-        game,
-        character,
-        probability_model,
-        main_stat,
-    )
-    return round(
-        sum(score * probability for score, probability in distribution.items()),
-        4,
-    )
 
 
 def expected_fresh_piece_effective_score(
@@ -4882,7 +4874,7 @@ def fixed_substat_gain_ladder_rows(
     ]
 
 
-def position_strategy_efficiency_rows(
+def position_strategy_efficiency_models(
     game: GameRules,
     character: CharacterPreset,
     probability_model: ProbabilityModel,
@@ -4892,7 +4884,7 @@ def position_strategy_efficiency_rows(
     progress_callback: ProgressCallback | None = None,
     use_state_dp: bool = False,
     action_mode: str = DEFAULT_ACTION_EV_MODE,
-) -> list[dict[str, float | str]]:
+) -> list[ActionEvRowPayload]:
     action_mode = normalize_action_ev_mode(action_mode)
     uses_static_h2_lookahead = horizon > 1
     lookahead_scope = (
@@ -4906,7 +4898,7 @@ def position_strategy_efficiency_rows(
             game,
             character,
             current_count=len(analysis.scores),
-            include_upgrade_expectation=uses_static_h2_lookahead,
+            include_upgrade_expectation=True,
         )
         if inventory_pieces is not None
         else _current_inventory_rows(analysis, character)
@@ -4946,11 +4938,11 @@ def position_strategy_efficiency_rows(
             top_10_slowest_actions=performance_audit["top_10_slowest_actions"],
             total_seconds=performance_audit["total_seconds"],
         )
-        return [dict(row) for row in cached]
+        return deepcopy(cached)
 
     audit = ActionEvPerformanceAudit()
     audit_token = _ACTIVE_ACTION_EV_AUDIT.set(audit)
-    rows: list[dict[str, float | str]] = []
+    rows: list[ActionEvRowPayload] = []
     random_efficiency_by_set: dict[str, tuple[float, ...]] = {}
     base_fixed_efficiency_by_target: dict[tuple[str, str], tuple[float, ...]] = {}
     fixed_main_efficiency_by_target: dict[tuple[str, str, str], tuple[float, ...]] = {}
@@ -5269,7 +5261,7 @@ def position_strategy_efficiency_rows(
         *,
         derive_random_from_fixed_positions: bool = False,
         defer_fixed_random_comparison: bool = False,
-    ) -> dict[str, float | str]:
+    ) -> ActionEvRowPayload:
         action_started_at = time.monotonic()
         action_snapshot = audit.snapshot()
         immediate_action_value = None
@@ -5313,14 +5305,34 @@ def position_strategy_efficiency_rows(
         option_gain = _positive_gain(gain, immediate_gain)
         mother_cost, tuner_cost, core_cost = _action_costs(spec, probability_model)
         efficiency = _vector_efficiency(gain, mother_cost)
+        set_completion_probability = (
+            _action_set_completion_probability(
+                inventory_rows,
+                game,
+                character,
+                probability_model,
+                spec,
+            )
+            if horizon == 1
+            else 0.0
+        )
+        set_completion_per_mother = (
+            set_completion_probability / mother_cost
+            if mother_cost > _VECTOR_EPSILON
+            else 0.0
+        )
+        decision_efficiency = (set_completion_per_mother, *efficiency)
         if spec.strategy == "随机位置":
-            random_efficiency_by_set[spec.set_label] = efficiency
+            random_efficiency_by_set[spec.set_label] = decision_efficiency
 
         quality_gain = gain[-1] if gain else 0.0
         effective_gain = gain[-2] if gain else 0.0
         quality_efficiency = efficiency[-1] if efficiency else 0.0
         effective_efficiency = efficiency[-2] if efficiency else 0.0
-        has_positive_gain = any(value > _VECTOR_EPSILON for value in gain)
+        has_positive_gain = (
+            set_completion_probability > _VECTOR_EPSILON
+            or any(value > _VECTOR_EPSILON for value in gain)
+        )
         if horizon <= 1 or (current_value and has_positive_gain):
             (
                 representative_path,
@@ -5372,17 +5384,25 @@ def position_strategy_efficiency_rows(
                     if not current_value
                     else "该 action 的 H=2 主 EV 为 0，跳过代表路径审计"
                 )
-                explain_fields = {
-                    "方案类型": "未成型" if not current_value else "无正收益",
-                    "第一步 action": _action_plan_label(spec, game),
-                    "第二步策略摘要": "-",
-                    "条件分支": [],
-                    "代表路径说明": "代表路径只用于审计；无主 EV 时不再额外枚举 outcome。",
-                }
+                explain_fields = ActionEvPlanExplanation(
+                    plan_type="未成型" if not current_value else "无正收益",
+                    first_action=_action_plan_label(spec, game),
+                    second_step_summary="-",
+                    representative_path_note="代表路径只用于审计；无主 EV 时不再额外枚举 outcome。",
+                )
+        if (
+            set_completion_probability > _VECTOR_EPSILON
+            and set_plan_status.startswith("未满足")
+        ):
+            plan = character.active_set_plan()
+            plan_name = plan.name if plan is not None else "目标套装"
+            set_plan_status = (
+                f"成型跃迁 {set_completion_probability:.1%}：可满足{plan_name}"
+            )
         set_plan_blocked = set_plan_status.startswith("未满足")
         relative = _relative_action_label(
             spec,
-            efficiency,
+            decision_efficiency,
             set_plan_blocked,
             random_efficiency_by_set,
             base_fixed_efficiency_by_target,
@@ -5392,55 +5412,55 @@ def position_strategy_efficiency_rows(
         )
         _remember_action_efficiency(
             spec,
-            efficiency,
+            decision_efficiency,
             relative,
             base_fixed_efficiency_by_target,
             fixed_main_efficiency_by_target,
         )
-        row: dict[str, float | str] = {
-            "动作类型": _action_type_label(spec),
-            "策略": spec.strategy,
-            "目标套装": spec.set_label,
-            "位置": _action_position_label(spec, game),
-            "主属性": _action_main_label(spec),
-            "固定副属性": _action_substat_label(spec),
-            "horizon": horizon,
-            "immediate_EV": _quality_vector_label(immediate_gain, character),
-            "option_EV": _quality_vector_label(option_gain, character),
-            "horizon_EV": _quality_vector_label(gain, character),
-            "期望提升": _quality_vector_label(gain, character),
-            "方案类型": explain_fields["方案类型"],
-            "第一步 action": explain_fields["第一步 action"],
-            "第二步策略摘要": explain_fields["第二步策略摘要"],
-            "计算口径": (
+        row = ActionEvRowPayload(
+            action_type=_action_type_label(spec),
+            strategy=spec.strategy,
+            target_set=spec.set_label,
+            position=_action_position_label(spec, game),
+            main_stat=_action_main_label(spec),
+            fixed_substats=_action_substat_label(spec),
+            horizon=horizon,
+            immediate_ev=_quality_vector_label(immediate_gain, character),
+            option_ev=_quality_vector_label(option_gain, character),
+            horizon_ev=_quality_vector_label(gain, character),
+            expected_gain=_quality_vector_label(gain, character),
+            plan_type=explain_fields.plan_type,
+            first_action=explain_fields.first_action,
+            second_step_summary=explain_fields.second_step_summary,
+            calculation_scope=(
                 "H=2静态调律二层；库存强化按期望入库，不生成强化action"
                 if uses_static_h2_lookahead
                 else ("深度精算动态展开" if action_mode == ACTION_EV_EXACT_MODE else "快速推荐")
             ),
-            "锁主审计": "",
-            "锁副审计": "",
-            "代表路径": representative_path,
-            "预期搭配": representative_loadout,
-            "代表分支搭配": representative_loadout,
-            "互补位": complement_loadout,
-            "套装约束": set_plan_status,
-            "条件分支": explain_fields["条件分支"],
-            "代表路径说明": explain_fields["代表路径说明"],
-            "_representative_loadout_rows": representative_loadout_rows,
-            "_upgrade_inventory_id": spec.upgrade_inventory_id or "",
-            "质量提升": round(quality_gain, 3),
-            "有效提升": round(effective_gain, 3),
-            "母盘/次": round(mother_cost, 3),
-            "校音器/次": round(tuner_cost, 3),
-            "共鸣核/次": round(core_cost, 3),
-            "高级素材/次": round(tuner_cost + core_cost, 3),
-            "质量/母盘": round(quality_efficiency, 4),
-            "有效/母盘": round(effective_efficiency, 4),
-            "排序向量/母盘": _quality_vector_label(efficiency, character),
-            "_sort_vector": efficiency,
-            "相对随机": relative,
-            "比较口径": _comparison_scope_label(spec, relative, game),
-        }
+            representative_path=representative_path,
+            expected_loadout=representative_loadout,
+            representative_branch_loadout=representative_loadout,
+            complement_slots=complement_loadout,
+            set_constraint=set_plan_status,
+            condition_branches=explain_fields.condition_branches,
+            representative_path_note=explain_fields.representative_path_note,
+            representative_loadout_rows=representative_loadout_rows,
+            upgrade_inventory_id=spec.upgrade_inventory_id or "",
+            set_completion_probability=round(set_completion_probability, 6),
+            set_completion_per_mother=round(set_completion_per_mother, 6),
+            quality_gain=round(quality_gain, 3),
+            effective_gain=round(effective_gain, 3),
+            mother_cost=round(mother_cost, 3),
+            tuner_cost=round(tuner_cost, 3),
+            resonance_core_cost=round(core_cost, 3),
+            advanced_material_cost=round(tuner_cost + core_cost, 3),
+            quality_per_mother=round(quality_efficiency, 4),
+            effective_per_mother=round(effective_efficiency, 4),
+            sort_vector_label=_quality_vector_label(efficiency, character),
+            sort_vector=list(efficiency),
+            relative_to_random=relative,
+            comparison_scope=_comparison_scope_label(spec, relative, game),
+        )
         timing = audit.record_action(
             spec=spec,
             game=game,
@@ -5463,7 +5483,7 @@ def position_strategy_efficiency_rows(
         rows.append(row)
         return row
 
-    base_fixed_rows: list[tuple[ActionSpec, dict[str, float | str]]] = []
+    base_fixed_rows: list[tuple[ActionSpec, ActionEvRowPayload]] = []
     for spec in base_fixed_specs:
         spec_index = specs.index(spec) + 1
         row = append_row(
@@ -5483,8 +5503,8 @@ def position_strategy_efficiency_rows(
 
     fixed_main_specs: list[ActionSpec] = []
     for spec, row in base_fixed_rows:
-        set_plan_status = str(row.get("套装约束") or "")
-        efficiency = _row_sort_vector(row)
+        set_plan_status = row.set_constraint
+        efficiency = _row_decision_vector(row)
         relative = _relative_action_label(
             spec,
             efficiency,
@@ -5494,8 +5514,8 @@ def position_strategy_efficiency_rows(
             fixed_main_efficiency_by_target,
             random_baseline_enabled=bool(random_specs),
         )
-        row["相对随机"] = relative
-        row["比较口径"] = _comparison_scope_label(spec, relative, game)
+        row.relative_to_random = relative
+        row.comparison_scope = _comparison_scope_label(spec, relative, game)
         _remember_action_efficiency(
             spec,
             efficiency,
@@ -5548,7 +5568,7 @@ def position_strategy_efficiency_rows(
             row = append_row(spec, spec_index)
             if (
                 spec.strategy == "固定位置 + 固定主属性"
-                and row["相对随机"]
+                and row.relative_to_random
                 in {
                     "固定位置已优于随机；优于固定位置，才建议锁主属性",
                     "优于固定位置，才建议锁主属性",
@@ -5589,7 +5609,12 @@ def position_strategy_efficiency_rows(
     audit.total_seconds = time.monotonic() - audit.started_at
     performance_audit = audit.summary()
     _ACTIVE_ACTION_EV_AUDIT.reset(audit_token)
-    _lru_set(_ACTION_EV_ROWS_CACHE, cache_key, [dict(row) for row in rows], ACTION_EV_ROWS_CACHE_MAX_SIZE)
+    _lru_set(
+        _ACTION_EV_ROWS_CACHE,
+        cache_key,
+        deepcopy(rows),
+        ACTION_EV_ROWS_CACHE_MAX_SIZE,
+    )
     _emit_progress(
         progress_callback,
         "complete",
@@ -5620,7 +5645,41 @@ def position_strategy_efficiency_rows(
     return rows
 
 
-def _row_sort_vector(row: dict[str, float | str]) -> tuple[float, ...]:
+def position_strategy_efficiency_rows(
+    game: GameRules,
+    character: CharacterPreset,
+    probability_model: ProbabilityModel,
+    analysis: CurrentGearAnalysis,
+    inventory_pieces: Sequence[GearPiece] | None = None,
+    horizon: int = 1,
+    progress_callback: ProgressCallback | None = None,
+    use_state_dp: bool = False,
+    action_mode: str = DEFAULT_ACTION_EV_MODE,
+) -> list[dict[str, Any]]:
+    models = position_strategy_efficiency_models(
+        game,
+        character,
+        probability_model,
+        analysis,
+        inventory_pieces=inventory_pieces,
+        horizon=horizon,
+        progress_callback=progress_callback,
+        use_state_dp=use_state_dp,
+        action_mode=action_mode,
+    )
+    return [model.to_display_row() for model in models]
+
+
+def _row_sort_vector(
+    row: ActionEvRowPayload | dict[str, float | str],
+) -> tuple[float, ...]:
+    if isinstance(row, ActionEvRowPayload):
+        if row.sort_vector:
+            return _clean_vector(tuple(row.sort_vector))
+        return _clean_vector((
+            float(row.quality_per_mother or 0.0),
+            float(row.effective_per_mother or 0.0),
+        ))
     raw = row.get("_sort_vector")
     if isinstance(raw, tuple):
         return _clean_vector(tuple(float(value) for value in raw))
@@ -5632,6 +5691,31 @@ def _row_sort_vector(row: dict[str, float | str]) -> tuple[float, ...]:
     ))
 
 
+def _row_set_completion_probability(
+    row: ActionEvRowPayload | dict[str, float | str],
+) -> float:
+    if isinstance(row, ActionEvRowPayload):
+        return float(row.set_completion_probability or 0.0)
+    return _row_float(row, "成型跃迁概率")
+
+
+def _row_set_completion_per_mother(
+    row: ActionEvRowPayload | dict[str, float | str],
+) -> float:
+    if isinstance(row, ActionEvRowPayload):
+        return _action_ev_model_number(row.set_completion_per_mother)
+    return _row_float(row, "成型跃迁/母盘")
+
+
+def _row_decision_vector(
+    row: ActionEvRowPayload | dict[str, float | str],
+) -> tuple[float, ...]:
+    return (
+        _clean_vector_value(_row_set_completion_per_mother(row)),
+        *_row_sort_vector(row),
+    )
+
+
 def _row_float(row: dict[str, float | str], key: str) -> float:
     try:
         return float(row.get(key) or 0.0)
@@ -5639,7 +5723,15 @@ def _row_float(row: dict[str, float | str], key: str) -> float:
         return 0.0
 
 
-def _row_has_positive_gain(row: dict[str, float | str]) -> bool:
+def _row_has_positive_gain(
+    row: ActionEvRowPayload | dict[str, float | str],
+) -> bool:
+    if _row_set_completion_probability(row) > _VECTOR_EPSILON:
+        return True
+    if isinstance(row, ActionEvRowPayload):
+        if row.effective_gain > _VECTOR_EPSILON or row.quality_gain > _VECTOR_EPSILON:
+            return True
+        return any(value > _VECTOR_EPSILON for value in _row_sort_vector(row))
     if _row_float(row, "有效提升") > _VECTOR_EPSILON:
         return True
     if _row_float(row, "质量提升") > _VECTOR_EPSILON:
@@ -5647,7 +5739,13 @@ def _row_has_positive_gain(row: dict[str, float | str]) -> bool:
     return any(value > _VECTOR_EPSILON for value in _row_sort_vector(row))
 
 
-def _row_has_effective_gain(row: dict[str, float | str]) -> bool:
+def _row_has_effective_gain(
+    row: ActionEvRowPayload | dict[str, float | str],
+) -> bool:
+    if isinstance(row, ActionEvRowPayload):
+        if "effective_gain" in row.model_fields_set:
+            return row.effective_gain > _VECTOR_EPSILON
+        return _action_ev_model_number(row.effective_per_mother) > _VECTOR_EPSILON
     if "有效提升" in row:
         return _row_float(row, "有效提升") > _VECTOR_EPSILON
     return _row_float(row, "有效/母盘") > _VECTOR_EPSILON
@@ -5677,10 +5775,17 @@ def _best_upgrade_opportunity_row(
     )
 
 
-def _is_recommendable_action_row(row: dict[str, float | str]) -> bool:
-    strategy = str(row.get("策略") or "")
-    relative = str(row.get("相对随机") or "")
-    set_plan_status = str(row.get("套装约束") or "")
+def _is_recommendable_action_row(
+    row: ActionEvRowPayload | dict[str, float | str],
+) -> bool:
+    if isinstance(row, ActionEvRowPayload):
+        strategy = row.strategy
+        relative = row.relative_to_random
+        set_plan_status = row.set_constraint
+    else:
+        strategy = str(row.get("策略") or "")
+        relative = str(row.get("相对随机") or "")
+        set_plan_status = str(row.get("套装约束") or "")
     if set_plan_status.startswith("未满足"):
         return False
     if strategy == "随机位置":
@@ -5715,6 +5820,7 @@ def resource_marginal_ev_rows(
             game,
             character,
             current_count=len(analysis.scores),
+            include_upgrade_expectation=True,
         )
         if inventory_pieces is not None
         else _current_inventory_rows(analysis, character)
@@ -5737,7 +5843,7 @@ def resource_marginal_ev_rows(
             total=1,
             label="已使用上次特殊资源 EV 缓存",
         )
-        return [dict(row) for row in cached]
+        return deepcopy(cached)
 
     rows: list[dict[str, float | str]] = []
     fixed_position_cost = probability_model.resource_cost("mother_disk_fixed_position_attempt", 6.0)
@@ -5956,7 +6062,7 @@ def resource_marginal_ev_rows(
     _lru_set(
         _RESOURCE_MARGINAL_EV_ROWS_CACHE,
         cache_key,
-        [dict(row) for row in rows],
+        deepcopy(rows),
         RESOURCE_MARGINAL_EV_ROWS_CACHE_MAX_SIZE,
     )
     _emit_progress(
@@ -5972,9 +6078,9 @@ def resource_marginal_ev_rows(
     return rows
 
 
-def recommended_action_ev_row(
-    rows: list[dict[str, float | str]],
-) -> dict[str, float | str] | None:
+def top_action_ev_audit_model(
+    rows: Sequence[ActionEvRowPayload],
+) -> ActionEvRowPayload | None:
     if not rows:
         return None
     candidates = [row for row in rows if _is_recommendable_action_row(row)]
@@ -5982,44 +6088,146 @@ def recommended_action_ev_row(
         candidates = [
             row
             for row in rows
-            if row.get("策略") == "随机位置"
-            and not str(row.get("套装约束") or "").startswith("未满足")
+            if row.strategy == "随机位置"
+            and not row.set_constraint.startswith("未满足")
         ]
     if not candidates:
         return None
     return max(
         candidates,
-        key=_row_sort_vector,
+        key=_row_decision_vector,
     )
 
 
+def action_ev_model_recommend_group(row: ActionEvRowPayload) -> int:
+    if row.set_constraint.startswith("未满足"):
+        return 0
+    if _is_recommendable_action_row(row):
+        return 3
+    if row.strategy == "强化库存胚子" and _row_has_effective_gain(row):
+        return 2
+    if _row_has_effective_gain(row):
+        return 1
+    return 0
+
+
+def _action_ev_model_number(value: float | str) -> float:
+    try:
+        return float(value or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def action_ev_model_display_sort_key(row: ActionEvRowPayload) -> tuple[Any, ...]:
+    return (
+        action_ev_model_recommend_group(row),
+        _row_set_completion_per_mother(row),
+        _row_set_completion_probability(row),
+        _action_ev_model_number(row.effective_per_mother),
+        row.effective_gain,
+        _row_sort_vector(row),
+    )
+
+
+def sorted_action_ev_models(
+    rows: Sequence[ActionEvRowPayload],
+) -> list[ActionEvRowPayload]:
+    return sorted(rows, key=action_ev_model_display_sort_key, reverse=True)
+
+
+def recommended_action_ev_model(
+    rows: Sequence[ActionEvRowPayload],
+) -> ActionEvRowPayload | None:
+    candidates = [
+        row
+        for row in rows
+        if row.strategy != "强化库存胚子"
+        and (
+            _row_set_completion_probability(row) > _VECTOR_EPSILON
+            or _row_has_effective_gain(row)
+        )
+        and action_ev_model_recommend_group(row) == 3
+    ]
+    if not candidates:
+        return None
+    return max(candidates, key=action_ev_model_display_sort_key)
+
+
+def _action_ev_display_models(rows: Sequence[dict[str, Any]]) -> list[ActionEvRowPayload]:
+    return [ActionEvRowPayload.from_display_row(row) for row in rows]
+
+
+def top_action_ev_audit_row(
+    rows: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    models = _action_ev_display_models(rows)
+    selected = top_action_ev_audit_model(models)
+    if selected is None:
+        return None
+    return rows[models.index(selected)]
+
+
+def action_ev_recommend_group(row: dict[str, Any]) -> int:
+    return action_ev_model_recommend_group(ActionEvRowPayload.from_display_row(row))
+
+
+def action_ev_display_sort_key(row: dict[str, Any]) -> tuple[Any, ...]:
+    return action_ev_model_display_sort_key(ActionEvRowPayload.from_display_row(row))
+
+
+def sorted_action_ev_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    models = _action_ev_display_models(rows)
+    order = sorted(
+        range(len(rows)),
+        key=lambda index: action_ev_model_display_sort_key(models[index]),
+        reverse=True,
+    )
+    return [rows[index] for index in order]
+
+
+def recommended_action_ev_row(
+    rows: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    models = _action_ev_display_models(rows)
+    selected = recommended_action_ev_model(models)
+    if selected is None:
+        return None
+    return rows[models.index(selected)]
+
+
 _ACTION_EV_ENGINE_COMPARE_CORE_COLUMNS = (
-    "策略",
-    "目标套装",
-    "位置",
-    "主属性",
-    "固定副属性",
+    "strategy",
+    "target_set",
+    "position",
+    "main_stat",
+    "fixed_substats",
     "horizon",
-    "期望提升",
-    "质量提升",
-    "有效提升",
-    "质量/母盘",
-    "有效/母盘",
-    "母盘/次",
-    "校音器/次",
-    "共鸣核/次",
-    "高级素材/次",
-    "相对随机",
-    "套装约束",
+    "expected_gain",
+    "quality_gain",
+    "effective_gain",
+    "quality_per_mother",
+    "effective_per_mother",
+    "mother_cost",
+    "tuner_cost",
+    "resonance_core_cost",
+    "advanced_material_cost",
+    "relative_to_random",
+    "set_constraint",
 )
 
 
-def _action_ev_row_identity(row: dict[str, Any] | None) -> str:
+def _action_ev_row_identity(row: ActionEvRowPayload | None) -> str:
     if not row:
         return "-"
     return " | ".join(
-        str(row.get(key) or "-")
-        for key in ("策略", "目标套装", "位置", "主属性", "固定副属性")
+        value or "-"
+        for value in (
+            row.strategy,
+            row.target_set,
+            row.position,
+            row.main_stat,
+            row.fixed_substats,
+        )
     )
 
 
@@ -6033,11 +6241,11 @@ def _action_ev_compare_value(value: object) -> object:
     return value
 
 
-def _action_ev_core_snapshot(row: dict[str, Any]) -> dict[str, object]:
+def _action_ev_core_snapshot(row: ActionEvRowPayload) -> dict[str, object]:
+    values = row.model_dump(mode="python")
     return {
-        key: _action_ev_compare_value(row.get(key))
+        key: _action_ev_compare_value(values.get(key))
         for key in _ACTION_EV_ENGINE_COMPARE_CORE_COLUMNS
-        if key in row
     }
 
 
@@ -6056,7 +6264,7 @@ def compare_action_ev_engines(
 
     action_mode = normalize_action_ev_mode(action_mode)
     started = time.monotonic()
-    inventory_rows = position_strategy_efficiency_rows(
+    inventory_rows = position_strategy_efficiency_models(
         game,
         character,
         probability_model,
@@ -6069,7 +6277,7 @@ def compare_action_ev_engines(
     inventory_elapsed = time.monotonic() - started
 
     started = time.monotonic()
-    state_rows = position_strategy_efficiency_rows(
+    state_rows = position_strategy_efficiency_models(
         game,
         character,
         probability_model,
@@ -6081,8 +6289,8 @@ def compare_action_ev_engines(
     )
     state_elapsed = time.monotonic() - started
 
-    inventory_recommendation = _action_ev_row_identity(recommended_action_ev_row(inventory_rows))
-    state_recommendation = _action_ev_row_identity(recommended_action_ev_row(state_rows))
+    inventory_recommendation = _action_ev_row_identity(recommended_action_ev_model(inventory_rows))
+    state_recommendation = _action_ev_row_identity(recommended_action_ev_model(state_rows))
     inventory_top = [_action_ev_row_identity(row) for row in inventory_rows[:top_n]]
     state_top = [_action_ev_row_identity(row) for row in state_rows[:top_n]]
     recommendation_consistent = inventory_recommendation == state_recommendation
@@ -6161,74 +6369,82 @@ def compare_action_ev_engines(
     }
 
 
-def _brief_recommended_action_row(
-    rows: list[dict[str, float | str]],
-) -> dict[str, float | str] | None:
+def _best_upgrade_opportunity_model(
+    rows: Sequence[ActionEvRowPayload],
+    *,
+    effective_only: bool = False,
+) -> ActionEvRowPayload | None:
     candidates = [
         row
         for row in rows
-        if _is_recommendable_action_row(row) and _row_has_effective_gain(row)
+        if row.strategy == "强化库存胚子"
+        and (_row_has_effective_gain(row) if effective_only else _row_has_positive_gain(row))
+        and not row.set_constraint.startswith("未满足")
     ]
     if not candidates:
         return None
     return max(
         candidates,
         key=lambda row: (
-            _row_float(row, "有效/母盘"),
-            _row_float(row, "有效提升"),
+            row.effective_gain,
+            row.quality_gain,
             _row_sort_vector(row),
         ),
     )
 
 
-def action_ev_brief(rows: list[dict[str, float | str]]) -> str:
-    audit_best = recommended_action_ev_row(rows)
-    best = _brief_recommended_action_row(rows)
+def action_ev_model_brief(rows: Sequence[ActionEvRowPayload]) -> str:
+    audit_best = top_action_ev_audit_model(rows)
+    best = recommended_action_ev_model(rows)
     if best is None:
-        upgrade = _best_upgrade_opportunity_row(rows, effective_only=True)
+        upgrade = _best_upgrade_opportunity_model(rows, effective_only=True)
         if upgrade is not None:
             if audit_best is not None:
                 return (
                     "当前 horizon 没有有效提升为正的可推荐调律 action；"
                     "存在库存升级机会："
-                    f"{upgrade.get('目标套装', '-')} {upgrade.get('位置', '-')}，"
-                    f"有效提升 {upgrade.get('有效提升', '-')}；"
+                    f"{upgrade.target_set or '-'} {upgrade.position or '-'}，"
+                    f"有效提升 {upgrade.effective_gain}；"
                     "排序最高调律 action 仅有非有效收益，作为审计信息保留："
-                    f"{audit_best['策略']} {audit_best['目标套装']} {audit_best['位置']}。"
+                    f"{audit_best.strategy} {audit_best.target_set} {audit_best.position}。"
                 )
             return (
                 "当前 horizon 没有可推荐调律 action；"
                 "存在库存升级机会："
-                f"{upgrade.get('目标套装', '-')} {upgrade.get('位置', '-')}，"
-                f"有效提升 {upgrade.get('有效提升', '-')}；"
+                f"{upgrade.target_set or '-'} {upgrade.position or '-'}，"
+                f"有效提升 {upgrade.effective_gain}；"
                 "库存升级机会不参与主调律推荐排序。"
             )
-        if rows and all(str(row.get("套装约束") or "").startswith("未满足") for row in rows):
+        if rows and all(row.set_constraint.startswith("未满足") for row in rows):
             return "当前 horizon 没有满足套装硬约束的 action；请提高 horizon 或先补齐套装缺口。"
         if audit_best is not None:
-            comparison = str(audit_best.get("比较口径") or audit_best.get("相对随机") or "-")
+            comparison = audit_best.comparison_scope or audit_best.relative_to_random or "-"
             return (
                 "当前 horizon 的排序最高调律 action 仅有非有效收益，"
                 "桌面主口径暂无有效提升 action："
-                f"{audit_best['策略']} {audit_best['目标套装']} {audit_best['位置']}，"
-                f"有效/母盘 {audit_best.get('有效/母盘', '-')}；"
-                f"{comparison}；{audit_best.get('套装约束', '-')}。"
-                f"审计排序向量/母盘 {audit_best.get('排序向量/母盘', '-')}。"
+                f"{audit_best.strategy} {audit_best.target_set} {audit_best.position}，"
+                f"有效/母盘 {audit_best.effective_per_mother}；"
+                f"{comparison}；{audit_best.set_constraint or '-'}。"
+                f"审计排序向量/母盘 {audit_best.sort_vector_label or '-'}。"
             )
         return "暂无 action EV 结果。"
-    loadout = str(best.get("代表分支搭配") or best.get("预期搭配") or "-")
-    comparison = str(best.get("比较口径") or best.get("相对随机") or "-")
+    loadout = best.representative_branch_loadout or best.expected_loadout or "-"
+    comparison = best.comparison_scope or best.relative_to_random or "-"
     audit_note = ""
     if audit_best is not None and audit_best is not best:
         audit_note = (
             "引擎审计排序最高为："
-            f"{audit_best['策略']} {audit_best['目标套装']} {audit_best['位置']}。"
+            f"{audit_best.strategy} {audit_best.target_set} {audit_best.position}。"
         )
     return (
-        f"{best['策略']}：{best['目标套装']} {best['位置']}，"
-        f"有效提升 {best.get('有效提升', '-')}，"
-        f"有效/母盘 {best['有效/母盘']}；"
-        f"{comparison}；{best.get('套装约束', '-')}。代表分支搭配：{loadout}。"
-        f"审计排序向量/母盘 {best.get('排序向量/母盘', '-')}。"
+        f"{best.strategy}：{best.target_set} {best.position}，"
+        f"有效提升 {best.effective_gain}，"
+        f"有效/母盘 {best.effective_per_mother}；"
+        f"{comparison}；{best.set_constraint or '-'}。代表分支搭配：{loadout}。"
+        f"审计排序向量/母盘 {best.sort_vector_label or '-'}。"
         f"{audit_note}"
     )
+
+
+def action_ev_brief(rows: list[dict[str, float | str]]) -> str:
+    return action_ev_model_brief(_action_ev_display_models(rows))

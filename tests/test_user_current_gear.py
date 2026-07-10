@@ -60,6 +60,9 @@ def test_user_current_gear_save_load_and_delete_round_trip(tmp_path):
 
     assert delete_user_current_gear("zzz", "zzz_starlight_billy", saved["id"], tmp_path)
     assert load_user_current_gears("zzz", "zzz_starlight_billy", tmp_path) == []
+    path = current_gear_store_path("zzz", "zzz_starlight_billy", tmp_path)
+    assert not path.exists()
+    assert path.with_name(f"{path.name}.bak").exists()
 
 
 def test_user_current_gear_delete_missing_returns_false(tmp_path):

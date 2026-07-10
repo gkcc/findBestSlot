@@ -52,18 +52,6 @@ def set_plan_lock_conflict_text(set_plan: dict | None) -> str:
     )
 
 
-def current_priority_text(analysis: CurrentGearAnalysis) -> str:
-    if not analysis.relative_priority:
-        return "还没有可分析的装备。"
-    top = analysis.relative_priority[0]
-    return (
-        f"当前相对提升优先级偏向 {top['position_name']}。"
-        f"原因：该位置当前有效词条 {top.get('current_effective_rolls', 0):g}，"
-        f"质量分 {top.get('current_weighted_score', top['current_score']):g}，"
-        f"评级为 {top['rating']}，替换增量最高。"
-    )
-
-
 def set_plan_step_text(analysis: CurrentGearAnalysis) -> str:
     if not analysis.set_plan:
         return "套装阶段：当前角色没有设置套装组合，先按主属性和副词条质量补弱。"

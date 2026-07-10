@@ -4,7 +4,7 @@
 
 本次重构集中在 `src/gear_optimizer/position_ev.py`：
 
-- 用精确 DP 替换 `_candidate_combos` / `_best_combo_rows` 原先的按位置笛卡尔积枚举。
+- 用精确 DP 替换旧 `_candidate_combos` / `_best_combo_rows` 的按位置笛卡尔积枚举；旧兼容包装现已移除。
 - value-only 路径只保存 count-state 下的最优 value，不回溯组合。
 - `return_combo=True` 路径使用 DP backpointer 回溯组合，供 `_set_plan_frontier_action_specs` 使用。
 - 拆分可装备 loadout candidates 与 upgrade sources：未满级胚子默认只作为“库存升级机会”action source，不进入 `Best(I)`。

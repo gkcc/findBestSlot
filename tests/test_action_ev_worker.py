@@ -2,6 +2,12 @@ import json
 from pathlib import Path
 
 from gear_optimizer import position_ev
+from gear_optimizer.action_ev_protocol import (
+    ACTION_EV_PROTOCOL_SCHEMA_VERSION,
+    ActionEvRowPayload,
+    parse_action_ev_progress_event,
+    parse_action_ev_worker_result,
+)
 from gear_optimizer.action_ev_worker import (
     ACTION_EV_ENGINE_ENV,
     ACTION_EV_MODE_ENV,
@@ -23,6 +29,7 @@ def _write_worker_input(
 ) -> None:
     pieces = load_current_example("examples/zzz_billy_current.yaml")
     payload = {
+        "schema_version": ACTION_EV_PROTOCOL_SCHEMA_VERSION,
         "run_id": "test-run",
         "game_id": game_id,
         "character_id": "zzz_starlight_billy",
@@ -46,6 +53,10 @@ def _write_worker_input(
     )
 
 
+def _strategy_values(rows: list[dict]) -> list[str]:
+    return [str(row["策略"]) for row in rows]
+
+
 def test_action_ev_worker_engine_defaults_and_env_override(monkeypatch, tmp_path):
     input_path = tmp_path / "input.json"
     _write_worker_input(input_path, engine="state_dp")
@@ -54,19 +65,19 @@ def test_action_ev_worker_engine_defaults_and_env_override(monkeypatch, tmp_path
 
     def fake_position_strategy_efficiency_rows(*_args, **kwargs):
         captured.append(kwargs.get("use_state_dp"))
-        return [{"策略": "fake"}]
+        return [ActionEvRowPayload(strategy="fake")]
 
     monkeypatch.setattr(
-        "gear_optimizer.action_ev_worker.position_strategy_efficiency_rows",
+        "gear_optimizer.action_ev_worker.position_strategy_efficiency_models",
         fake_position_strategy_efficiency_rows,
     )
     monkeypatch.delenv(ACTION_EV_ENGINE_ENV, raising=False)
 
-    assert build_action_ev_rows_from_payload(payload) == [{"策略": "fake"}]
+    assert _strategy_values(build_action_ev_rows_from_payload(payload)) == ["fake"]
     assert captured[-1] is True
 
     monkeypatch.setenv(ACTION_EV_ENGINE_ENV, "inventory_recursive")
-    assert build_action_ev_rows_from_payload(payload) == [{"策略": "fake"}]
+    assert _strategy_values(build_action_ev_rows_from_payload(payload)) == ["fake"]
     assert captured[-1] is False
 
 
@@ -78,19 +89,19 @@ def test_action_ev_worker_action_mode_defaults_and_env_override(monkeypatch, tmp
 
     def fake_position_strategy_efficiency_rows(*_args, **kwargs):
         captured.append(kwargs.get("action_mode"))
-        return [{"策略": "fake"}]
+        return [ActionEvRowPayload(strategy="fake")]
 
     monkeypatch.setattr(
-        "gear_optimizer.action_ev_worker.position_strategy_efficiency_rows",
+        "gear_optimizer.action_ev_worker.position_strategy_efficiency_models",
         fake_position_strategy_efficiency_rows,
     )
     monkeypatch.delenv(ACTION_EV_MODE_ENV, raising=False)
 
-    assert build_action_ev_rows_from_payload(payload) == [{"策略": "fake"}]
+    assert _strategy_values(build_action_ev_rows_from_payload(payload)) == ["fake"]
     assert captured[-1] == "exact"
 
     monkeypatch.setenv(ACTION_EV_MODE_ENV, "fast")
-    assert build_action_ev_rows_from_payload(payload) == [{"策略": "fake"}]
+    assert _strategy_values(build_action_ev_rows_from_payload(payload)) == ["fake"]
     assert captured[-1] == "fast"
 
 
@@ -113,14 +124,14 @@ def test_action_ev_worker_loads_user_target_templates(monkeypatch, tmp_path):
 
     def fake_position_strategy_efficiency_rows(_game, character, *_args, **_kwargs):
         captured.append(character.id)
-        return [{"策略": "fake"}]
+        return [ActionEvRowPayload(strategy="fake")]
 
     monkeypatch.setattr(
-        "gear_optimizer.action_ev_worker.position_strategy_efficiency_rows",
+        "gear_optimizer.action_ev_worker.position_strategy_efficiency_models",
         fake_position_strategy_efficiency_rows,
     )
 
-    assert build_action_ev_rows_from_payload(payload) == [{"策略": "fake"}]
+    assert _strategy_values(build_action_ev_rows_from_payload(payload)) == ["fake"]
     assert captured == [saved.id]
 
 
@@ -142,11 +153,11 @@ def test_action_ev_worker_builtin_character_ignores_broken_user_target_templates
     }
 
     monkeypatch.setattr(
-        "gear_optimizer.action_ev_worker.position_strategy_efficiency_rows",
-        lambda *_args, **_kwargs: [{"策略": "fake"}],
+        "gear_optimizer.action_ev_worker.position_strategy_efficiency_models",
+        lambda *_args, **_kwargs: [ActionEvRowPayload(strategy="fake")],
     )
 
-    assert build_action_ev_rows_from_payload(payload) == [{"策略": "fake"}]
+    assert _strategy_values(build_action_ev_rows_from_payload(payload)) == ["fake"]
 
 
 def test_action_ev_worker_strips_unsupported_revealed_next_substat(monkeypatch):
@@ -173,14 +184,14 @@ def test_action_ev_worker_strips_unsupported_revealed_next_substat(monkeypatch):
 
     def fake_position_strategy_efficiency_rows(_game, _character, _model, analysis, **_kwargs):
         captured.append(analysis.scores[0].position)
-        return [{"策略": "fake"}]
+        return [ActionEvRowPayload(strategy="fake")]
 
     monkeypatch.setattr(
-        "gear_optimizer.action_ev_worker.position_strategy_efficiency_rows",
+        "gear_optimizer.action_ev_worker.position_strategy_efficiency_models",
         fake_position_strategy_efficiency_rows,
     )
 
-    assert build_action_ev_rows_from_payload(payload) == [{"策略": "fake"}]
+    assert _strategy_values(build_action_ev_rows_from_payload(payload)) == ["fake"]
     assert captured
 
 
@@ -215,14 +226,14 @@ def test_action_ev_worker_strips_invalid_hsr_revealed_next_substat(monkeypatch):
 
     def fake_position_strategy_efficiency_rows(_game, _character, _model, _analysis, **kwargs):
         captured.append([piece.revealed_next_substat for piece in kwargs["inventory_pieces"]])
-        return [{"策略": "fake"}]
+        return [ActionEvRowPayload(strategy="fake")]
 
     monkeypatch.setattr(
-        "gear_optimizer.action_ev_worker.position_strategy_efficiency_rows",
+        "gear_optimizer.action_ev_worker.position_strategy_efficiency_models",
         fake_position_strategy_efficiency_rows,
     )
 
-    assert build_action_ev_rows_from_payload(payload) == [{"策略": "fake"}]
+    assert _strategy_values(build_action_ev_rows_from_payload(payload)) == ["fake"]
     assert captured == [[None, None]]
 
 
@@ -258,12 +269,20 @@ def test_action_ev_worker_writes_result_progress_and_summary(tmp_path):
 
     result = json.loads(output_path.read_text(encoding="utf-8"))
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
-    progress_events = [
+    raw_progress_events = [
         json.loads(line)
         for line in progress_path.read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
+    progress_events = [
+        parse_action_ev_progress_event(event).to_flat_dict()
+        for event in raw_progress_events
+    ]
 
+    assert result["schema_version"] == ACTION_EV_PROTOCOL_SCHEMA_VERSION
+    assert summary["schema_version"] == ACTION_EV_PROTOCOL_SCHEMA_VERSION
+    assert all(event["schema_version"] == ACTION_EV_PROTOCOL_SCHEMA_VERSION for event in raw_progress_events)
+    assert all("payload" in event for event in raw_progress_events)
     assert result["run_id"] == "test-run"
     assert result["engine"] == "inventory_recursive"
     assert result["action_mode"] == "fast"
@@ -271,6 +290,9 @@ def test_action_ev_worker_writes_result_progress_and_summary(tmp_path):
     assert result["input_audit"] == "输入指纹：worker-test\n库存：0 件"
     assert result["input_audit_lines"] == ["输入指纹：worker-test", "库存：0 件"]
     assert result["rows"]
+    assert "策略" not in result["rows"][0]
+    parsed_result = parse_action_ev_worker_result(result)
+    assert parsed_result.to_display_rows()[0]["策略"]
     assert summary["status"] == "ok"
     assert summary["engine"] == "inventory_recursive"
     assert summary["action_mode"] == "fast"
@@ -321,6 +343,8 @@ def test_action_ev_worker_writes_error_json_for_bad_input(tmp_path):
 
     error = json.loads(error_path.read_text(encoding="utf-8"))
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert error["schema_version"] == ACTION_EV_PROTOCOL_SCHEMA_VERSION
+    assert summary["schema_version"] == ACTION_EV_PROTOCOL_SCHEMA_VERSION
     assert error["status"] == "error"
     assert "missing-game" in error["message"]
     assert error["input_audit"] == "输入指纹：worker-test\n库存：0 件"
@@ -332,6 +356,40 @@ def test_action_ev_worker_writes_error_json_for_bad_input(tmp_path):
     assert not output_path.exists()
 
 
+def test_action_ev_worker_reports_unsupported_request_schema(tmp_path):
+    input_path = tmp_path / "input.json"
+    output_path = tmp_path / "result.json"
+    progress_path = tmp_path / "progress.jsonl"
+    error_path = tmp_path / "error.json"
+    summary_path = tmp_path / "summary.json"
+    _write_worker_input(input_path)
+    payload = json.loads(input_path.read_text(encoding="utf-8"))
+    payload["schema_version"] = 2
+    input_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    assert worker_main(
+        [
+            "--input",
+            str(input_path),
+            "--output",
+            str(output_path),
+            "--progress",
+            str(progress_path),
+            "--error",
+            str(error_path),
+            "--summary",
+            str(summary_path),
+        ]
+    ) == 1
+
+    error = json.loads(error_path.read_text(encoding="utf-8"))
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert error["error_type"] == "UnsupportedActionEvProtocolVersionError"
+    assert "schema_version=2" in error["message"]
+    assert summary["status"] == "error"
+    assert not output_path.exists()
+
+
 def test_progress_jsonl_writer_throttles_non_critical_events(tmp_path):
     progress_path = tmp_path / "progress.jsonl"
     with ProgressJsonlWriter(progress_path, "test-run", min_interval_seconds=60.0) as writer:
@@ -339,9 +397,10 @@ def test_progress_jsonl_writer_throttles_non_critical_events(tmp_path):
         writer.emit({"event": "unit_progress", "label": "skipped"})
         writer.emit({"event": "complete", "label": "done"})
 
-    events = [
+    raw_events = [
         json.loads(line)
         for line in progress_path.read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
+    events = [parse_action_ev_progress_event(event).to_flat_dict() for event in raw_events]
     assert [event["label"] for event in events] == ["first", "done"]

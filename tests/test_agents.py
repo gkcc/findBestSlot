@@ -39,6 +39,7 @@ from gear_optimizer.agents import (
     sort_agent_metadata,
 )
 from gear_optimizer.models import CharacterPreset, GearPiece, SubstatLine, SubstatPriority
+from gear_optimizer.storage_io import StoreRevisionConflictError
 from gear_optimizer.user_current_gear import current_gear_store_path, save_user_current_gear
 from gear_optimizer.user_inventory import save_legacy_user_inventory, save_user_inventory
 
@@ -130,6 +131,13 @@ def test_agent_schemas_save_load_and_fallbacks(tmp_path):
     assert load_agent_user_state_store("missing", tmp_path) == AgentUserStateStore(game="missing")
 
 
+def test_unknown_legacy_character_uses_safe_fallback_agent_id():
+    agent = agents._agent_for_character("Missing Character!", {}, {})
+
+    assert agent.agent_id == "fallback_missing_character"
+    assert agent.character_preset_id == "Missing Character!"
+
+
 def test_project_agent_catalogs_match_character_presets():
     for game_id in ["hsr", "zzz"]:
         catalog = agents.load_agent_catalog(game_id)
@@ -212,6 +220,23 @@ def test_inventory_item_id_is_stable_after_round_trip(tmp_path):
     assert loaded.items[0].piece == item.piece
 
 
+def test_global_inventory_store_rejects_stale_model_save(tmp_path):
+    store = GlobalInventoryStore(game=GAME_ID)
+    save_global_inventory_store(store, tmp_path)
+    first_writer = load_global_inventory_store(GAME_ID, tmp_path)
+    stale_writer = load_global_inventory_store(GAME_ID, tmp_path)
+    first_writer.items.append(new_inventory_item(_piece(position=1), item_id="first"))
+    stale_writer.items.append(new_inventory_item(_piece(position=2), item_id="stale"))
+
+    save_global_inventory_store(first_writer, tmp_path)
+    with pytest.raises(StoreRevisionConflictError, match="重新载入"):
+        save_global_inventory_store(stale_writer, tmp_path)
+
+    loaded = load_global_inventory_store(GAME_ID, tmp_path)
+    assert loaded.revision == 2
+    assert [item.item_id for item in loaded.items] == ["first"]
+
+
 def test_agent_loadout_stores_only_item_ids_and_expands_from_global_inventory(tmp_path):
     item1 = new_inventory_item(_piece(position=1), item_id="inv_one", now="2026-07-04T00:00:00+08:00")
     item2 = new_inventory_item(_piece(position=2), item_id="inv_two", now="2026-07-04T00:00:00+08:00")
@@ -272,6 +297,88 @@ def test_legacy_inventory_compatible_view_switches_to_global_when_present(tmp_pa
     save_global_inventory_store(GlobalInventoryStore(game=GAME_ID, items=[global_item]), tmp_path)
 
     assert load_inventory_items_compatible(GAME_ID, CHARACTER_ID, tmp_path) == [global_item]
+
+
+def test_shared_inventory_compatible_ids_do_not_depend_on_selected_agent(tmp_path):
+    piece = _piece(position=1)
+    save_user_inventory(GAME_ID, "agent_a", [piece], tmp_path)
+
+    agent_a_items = load_inventory_items_compatible(GAME_ID, "agent_a", tmp_path)
+    agent_b_items = load_inventory_items_compatible(GAME_ID, "agent_b", tmp_path)
+
+    assert [item.piece for item in agent_a_items] == [piece]
+    assert [item.item_id for item in agent_a_items] == [item.item_id for item in agent_b_items]
+
+
+def test_dry_run_migration_includes_shared_inventory(monkeypatch, tmp_path):
+    _patch_migration_configs(monkeypatch)
+    shared_piece = _piece(position=1)
+    current_piece = _piece(position=2)
+    save_user_inventory(GAME_ID, CHARACTER_ID, [shared_piece], tmp_path)
+    save_user_current_gear(GAME_ID, CHARACTER_ID, [current_piece], "当前装备", tmp_path)
+
+    report = dry_run_multi_agent_migration(
+        GAME_ID,
+        root=tmp_path,
+        now="2026-07-04T00:00:00+08:00",
+    )
+
+    assert len(report.inventory_items) == 2
+    assert f"inventory/{GAME_ID}/_shared.yaml" in report.legacy_inventory_files
+    assert any(
+        item.migrated_from and item.migrated_from.get("kind") == "shared_inventory"
+        for item in report.inventory_items
+    )
+
+
+def test_shared_inventory_shadows_legacy_agent_files_during_migration(monkeypatch, tmp_path):
+    _patch_migration_configs(monkeypatch)
+    shared_piece = _piece(position=1)
+    stale_legacy_piece = _piece(position=2)
+    save_user_inventory(GAME_ID, CHARACTER_ID, [shared_piece], tmp_path)
+    save_legacy_user_inventory(
+        GAME_ID,
+        CHARACTER_ID,
+        [stale_legacy_piece],
+        tmp_path,
+    )
+
+    report = dry_run_multi_agent_migration(GAME_ID, root=tmp_path)
+
+    assert [item.piece for item in report.inventory_items] == [shared_piece]
+    assert "legacy_agent_inventory_shadowed_by_shared" in {
+        issue.code for issue in report.issues
+    }
+    assert f"inventory/{GAME_ID}/_shared.yaml" in report.legacy_inventory_files
+    assert f"inventory/{GAME_ID}/{CHARACTER_ID}.yaml" in report.legacy_inventory_files
+
+
+def test_migration_resolves_current_gear_owner_by_agent_id(monkeypatch, tmp_path):
+    metadata = AgentMetadata(
+        agent_id="agent_owner",
+        name="正式代理人",
+        character_preset_id="",
+    )
+    monkeypatch.setattr(agents, "load_characters", lambda _game_id: [])
+    monkeypatch.setattr(
+        agents,
+        "load_agent_catalog",
+        lambda game_id, project_root=agents.PROJECT_ROOT: AgentCatalog(
+            game=game_id,
+            agents=[metadata],
+        ),
+    )
+    save_user_current_gear(GAME_ID, "agent_owner", [_piece(position=1)], "当前装备", tmp_path)
+
+    report = dry_run_multi_agent_migration(
+        GAME_ID,
+        root=tmp_path,
+        now="2026-07-10T00:00:00+08:00",
+    )
+
+    assert [store.agent_id for store in report.loadout_stores] == ["agent_owner"]
+    assert "agent_metadata_missing" not in {issue.code for issue in report.issues}
+    assert "character_preset_missing" not in {issue.code for issue in report.issues}
 
 
 def test_dry_run_migration_reports_duplicates_and_does_not_modify_files(monkeypatch, tmp_path):
@@ -338,6 +445,46 @@ def test_apply_migration_creates_global_inventory_loadouts_and_backup(monkeypatc
     assert len(loaded_inventory.items) == 2
     assert len(loaded_loadout.loadouts) == 1
     assert expand_agent_loadout(loaded_inventory, loaded_loadout) == [current_piece]
+
+
+def test_migration_preserves_existing_global_inventory_and_is_idempotent(monkeypatch, tmp_path):
+    _patch_migration_configs(monkeypatch)
+    existing_item = new_inventory_item(
+        _piece(position=1),
+        item_id="inv_existing",
+        now="2026-07-04T00:00:00+08:00",
+    )
+    save_global_inventory_store(
+        GlobalInventoryStore(game=GAME_ID, items=[existing_item]),
+        tmp_path,
+    )
+    save_user_inventory(GAME_ID, CHARACTER_ID, [_piece(position=3)], tmp_path)
+    save_user_current_gear(
+        GAME_ID,
+        CHARACTER_ID,
+        [_piece(position=2)],
+        "当前装备",
+        tmp_path,
+    )
+
+    first = apply_multi_agent_migration(
+        GAME_ID,
+        root=tmp_path,
+        now="2026-07-04T00:00:00+08:00",
+    )
+    first_ids = [item.item_id for item in load_global_inventory_store(GAME_ID, tmp_path).items]
+    second = apply_multi_agent_migration(
+        GAME_ID,
+        root=tmp_path,
+        now="2026-07-05T00:00:00+08:00",
+    )
+    second_ids = [item.item_id for item in load_global_inventory_store(GAME_ID, tmp_path).items]
+
+    assert first_ids == second_ids
+    assert first_ids[0] == "inv_existing"
+    assert len(first_ids) == 2
+    assert "legacy_inventory_shadowed_by_global" in {issue.code for issue in first.issues}
+    assert "legacy_inventory_shadowed_by_global" in {issue.code for issue in second.issues}
 
 
 def test_loadout_conflict_reporting_allows_shared_item_but_blocks_missing_reference():

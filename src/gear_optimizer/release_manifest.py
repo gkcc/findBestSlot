@@ -8,7 +8,7 @@ from pathlib import Path
 import tomllib
 from typing import Any
 
-from gear_optimizer.game_rules import PROJECT_ROOT
+from gear_optimizer.project_paths import PROJECT_ROOT
 
 APP_NAME = "gacha-gear-optimizer"
 DEFAULT_MANIFEST = PROJECT_ROOT / "reports" / "release_artifact_manifest.json"
@@ -26,7 +26,7 @@ def _sha256(path: Path) -> str:
 def _project_version() -> str | None:
     try:
         data = tomllib.loads(PYPROJECT.read_text(encoding="utf-8"))
-    except Exception:
+    except (OSError, UnicodeError, tomllib.TOMLDecodeError):
         return None
     project = data.get("project")
     if not isinstance(project, dict):
@@ -214,7 +214,7 @@ def verify_manifest(path: str | Path = DEFAULT_MANIFEST) -> list[dict[str, str]]
     rows.append({"item": "manifest", "status": "ok", "detail": str(manifest_path)})
     try:
         data = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
-    except Exception as exc:
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         rows.append({"item": "manifest json", "status": "error", "detail": str(exc)})
         return rows
     if not isinstance(data, dict):

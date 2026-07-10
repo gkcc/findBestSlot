@@ -6,12 +6,11 @@ from gear_optimizer.game_rules import (
     load_characters,
     load_game,
     load_probability_models,
-    project_root,
     validate_candidate_against_game,
     validate_character_against_game,
     validate_current_gear_against_game,
 )
-from gear_optimizer import game_rules
+from gear_optimizer import project_paths
 from gear_optimizer.models import (
     CandidatePiece,
     CharacterPreset,
@@ -27,6 +26,7 @@ from gear_optimizer.presets import (
     load_candidate_example,
     load_current_example,
 )
+from gear_optimizer.project_paths import project_root
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -38,7 +38,7 @@ def test_project_root_prefers_pyinstaller_bundle_root(monkeypatch, tmp_path):
     (bundle / "desktop_app.py").write_text("# bundled app", encoding="utf-8")
     (bundle / "pyproject.toml").write_text("[project]\nname='bundle'\n", encoding="utf-8")
 
-    monkeypatch.setattr(game_rules.sys, "_MEIPASS", str(bundle), raising=False)
+    monkeypatch.setattr(project_paths.sys, "_MEIPASS", str(bundle), raising=False)
 
     assert project_root() == bundle.resolve()
 
