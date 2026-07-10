@@ -1,9 +1,33 @@
+import io
+
 from gear_optimizer.action_ev_protocol import ActionEvWorkerRequest
+from scripts import benchmark_action_ev
 from scripts.benchmark_action_ev import (
     build_default_request,
     build_report,
     load_benchmark_fixture,
 )
+
+
+class ReconfigurableTextStream(io.StringIO):
+    def __init__(self):
+        super().__init__()
+        self.configuration = None
+
+    def reconfigure(self, **kwargs):
+        self.configuration = kwargs
+
+
+def test_benchmark_cli_forces_utf8_output(monkeypatch):
+    stdout = ReconfigurableTextStream()
+    stderr = ReconfigurableTextStream()
+    monkeypatch.setattr(benchmark_action_ev.sys, "stdout", stdout)
+    monkeypatch.setattr(benchmark_action_ev.sys, "stderr", stderr)
+
+    benchmark_action_ev._configure_standard_streams()
+
+    assert stdout.configuration == {"encoding": "utf-8", "errors": "strict"}
+    assert stderr.configuration == {"encoding": "utf-8", "errors": "strict"}
 
 
 def test_default_benchmark_is_fixed_horizon_two_request():

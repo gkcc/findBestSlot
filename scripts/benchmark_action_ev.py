@@ -7,6 +7,7 @@ import multiprocessing
 import os
 from pathlib import Path
 import queue
+import sys
 import tempfile
 import time
 from typing import Any
@@ -26,6 +27,13 @@ from gear_optimizer.user_target_templates import save_user_target_template
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_REPORT = PROJECT_ROOT / "reports" / "h2_benchmark.json"
 DEFAULT_FIXTURE = PROJECT_ROOT / "tests" / "fixtures" / "zzz_ye_shunguang_h2_benchmark.json"
+
+
+def _configure_standard_streams() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            reconfigure(encoding="utf-8", errors="strict")
 
 
 def load_benchmark_fixture(
@@ -159,6 +167,7 @@ def build_report(
 
 
 def main(argv: list[str] | None = None) -> int:
+    _configure_standard_streams()
     parser = argparse.ArgumentParser(description="Run the fixed exact H=2 performance gate.")
     parser.add_argument("--threshold", type=float, default=60.0)
     parser.add_argument("--timeout", type=float, default=150.0)
