@@ -17,6 +17,7 @@ gacha-gear-optimizer-acceptance = "gear_optimizer.acceptance:main"
 gacha-gear-optimizer-verify-release = "gear_optimizer.release_manifest:main"
 gacha-gear-optimizer-readiness = "gear_optimizer.readiness:main"
 gacha-gear-optimizer-ui-smoke = "gear_optimizer.desktop_ui_smoke:main"
+gacha-gear-optimizer-desktop-backend = "gear_optimizer.desktop_backend:main"
 gacha-gear-optimizer-migrate-inventory = "gear_optimizer.inventory_migration:main"
 
 [project.optional-dependencies]
