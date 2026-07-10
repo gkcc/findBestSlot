@@ -28,41 +28,82 @@ enum BackendClientError {
 #[derive(Clone)]
 struct BackendConfig {
     project_root: PathBuf,
+    resource_dir: Option<PathBuf>,
+    uses_bundled_resources: bool,
     python_executable: PathBuf,
     packaged_backend: Option<PathBuf>,
+    packaged_action_worker: Option<PathBuf>,
 }
 
 impl BackendConfig {
     fn from_app(app: &AppHandle) -> Self {
         let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let project_root = manifest_dir
-            .parent()
-            .and_then(Path::parent)
-            .map(Path::to_path_buf)
-            .unwrap_or(manifest_dir);
+        let development_project_root = env::var_os("GEAR_OPTIMIZER_PROJECT_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                manifest_dir
+                    .parent()
+                    .and_then(Path::parent)
+                    .map(Path::to_path_buf)
+                    .unwrap_or(manifest_dir)
+            });
         let python_executable = env::var_os("GEAR_OPTIMIZER_PYTHON")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("python"));
+        let resource_dir = app.path().resource_dir().ok();
         let explicit_backend = env::var_os("GEAR_OPTIMIZER_BACKEND").map(PathBuf::from);
-        let packaged_backend = explicit_backend.or_else(|| {
-            let resource_dir = app.path().resource_dir().ok()?;
-            let candidate = resource_dir.join(if cfg!(windows) {
+        let bundled_backend = resource_dir.as_ref().and_then(|directory| {
+            let candidate = directory.join(if cfg!(windows) {
                 "gear-optimizer-backend.exe"
             } else {
                 "gear-optimizer-backend"
             });
             candidate.exists().then_some(candidate)
         });
+        let uses_bundled_resources = explicit_backend.is_none() && bundled_backend.is_some();
+        let packaged_backend = explicit_backend.or(bundled_backend);
+        let packaged_action_worker = uses_bundled_resources.then(|| {
+            resource_dir
+                .as_ref()
+                .expect("bundled backend requires a resource directory")
+                .join(if cfg!(windows) {
+                    "gear-optimizer-action-worker.exe"
+                } else {
+                    "gear-optimizer-action-worker"
+                })
+        });
+        let project_root = if uses_bundled_resources {
+            resource_dir
+                .clone()
+                .unwrap_or_else(|| development_project_root.clone())
+        } else {
+            development_project_root
+        };
         Self {
             project_root,
+            resource_dir,
+            uses_bundled_resources,
             python_executable,
             packaged_backend,
+            packaged_action_worker,
         }
     }
 
     fn command(&self) -> Command {
         if let Some(path) = &self.packaged_backend {
-            return Command::new(path);
+            let mut command = Command::new(path);
+            if self.uses_bundled_resources {
+                let resource_dir = self
+                    .resource_dir
+                    .as_ref()
+                    .expect("bundled backend requires a resource directory");
+                command.current_dir(resource_dir);
+                command.env("GEAR_OPTIMIZER_PROJECT_ROOT", resource_dir);
+            }
+            if let Some(action_worker) = &self.packaged_action_worker {
+                command.env("GEAR_OPTIMIZER_ACTION_WORKER", action_worker);
+            }
+            return command;
         }
         let mut command = Command::new(&self.python_executable);
         command.args(["-m", "gear_optimizer.desktop_backend"]);
@@ -97,7 +138,10 @@ impl BackendClient {
             .spawn()
             .map_err(BackendClientError::Spawn)?;
         let stdin = child.stdin.take().ok_or(BackendClientError::MissingStdin)?;
-        let stdout = child.stdout.take().ok_or(BackendClientError::MissingStdout)?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or(BackendClientError::MissingStdout)?;
         Ok(Self {
             child,
             stdin,
@@ -196,11 +240,20 @@ fn safe_relative_path(value: &str) -> Result<PathBuf, String> {
 }
 
 #[tauri::command]
-fn resolve_asset_path(relative_path: String, state: State<'_, BackendState>) -> Result<String, String> {
+fn resolve_asset_path(
+    relative_path: String,
+    state: State<'_, BackendState>,
+) -> Result<String, String> {
     let relative = safe_relative_path(&relative_path)?;
-    let development_path = state.config.project_root.join(&relative);
-    if development_path.exists() {
-        return Ok(development_path.to_string_lossy().into_owned());
+    let mut roots = vec![state.config.project_root.as_path()];
+    if let Some(resource_dir) = state.config.resource_dir.as_deref() {
+        roots.push(resource_dir);
+    }
+    for root in roots {
+        let candidate = root.join(&relative);
+        if candidate.is_file() {
+            return Ok(candidate.to_string_lossy().into_owned());
+        }
     }
     Err(format!("资源不存在：{relative_path}"))
 }

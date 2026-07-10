@@ -1,0 +1,12 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "bundle": {
+    "resources": {
+      "../../assets": "assets",
+      "../../configs": "configs",
+      "../../examples": "examples",
+      "../../build/tauri-sidecars/gear-optimizer-backend.exe": "gear-optimizer-backend.exe",
+      "../../build/tauri-sidecars/gear-optimizer-action-worker.exe": "gear-optimizer-action-worker.exe"
+    }
+  }
+}

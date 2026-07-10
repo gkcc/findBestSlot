@@ -107,3 +107,19 @@ def test_action_job_manager_cancels_running_worker(monkeypatch, tmp_path: Path):
 
     assert process.terminated
     assert cancelled.status == "cancelled"
+
+
+def test_action_job_manager_uses_packaged_worker_override(monkeypatch, tmp_path: Path):
+    worker = tmp_path / "gear-optimizer-action-worker.exe"
+    monkeypatch.setenv("GEAR_OPTIMIZER_ACTION_WORKER", str(worker))
+
+    command = DesktopActionJobManager._worker_command(
+        tmp_path / "input.json",
+        tmp_path / "output.json",
+        tmp_path / "progress.jsonl",
+        tmp_path / "error.json",
+        tmp_path / "summary.json",
+    )
+
+    assert command[0] == str(worker)
+    assert "-m" not in command

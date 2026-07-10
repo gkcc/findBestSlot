@@ -22,6 +22,7 @@ from gear_optimizer.action_ev_protocol import (
 )
 from gear_optimizer.desktop_protocol import DesktopActionJob
 from gear_optimizer.paths import app_data_root
+from gear_optimizer.project_paths import PROJECT_ROOT
 from gear_optimizer.runtime_logging import append_runtime_event
 
 
@@ -93,7 +94,7 @@ class DesktopActionJobManager:
             )
             process = subprocess.Popen(
                 command,
-                cwd=Path(__file__).resolve().parents[2],
+                cwd=PROJECT_ROOT,
                 env=env,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,

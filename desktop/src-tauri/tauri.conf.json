@@ -22,13 +22,16 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; img-src 'self' asset: http://asset.localhost data:; style-src 'self' 'unsafe-inline'; connect-src ipc: http://ipc.localhost"
+      "csp": "default-src 'self'; img-src 'self' asset: http://asset.localhost data:; style-src 'self' 'unsafe-inline'; connect-src ipc: http://ipc.localhost",
+      "assetProtocol": {
+        "enable": true,
+        "scope": ["$RESOURCE/**", "../../assets/**"]
+      }
     }
   },
   "bundle": {
     "active": true,
     "targets": ["nsis"],
-    "resources": ["../../assets", "../../configs", "../../examples"],
     "windows": {
       "webviewInstallMode": {
         "type": "downloadBootstrapper",
