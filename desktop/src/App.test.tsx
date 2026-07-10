@@ -68,4 +68,19 @@ describe("maintenance workspace", () => {
         .some((element) => element.closest(".loadout-slot") !== null),
     ).toBe(true);
   });
+
+  it("explains why calculation is unavailable and exposes structured logs", async () => {
+    const user = userEvent.setup();
+    renderApp();
+
+    await user.click(await screen.findByRole("tab", { name: "计算与性能" }));
+    expect(await screen.findByText("当前不能计算")).toBeVisible();
+    expect(screen.getByText(/没有目标模板/)).toBeVisible();
+    expect(screen.getByRole("button", { name: "开始计算" })).toBeDisabled();
+
+    await user.click(screen.getByRole("tab", { name: "运行日志" }));
+    expect(await screen.findByText("运行日志与诊断")).toBeVisible();
+    expect(await screen.findByText("workspace.get")).toBeVisible();
+    expect(screen.getByRole("button", { name: "导出诊断包" })).toBeEnabled();
+  });
 });

@@ -1,9 +1,15 @@
 from __future__ import annotations
 
 from collections import Counter
+from datetime import datetime, timezone
+import json
+import platform
 from pathlib import Path
+import sys
 import time
 from typing import Any
+import uuid
+import zipfile
 
 from pydantic import ValidationError
 
@@ -35,10 +41,13 @@ from gear_optimizer.desktop_protocol import (
     UnsupportedDesktopProtocolVersionError,
     parse_desktop_request,
 )
+from gear_optimizer.desktop_jobs import DesktopActionJobManager
+from gear_optimizer.action_ev_protocol import ActionEvWorkerRequest
 from gear_optimizer.game_rules import (
     load_characters,
     load_game,
     load_games,
+    load_probability_models,
     validate_character_against_game,
     validate_gear_piece_against_game,
 )
@@ -419,6 +428,7 @@ def load_desktop_workspace(
 class DesktopService:
     def __init__(self, root: Path | None = None):
         self.root = root
+        self.jobs = DesktopActionJobManager(root)
 
     @property
     def log_path(self) -> Path:
@@ -481,11 +491,34 @@ class DesktopService:
 
     def _execute_method(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         if method in {"system.ping", "system.shutdown"}:
+            if method == "system.shutdown":
+                self.jobs.shutdown()
             return {
                 "service": "gear-optimizer-desktop-backend",
                 "protocol_version": 1,
                 "shutdown": method == "system.shutdown",
             }
+        if method == "logs.tail":
+            limit = min(max(int(params.get("limit") or 200), 1), 500)
+            return {"events": self._tail_logs(limit)}
+        if method == "diagnostics.export":
+            game_id = str(params.get("game_id") or "") or None
+            agent_id = str(params.get("agent_id") or "") or None
+            return {"path": str(self._export_diagnostics(game_id, agent_id))}
+        if method == "ui.event":
+            event = str(params.get("event") or "").strip()
+            if not event:
+                raise ValueError("event is required")
+            fields = params.get("fields") or {}
+            if not isinstance(fields, dict):
+                raise ValueError("event fields must be a JSON object")
+            append_runtime_event(
+                self.log_path,
+                event,
+                source="tauri_ui",
+                **fields,
+            )
+            return {"recorded": True}
         if method == "workspace.get":
             workspace = load_desktop_workspace(
                 str(params.get("game_id") or "") or None,
@@ -495,6 +528,22 @@ class DesktopService:
             return {"workspace": workspace.model_dump(mode="json")}
 
         game_id, agent_id = self._context(params)
+        if method == "action_job.start":
+            job = self.jobs.start(
+                self._action_job_request(game_id, agent_id, params),
+                agent_id=agent_id,
+            )
+            return {"job": job.model_dump(mode="json")}
+        if method == "action_job.status":
+            job = self.jobs.status(str(params.get("job_id") or ""))
+            return {"job": job.model_dump(mode="json")}
+        if method == "action_job.cancel":
+            job = self.jobs.cancel(str(params.get("job_id") or ""))
+            return {"job": job.model_dump(mode="json")}
+        if method == "action_job.list":
+            return {
+                "jobs": [job.model_dump(mode="json") for job in self.jobs.list()]
+            }
         if method == "target_template.select":
             template_id = str(params.get("template_id") or "")
             workspace = load_desktop_workspace(game_id, agent_id, self.root)
@@ -586,6 +635,146 @@ class DesktopService:
 
         workspace = load_desktop_workspace(game_id, agent_id, self.root)
         return {"workspace": workspace.model_dump(mode="json")}
+
+    def _action_job_request(
+        self,
+        game_id: str,
+        agent_id: str,
+        params: dict[str, Any],
+    ) -> ActionEvWorkerRequest:
+        workspace = load_desktop_workspace(game_id, agent_id, self.root)
+        capability = workspace.capabilities["action_ev"]
+        if not capability.available:
+            raise ValueError(capability.reason)
+        if workspace.active_target_template_id is None:
+            raise ValueError("当前代理人没有目标模板。")
+        probability_models = load_probability_models(game_id)
+        if not probability_models:
+            raise ValueError(f"game has no probability model: {game_id}")
+        requested_model_id = str(params.get("probability_model_id") or "")
+        probability_model = next(
+            (model for model in probability_models if model.id == requested_model_id),
+            probability_models[0],
+        )
+        horizon = int(params.get("horizon") or 1)
+        run_id = f"desktop-{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}"
+        current_pieces = [
+            slot.item.piece.model_dump(mode="json")
+            for slot in workspace.current_loadout.slots
+            if slot.item is not None
+        ]
+        inventory_pieces = [
+            item.piece.model_dump(mode="json")
+            for item in workspace.inventory
+            if item.status == "backpack"
+        ]
+        audit_lines = [
+            f"游戏：{workspace.game_name} ({game_id})",
+            f"代理人：{agent_id}",
+            f"目标模板：{workspace.active_target_template_id}",
+            f"当前装备：{len(current_pieces)}/{len(workspace.positions)}",
+            f"可用背包库存：{len(inventory_pieces)}",
+            (
+                "revision："
+                f"inventory={workspace.inventory_revision}, "
+                f"loadout={workspace.loadout_revision}, "
+                f"target={workspace.target_selection_revision}"
+            ),
+        ]
+        return ActionEvWorkerRequest(
+            run_id=run_id,
+            game_id=game_id,
+            character_id=workspace.active_target_template_id,
+            probability_model_id=probability_model.id,
+            current_pieces=current_pieces,
+            inventory_pieces=inventory_pieces,
+            horizon=horizon,
+            engine=str(params.get("engine") or "inventory_recursive"),
+            action_mode=str(params.get("action_mode") or "fast"),
+            input_audit="\n".join(audit_lines),
+            input_audit_lines=audit_lines,
+        )
+
+    def _tail_logs(self, limit: int) -> list[dict[str, Any]]:
+        paths = [
+            self.log_path.with_name(f"{self.log_path.name}.{index}")
+            for index in range(3, 0, -1)
+        ] + [self.log_path]
+        events: list[dict[str, Any]] = []
+        for path in paths:
+            if not path.exists():
+                continue
+            try:
+                lines = path.read_text(encoding="utf-8-sig").splitlines()
+            except OSError:
+                continue
+            for line in lines:
+                try:
+                    value = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(value, dict):
+                    events.append(value)
+        return events[-limit:]
+
+    def _export_diagnostics(
+        self,
+        game_id: str | None,
+        agent_id: str | None,
+    ) -> Path:
+        timestamp = datetime.now(timezone.utc).astimezone().strftime("%Y%m%d-%H%M%S")
+        output = self.jobs.root / "diagnostics" / f"desktop-diagnostics-{timestamp}.zip"
+        output.parent.mkdir(parents=True, exist_ok=True)
+        manifest = {
+            "created_at": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
+            "platform": platform.platform(),
+            "python": sys.version,
+            "desktop_protocol_version": 1,
+            "game_id": game_id,
+            "agent_id": agent_id,
+        }
+        with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr(
+                "manifest.json",
+                json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+            )
+            if game_id:
+                workspace = load_desktop_workspace(game_id, agent_id, self.root)
+                archive.writestr(
+                    "workspace.json",
+                    workspace.model_dump_json(indent=2) + "\n",
+                )
+            for path in [
+                self.log_path,
+                self.log_path.with_name(f"{self.log_path.name}.1"),
+                self.log_path.with_name(f"{self.log_path.name}.2"),
+                self.log_path.with_name(f"{self.log_path.name}.3"),
+            ]:
+                if path.exists():
+                    archive.write(path, f"logs/{path.name}")
+            runs_root = self.jobs.root / "runs" / "desktop"
+            if runs_root.exists():
+                recent_runs = sorted(
+                    (path for path in runs_root.iterdir() if path.is_dir()),
+                    key=lambda path: path.stat().st_mtime,
+                    reverse=True,
+                )[:3]
+                for run_dir in recent_runs:
+                    for artifact in run_dir.iterdir():
+                        if artifact.is_file() and artifact.stat().st_size <= 10 * 1024 * 1024:
+                            archive.write(
+                                artifact,
+                                f"runs/{run_dir.name}/{artifact.name}",
+                            )
+        append_runtime_event(
+            self.log_path,
+            "diagnostics_exported",
+            source="desktop_backend",
+            game_id=game_id,
+            agent_id=agent_id,
+            output_path=str(output),
+        )
+        return output
 
     @staticmethod
     def _context(params: dict[str, Any]) -> tuple[str, str]:

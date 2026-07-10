@@ -162,6 +162,88 @@ export interface WorkspaceResponseData extends Record<string, unknown> {
   workspace: Workspace;
 }
 
+export interface ActionEvPerformanceAudit {
+  action_count: number;
+  raw_outcome_count: number;
+  aggregated_outcome_count: number;
+  best_loadout_value_calls: number;
+  best_loadout_cache_hits: number;
+  best_loadout_cache_misses: number;
+  outcome_cache_hits: number;
+  outcome_cache_misses: number;
+  action_timings: Array<Record<string, unknown>>;
+  top_10_slowest_actions: Array<Record<string, unknown>>;
+  phase_seconds: Record<string, number>;
+  phase_counts: Record<string, number>;
+  phase_average_seconds: Record<string, number>;
+  top_20_slowest_phase_calls: Array<Record<string, unknown>>;
+  total_seconds: number;
+}
+
+export interface ActionEvRow {
+  strategy: string;
+  target_set: string;
+  position: string;
+  main_stat: string;
+  fixed_substats: string;
+  horizon: number;
+  immediate_ev: string;
+  horizon_ev: string;
+  expected_gain: string;
+  set_completion_probability: number;
+  quality_gain: number;
+  effective_gain: number;
+  mother_cost: number | string;
+  quality_per_mother: number | string;
+  effective_per_mother: number | string;
+  [key: string]: unknown;
+}
+
+export interface ActionEvResult {
+  run_id: string;
+  engine: string;
+  action_mode: string;
+  input_audit: string;
+  input_audit_lines: string[];
+  performance_audit: ActionEvPerformanceAudit;
+  rows: ActionEvRow[];
+}
+
+export interface ActionJob {
+  job_id: string;
+  status: "running" | "completed" | "failed" | "cancelled";
+  game_id: string;
+  agent_id: string;
+  horizon: 1 | 2;
+  engine: string;
+  action_mode: string;
+  started_at: string;
+  elapsed_seconds: number;
+  completed_units: number;
+  total_units: number;
+  progress_fraction: number;
+  latest_event: Record<string, unknown>;
+  result?: ActionEvResult | null;
+  error?: Record<string, unknown> | null;
+}
+
+export interface ActionJobResponseData extends Record<string, unknown> {
+  job: ActionJob;
+}
+
+export interface RuntimeEvent {
+  ts?: string;
+  source?: string;
+  event?: string;
+  method?: string;
+  game_id?: string;
+  agent_id?: string;
+  elapsed_seconds?: number;
+  result?: string;
+  error_code?: string;
+  [key: string]: unknown;
+}
+
 export interface InventoryFilters {
   sets: string[];
   positions: string[];

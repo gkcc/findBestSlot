@@ -13,7 +13,7 @@
 
 ## Tauri 维护端（渐进迁移）
 
-`desktop/` 是新的离线 Windows 桌面端。当前迁移范围是代理人、目标模板、当前装备和游戏全局库存；PySide6 仍是默认完整应用，不会被这个阶段性版本替换。
+`desktop/` 是新的离线 Windows 桌面端。当前迁移范围包括代理人、目标模板、当前装备、游戏全局库存、Action EV 子进程调度、性能审计和运行日志；PySide6 仍是默认完整应用，不会被这个阶段性版本替换。
 
 前端检查：
 
@@ -32,6 +32,8 @@ pnpm tauri dev
 ```
 
 Tauri 通过标准输入输出启动 `python -m gear_optimizer.desktop_backend`，不监听本地端口。开发时可用 `GEAR_OPTIMIZER_PYTHON` 指定 Python 路径；打包版本将使用随应用分发的 backend sidecar。
+
+桌面后端把每次工作区读取、装备修改、计算启动/取消和错误写入滚动 JSONL。界面的“运行日志”页可导出包含工作区快照、近期日志和最近计算产物的本地诊断包。
 
 ## 使用方式
 

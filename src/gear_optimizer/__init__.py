@@ -8,6 +8,7 @@ __all__ = [
     "candidate_ev",
     "conclusions",
     "desktop_ui_smoke",
+    "desktop_jobs",
     "desktop_protocol",
     "desktop_service",
     "diagnostics",

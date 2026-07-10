@@ -145,6 +145,26 @@ class DesktopCapability(BaseModel):
     reason: str = ""
 
 
+class DesktopActionJob(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    job_id: str
+    status: Literal["running", "completed", "failed", "cancelled"]
+    game_id: str
+    agent_id: str
+    horizon: Literal[1, 2]
+    engine: str
+    action_mode: str
+    started_at: str
+    elapsed_seconds: float = Field(default=0.0, ge=0.0)
+    completed_units: float = Field(default=0.0, ge=0.0)
+    total_units: float = Field(default=0.0, ge=0.0)
+    progress_fraction: float = Field(default=0.0, ge=0.0, le=1.0)
+    latest_event: dict[str, Any] = Field(default_factory=dict)
+    result: dict[str, Any] | None = None
+    error: dict[str, Any] | None = None
+
+
 class DesktopWorkspace(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -189,4 +209,5 @@ def desktop_protocol_json_schema() -> dict[str, Any]:
         "response": DesktopResponse.model_json_schema(),
         "event": DesktopEvent.model_json_schema(),
         "workspace": DesktopWorkspace.model_json_schema(),
+        "action_job": DesktopActionJob.model_json_schema(),
     }

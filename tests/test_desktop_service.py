@@ -191,3 +191,99 @@ def test_desktop_backend_serves_ndjson_and_survives_invalid_json(tmp_path: Path)
         encoding="utf-8"
     ).splitlines()
     assert any('"method": "system.ping"' in line for line in log_lines)
+
+
+def test_action_job_request_uses_complete_agent_loadout_and_backpack(monkeypatch, tmp_path: Path):
+    game = load_game("zzz")
+    save_global_inventory_store(GlobalInventoryStore(game="zzz"), tmp_path)
+    current_ids = [
+        add_inventory_piece(
+            "zzz",
+            GearPiece(
+                position=position.id,
+                set_name=game.sets_for_position(position.id)[0],
+                main_stat=position.main_stats[0],
+            ),
+            tmp_path,
+        ).item_id
+        for position in game.positions
+    ]
+    backpack_id = add_inventory_piece("zzz", _piece(0), tmp_path).item_id
+    service = DesktopService(tmp_path)
+    for item_id in current_ids:
+        result = service.execute(
+            _request(
+                "loadout.equip",
+                game_id="zzz",
+                agent_id=BILLY_AGENT_ID,
+                item_id=item_id,
+            )
+        )
+        assert result.ok
+    captured = {}
+
+    def fake_start(request, *, agent_id):
+        captured["request"] = request
+        captured["agent_id"] = agent_id
+        from gear_optimizer.desktop_protocol import DesktopActionJob
+
+        return DesktopActionJob(
+            job_id=request.run_id,
+            status="running",
+            game_id=request.game_id,
+            agent_id=agent_id,
+            horizon=request.horizon,
+            engine=str(request.engine),
+            action_mode=str(request.action_mode),
+            started_at="2026-01-01T00:00:00+08:00",
+        )
+
+    monkeypatch.setattr(service.jobs, "start", fake_start)
+
+    response = service.execute(
+        _request(
+            "action_job.start",
+            game_id="zzz",
+            agent_id=BILLY_AGENT_ID,
+            horizon=2,
+            action_mode="fast",
+        )
+    )
+
+    assert response.ok
+    request = captured["request"]
+    assert len(request.current_pieces) == len(game.positions)
+    assert len(request.inventory_pieces) == 1
+    assert request.horizon == 2
+    assert backpack_id in {
+        item.item_id
+        for item in load_desktop_workspace("zzz", BILLY_AGENT_ID, tmp_path).inventory
+        if item.status == "backpack"
+    }
+
+
+def test_logs_and_diagnostic_export_are_available_through_protocol(tmp_path: Path):
+    _canonical_inventory(tmp_path)
+    service = DesktopService(tmp_path)
+    service.execute(_request("system.ping"))
+    logs = service.execute(_request("logs.tail", limit=20))
+
+    assert logs.ok
+    assert any(event["method"] == "system.ping" for event in logs.data["events"])
+
+    exported = service.execute(
+        _request(
+            "diagnostics.export",
+            game_id="zzz",
+            agent_id=BILLY_AGENT_ID,
+        )
+    )
+
+    assert exported.ok
+    path = Path(exported.data["path"])
+    assert path.exists()
+    import zipfile
+
+    with zipfile.ZipFile(path) as archive:
+        assert "manifest.json" in archive.namelist()
+        assert "workspace.json" in archive.namelist()

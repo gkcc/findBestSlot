@@ -51,4 +51,11 @@ def test_desktop_protocol_schema_exports_all_wire_models():
     schema = desktop_protocol_json_schema()
 
     assert schema["schema_version"] == 1
-    assert set(schema) == {"schema_version", "request", "response", "event", "workspace"}
+    assert set(schema) == {
+        "schema_version",
+        "request",
+        "response",
+        "event",
+        "workspace",
+        "action_job",
+    }

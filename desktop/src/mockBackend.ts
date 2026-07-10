@@ -1,4 +1,5 @@
 import type {
+  ActionJob,
   CharacterPreset,
   DesktopResponse,
   GearPiece,
@@ -79,6 +80,8 @@ const initialInventory: InventoryItem[] = [
   item("inv_demo_003", 5, "沧浪行歌", "攻击力百分比"),
 ];
 let inventory: InventoryItem[] = structuredClone(initialInventory);
+let runtimeEvents: Array<Record<string, unknown>> = [];
+let activeJob: ActionJob | null = null;
 
 const agents = [
   {
@@ -114,6 +117,8 @@ const defaultAgentId = "zzz_ye_shunguang";
 
 export function resetMockBackend(): void {
   inventory = structuredClone(initialInventory);
+  runtimeEvents = [];
+  activeJob = null;
   activeTemplateByAgent = {
     zzz_ye_shunguang: null,
     zzz_starlight_billy: structuredClone(billyTemplate),
@@ -198,6 +203,88 @@ export async function mockBackendRequest<T extends Record<string, unknown>>(
 ): Promise<DesktopResponse<T>> {
   await new Promise((resolve) => window.setTimeout(resolve, 20));
   const agentId = String(request.params.agent_id || defaultAgentId);
+  runtimeEvents.push({
+    ts: new Date().toISOString(),
+    source: "mock_backend",
+    event: "desktop_request_completed",
+    method: request.method,
+    agent_id: agentId,
+    elapsed_seconds: 0.02,
+    result: "ok",
+  });
+  if (request.method === "logs.tail") {
+    return ok(request.request_id, { events: structuredClone(runtimeEvents) } as unknown as T);
+  }
+  if (request.method === "diagnostics.export") {
+    return ok(
+      request.request_id,
+      { path: "C:\\Users\\demo\\diagnostics\\desktop-diagnostics-demo.zip" } as unknown as T,
+    );
+  }
+  if (request.method === "ui.event") {
+    return ok(request.request_id, { recorded: true } as unknown as T);
+  }
+  if (request.method === "action_job.start") {
+    activeJob = {
+      job_id: "mock-action-job",
+      status: "running",
+      game_id: "zzz",
+      agent_id: agentId,
+      horizon: Number(request.params.horizon) === 2 ? 2 : 1,
+      engine: String(request.params.engine ?? "inventory_recursive"),
+      action_mode: String(request.params.action_mode ?? "fast"),
+      started_at: new Date().toISOString(),
+      elapsed_seconds: 0,
+      completed_units: 0,
+      total_units: 10,
+      progress_fraction: 0,
+      latest_event: { event: "start", label: "准备计算" },
+    };
+    return ok(request.request_id, { job: structuredClone(activeJob) } as unknown as T);
+  }
+  if (request.method === "action_job.status" && activeJob) {
+    activeJob = {
+      ...activeJob,
+      status: "completed",
+      elapsed_seconds: 12.5,
+      completed_units: 10,
+      progress_fraction: 1,
+      latest_event: { event: "worker_done", label: "计算完成", completed: 10, total: 10 },
+      result: {
+        run_id: activeJob.job_id,
+        engine: activeJob.engine,
+        action_mode: activeJob.action_mode,
+        input_audit: "mock",
+        input_audit_lines: ["mock"],
+        rows: [],
+        performance_audit: {
+          action_count: 10,
+          raw_outcome_count: 100,
+          aggregated_outcome_count: 35,
+          best_loadout_value_calls: 50,
+          best_loadout_cache_hits: 30,
+          best_loadout_cache_misses: 20,
+          outcome_cache_hits: 5,
+          outcome_cache_misses: 5,
+          action_timings: [],
+          top_10_slowest_actions: [],
+          phase_seconds: { best_loadout: 7.5, outcome_generation: 3.2 },
+          phase_counts: { best_loadout: 50, outcome_generation: 10 },
+          phase_average_seconds: { best_loadout: 0.15, outcome_generation: 0.32 },
+          top_20_slowest_phase_calls: [
+            { phase: "best_loadout", seconds: 0.8 },
+            { phase: "outcome_generation", seconds: 0.5 },
+          ],
+          total_seconds: 12.5,
+        },
+      },
+    };
+    return ok(request.request_id, { job: structuredClone(activeJob) } as unknown as T);
+  }
+  if (request.method === "action_job.cancel" && activeJob) {
+    activeJob = { ...activeJob, status: "cancelled" };
+    return ok(request.request_id, { job: structuredClone(activeJob) } as unknown as T);
+  }
   if (request.method === "workspace.get") {
     return ok(request.request_id, { workspace: workspace(agentId) } as unknown as T);
   }

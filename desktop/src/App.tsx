@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { lazy, Suspense, useState } from "react";
 import {
   Alert,
   App as AntApp,
@@ -14,7 +14,7 @@ import {
   Tooltip,
   Typography,
 } from "antd";
-import { CircleCheck, Pencil, RefreshCw, Target, Trash2 } from "lucide-react";
+import { CircleCheck, Gauge, Pencil, RefreshCw, ScrollText, Target, Trash2 } from "lucide-react";
 
 import { AgentAvatar } from "./components/AgentAvatar";
 import { CurrentLoadout } from "./components/CurrentLoadout";
@@ -22,6 +22,9 @@ import { InventoryWorkspace } from "./components/InventoryWorkspace";
 import { TargetTemplateDrawer } from "./components/TargetTemplateDrawer";
 import { useWorkspace } from "./hooks/useWorkspace";
 import type { CharacterPreset } from "./types";
+
+const CalculationWorkspace = lazy(() => import("./components/CalculationWorkspace"));
+const LogsWorkspace = lazy(() => import("./components/LogsWorkspace"));
 
 function OptimizerWorkspace() {
   const { message } = AntApp.useApp();
@@ -258,6 +261,32 @@ function OptimizerWorkspace() {
                   saving={controller.saving}
                   mutate={controller.mutate}
                 />
+              ),
+            },
+            {
+              key: "calculation",
+              label: (
+                <span className="tab-label">
+                  <Gauge size={15} />计算与性能
+                </span>
+              ),
+              children: (
+                <Suspense fallback={<Skeleton active paragraph={{ rows: 10 }} />}>
+                  <CalculationWorkspace workspace={workspace} />
+                </Suspense>
+              ),
+            },
+            {
+              key: "logs",
+              label: (
+                <span className="tab-label">
+                  <ScrollText size={15} />运行日志
+                </span>
+              ),
+              children: (
+                <Suspense fallback={<Skeleton active paragraph={{ rows: 10 }} />}>
+                  <LogsWorkspace workspace={workspace} />
+                </Suspense>
               ),
             },
           ]}
