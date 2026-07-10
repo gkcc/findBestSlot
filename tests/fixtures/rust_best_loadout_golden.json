@@ -1,0 +1,574 @@
+{
+  "schema_version": 1,
+  "description": "Python position_ev reference results for the Rust data-oriented best-loadout core.",
+  "cases": [
+    {
+      "name": "four_plus_two_quality_tradeoff",
+      "request": {
+        "positions": [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5",
+          "6"
+        ],
+        "pieces": [
+          {
+            "item_id": "a1",
+            "position": "1",
+            "set_name": "A",
+            "value": [
+              1.0,
+              10,
+              10,
+              10
+            ],
+            "locked_current": false,
+            "eligible": true
+          },
+          {
+            "item_id": "a2",
+            "position": "2",
+            "set_name": "A",
+            "value": [
+              1.0,
+              10,
+              10,
+              10
+            ],
+            "locked_current": false,
+            "eligible": true
+          },
+          {
+            "item_id": "a3",
+            "position": "3",
+            "set_name": "A",
+            "value": [
+              1.0,
+              10,
+              10,
+              10
+            ],
+            "locked_current": false,
+            "eligible": true
+          },
+          {
+            "item_id": "a4",
+            "position": "4",
+            "set_name": "A",
+            "value": [
+              1.0,
+              10,
+              10,
+              10
+            ],
+            "locked_current": false,
+            "eligible": true
+          },
+          {
+            "item_id": "a5",
+            "position": "5",
+            "set_name": "A",
+            "value": [
+              1.0,
+              10,
+              10,
+              10
+            ],
+            "locked_current": false,
+            "eligible": true
+          },
+          {
+            "item_id": "a6",
+            "position": "6",
+            "set_name": "A",
+            "value": [
+              1.0,
+              10,
+              10,
+              10
+            ],
+            "locked_current": false,
+            "eligible": true
+          },
+          {
+            "item_id": "b5",
+            "position": "5",
+            "set_name": "B",
+            "value": [
+              1.0,
+              4,
+              4,
+              4
+            ],
+            "locked_current": false,
+            "eligible": true
+          },
+          {
+            "item_id": "b6",
+            "position": "6",
+            "set_name": "B",
+            "value": [
+              1.0,
+              4,
+              4,
+              4
+            ],
+            "locked_current": false,
+            "eligible": true
+          }
+        ],
+        "set_plan": {
+          "requirements": [
+            {
+              "set_names": [
+                "A"
+              ],
+              "pieces": 4
+            },
+            {
+              "set_names": [
+                "B"
+              ],
+              "pieces": 2
+            }
+          ]
+        },
+        "require_set_plan": false
+      },
+      "expected": {
+        "selected_item_ids": [
+          "a1",
+          "a2",
+          "a3",
+          "a4",
+          "b5",
+          "b6"
+        ],
+        "value": [
+          6.0,
+          48.0,
+          48.0,
+          48.0
+        ],
+        "set_plan_satisfied": true,
+        "set_counts": {
+          "A": 4,
+          "B": 2
+        }
+      }
+    },
+    {
+      "name": "two_plus_two_plus_two",
+      "request": {
+        "positions": [
+          "1",
+          "2",
+          "3",
+          "4",
+          "5",
+          "6"
+        ],
+        "pieces": [
+          {
+            "item_id": "a1",
+            "position": "1",
+            "set_name": "A",
+            "value": [
+              1.0,
+              5,
+              5,
+              5
+            ],
+            "locked_current": false,
+            "eligible": true
+          },
+          {
+            "item_id": "a2",
+            "position": "2",
+            "set_name": "A",
+            "value": [
+              1.0,
+              5,
+              5,
+              5
+            ],
+            "locked_current": false,
+            "eligible": true
+          },
+          {
+            "item_id": "b3",
+            "position": "3",
+            "set_name": "B",
+            "value": [
+              1.0,
+              5,
+              5,
+              5
+            ],
+            "locked_current": false,
+            "eligible": true
+          },
+          {
+            "item_id": "b4",
+            "position": "4",
+            "set_name": "B",
+            "value": [
+              1.0,
+              5,
+              5,
+              5
+            ],
+            "locked_current": false,
+            "eligible": true
+          },
+          {
+            "item_id": "c5",
+            "position": "5",
+            "set_name": "C",
+            "value": [
+              1.0,
+              5,
+              5,
+              5
+            ],
+            "locked_current": false,
+            "eligible": true
+          },
+          {
+            "item_id": "c6",
+            "position": "6",
+            "set_name": "C",
+            "value": [
+              1.0,
+              5,
+              5,
+              5
+            ],
+            "locked_current": false,
+            "eligible": true
+          },
+          {
+            "item_id": "a6-high",
+            "position": "6",
+            "set_name": "A",
+            "value": [
+              1.0,
+              20,
+              20,
+              20
+            ],
+            "locked_current": false,
+            "eligible": true
+          }
+        ],
+        "set_plan": {
+          "requirements": [
+            {
+              "set_names": [
+                "A"
+              ],
+              "pieces": 2
+            },
+            {
+              "set_names": [
+                "B"
+              ],
+              "pieces": 2
+            },
+            {
+              "set_names": [
+                "C"
+              ],
+              "pieces": 2
+            }
+          ]
+        },
+        "require_set_plan": false
+      },
+      "expected": {
+        "selected_item_ids": [
+          "a1",
+          "a2",
+          "b3",
+          "b4",
+          "c5",
+          "c6"
+        ],
+        "value": [
+          6.0,
+          30.0,
+          30.0,
+          30.0
+        ],
+        "set_plan_satisfied": true,
+        "set_counts": {
+          "A": 2,
+          "B": 2,
+          "C": 2
+        }
+      }
+    },
+    {
+      "name": "locked_current_position",
+      "request": {
+        "positions": [
+          "1",
+          "2"
+        ],
+        "pieces": [
+          {
+            "item_id": "locked-low",
+            "position": "1",
+            "set_name": "A",
+            "value": [
+              1.0,
+              1,
+              1,
+              1
+            ],
+            "locked_current": true,
+            "eligible": true
+          },
+          {
+            "item_id": "inventory-high",
+            "position": "1",
+            "set_name": "B",
+            "value": [
+              1.0,
+              20,
+              20,
+              20
+            ],
+            "locked_current": false,
+            "eligible": true
+          },
+          {
+            "item_id": "slot-two",
+            "position": "2",
+            "set_name": "A",
+            "value": [
+              1.0,
+              2,
+              2,
+              2
+            ],
+            "locked_current": false,
+            "eligible": true
+          }
+        ],
+        "set_plan": null,
+        "require_set_plan": false
+      },
+      "expected": {
+        "selected_item_ids": [
+          "locked-low",
+          "slot-two"
+        ],
+        "value": [
+          2.0,
+          3.0,
+          3.0,
+          3.0
+        ],
+        "set_plan_satisfied": true,
+        "set_counts": {
+          "A": 2
+        }
+      }
+    },
+    {
+      "name": "equal_value_preserves_python_input_order",
+      "request": {
+        "positions": [
+          "1",
+          "2"
+        ],
+        "pieces": [
+          {
+            "item_id": "a-first",
+            "position": "1",
+            "set_name": "A",
+            "value": [
+              1.0,
+              5,
+              5,
+              5
+            ],
+            "locked_current": false,
+            "eligible": true
+          },
+          {
+            "item_id": "b-second",
+            "position": "1",
+            "set_name": "B",
+            "value": [
+              1.0,
+              5,
+              5,
+              5
+            ],
+            "locked_current": false,
+            "eligible": true
+          },
+          {
+            "item_id": "c-slot-two",
+            "position": "2",
+            "set_name": "C",
+            "value": [
+              1.0,
+              5,
+              5,
+              5
+            ],
+            "locked_current": false,
+            "eligible": true
+          }
+        ],
+        "set_plan": {
+          "requirements": [
+            {
+              "set_names": [
+                "A",
+                "B"
+              ],
+              "pieces": 1
+            }
+          ]
+        },
+        "require_set_plan": false
+      },
+      "expected": {
+        "selected_item_ids": [
+          "a-first",
+          "c-slot-two"
+        ],
+        "value": [
+          2.0,
+          10.0,
+          10.0,
+          10.0
+        ],
+        "set_plan_satisfied": true,
+        "set_counts": {
+          "A": 1,
+          "C": 1
+        }
+      }
+    },
+    {
+      "name": "impossible_plan_uses_quality_fallback",
+      "request": {
+        "positions": [
+          "1",
+          "2"
+        ],
+        "pieces": [
+          {
+            "item_id": "a1",
+            "position": "1",
+            "set_name": "A",
+            "value": [
+              1.0,
+              3,
+              3,
+              3
+            ],
+            "locked_current": false,
+            "eligible": true
+          },
+          {
+            "item_id": "a2",
+            "position": "2",
+            "set_name": "A",
+            "value": [
+              1.0,
+              4,
+              4,
+              4
+            ],
+            "locked_current": false,
+            "eligible": true
+          }
+        ],
+        "set_plan": {
+          "requirements": [
+            {
+              "set_names": [
+                "B"
+              ],
+              "pieces": 2
+            }
+          ]
+        },
+        "require_set_plan": false
+      },
+      "expected": {
+        "selected_item_ids": [
+          "a1",
+          "a2"
+        ],
+        "value": [
+          2.0,
+          7.0,
+          7.0,
+          7.0
+        ],
+        "set_plan_satisfied": false,
+        "set_counts": {
+          "A": 2
+        }
+      }
+    },
+    {
+      "name": "impossible_strict_plan_returns_none",
+      "request": {
+        "positions": [
+          "1",
+          "2"
+        ],
+        "pieces": [
+          {
+            "item_id": "a1",
+            "position": "1",
+            "set_name": "A",
+            "value": [
+              1.0,
+              3,
+              3,
+              3
+            ],
+            "locked_current": false,
+            "eligible": true
+          },
+          {
+            "item_id": "a2",
+            "position": "2",
+            "set_name": "A",
+            "value": [
+              1.0,
+              4,
+              4,
+              4
+            ],
+            "locked_current": false,
+            "eligible": true
+          }
+        ],
+        "set_plan": {
+          "requirements": [
+            {
+              "set_names": [
+                "B"
+              ],
+              "pieces": 2
+            }
+          ]
+        },
+        "require_set_plan": true
+      },
+      "expected": null
+    }
+  ]
+}

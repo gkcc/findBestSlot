@@ -1,0 +1,1118 @@
+{
+  "schema_version": 1,
+  "description": "Frozen, item-id-free ZZZ Ye Shunguang board used by the exact H=2 cold/warm performance gate.",
+  "source_agent_id": "zzz_ye_shunguang",
+  "target_template": {
+    "id": "user_zzz_ye_shunguang_叶瞬光",
+    "game": "zzz",
+    "name": "叶瞬光 H=2 性能基准",
+    "target_set": "沧浪行歌",
+    "effective_substats": {
+      "暴击伤害": 1.0,
+      "攻击力百分比": 1.0,
+      "暴击率": 1.0
+    },
+    "substat_priority": {
+      "core": [
+        "暴击伤害",
+        "攻击力百分比",
+        "暴击率"
+      ],
+      "usable": [],
+      "core_tiers": [
+        [
+          "暴击伤害"
+        ],
+        [
+          "攻击力百分比"
+        ],
+        [
+          "暴击率"
+        ]
+      ],
+      "usable_tiers": []
+    },
+    "preferred_main_stats": {
+      "1": [
+        "生命值"
+      ],
+      "2": [
+        "攻击力"
+      ],
+      "3": [
+        "防御力"
+      ],
+      "4": [
+        "暴击伤害"
+      ],
+      "5": [
+        "物理伤害"
+      ],
+      "6": [
+        "攻击力百分比"
+      ]
+    },
+    "set_plans": [
+      {
+        "id": "user_target_plan",
+        "name": "自由蓝调 4 + 摇摆爵士 2",
+        "requirements": [
+          {
+            "set_name": "沧浪行歌",
+            "set_names": [
+              "沧浪行歌"
+            ],
+            "pieces": 4
+          },
+          {
+            "set_name": "折枝剑歌",
+            "set_names": [
+              "折枝剑歌"
+            ],
+            "pieces": 2
+          }
+        ]
+      },
+      {
+        "id": "freedom_4_swing_2",
+        "name": "自由蓝调 4 + 摇摆爵士 2",
+        "requirements": [
+          {
+            "set_name": "自由蓝调",
+            "set_names": [
+              "自由蓝调"
+            ],
+            "pieces": 4,
+            "role": "core4"
+          },
+          {
+            "set_name": "摇摆爵士",
+            "set_names": [
+              "摇摆爵士",
+              "激素朋克",
+              "混沌爵士"
+            ],
+            "pieces": 2,
+            "role": "flex2"
+          }
+        ],
+        "notes": "用于验证角色目标配置化；异常角色可按自由蓝调 4 件 + 可选 2 件测试。"
+      },
+      {
+        "id": "freedom_2_swing_2_chaos_2",
+        "name": "自由蓝调 2 + 摇摆爵士 2 + 混沌爵士 2",
+        "requirements": [
+          {
+            "set_name": "自由蓝调",
+            "set_names": [
+              "自由蓝调"
+            ],
+            "pieces": 2
+          },
+          {
+            "set_name": "摇摆爵士",
+            "set_names": [
+              "摇摆爵士"
+            ],
+            "pieces": 2
+          },
+          {
+            "set_name": "混沌爵士",
+            "set_names": [
+              "混沌爵士"
+            ],
+            "pieces": 2
+          }
+        ],
+        "notes": "过渡或副词条质量优先时可用。"
+      },
+      {
+        "id": "unrestricted",
+        "name": "不限套装",
+        "requirements": [],
+        "notes": "完全按主属性和异常相关副词条评分。"
+      }
+    ],
+    "default_set_plan": "user_target_plan",
+    "target_effective_rolls": 5.5,
+    "target_weighted_score": 5.5,
+    "rating_thresholds": {
+      "usable": 2.0,
+      "good": 3.8,
+      "excellent": 5.5
+    },
+    "notes": "冻结盘面专用目标模板，不作为产品内置默认模板。"
+  },
+  "request": {
+    "schema_version": 1,
+    "run_id": "benchmark-zzz-ye-shunguang-h2",
+    "game_id": "zzz",
+    "character_id": "user_zzz_ye_shunguang_叶瞬光",
+    "probability_model_id": "zzz_default",
+    "current_pieces": [
+      {
+        "position": 1,
+        "set_name": "折枝剑歌",
+        "main_stat": "生命值",
+        "level": 15,
+        "substats": [
+          {
+            "stat": "异常精通",
+            "rolls": 1
+          },
+          {
+            "stat": "生命值百分比",
+            "rolls": 0
+          },
+          {
+            "stat": "暴击伤害",
+            "rolls": 2
+          },
+          {
+            "stat": "暴击率",
+            "rolls": 1
+          }
+        ],
+        "locked": false,
+        "initial_substat_count": 3
+      },
+      {
+        "position": 2,
+        "set_name": "沧浪行歌",
+        "main_stat": "攻击力",
+        "level": 15,
+        "substats": [
+          {
+            "stat": "暴击率",
+            "rolls": 1
+          },
+          {
+            "stat": "攻击力百分比",
+            "rolls": 1
+          },
+          {
+            "stat": "暴击伤害",
+            "rolls": 1
+          },
+          {
+            "stat": "生命值",
+            "rolls": 2
+          }
+        ],
+        "locked": false,
+        "initial_substat_count": 4
+      },
+      {
+        "position": 3,
+        "set_name": "沧浪行歌",
+        "main_stat": "防御力",
+        "level": 15,
+        "substats": [
+          {
+            "stat": "暴击率",
+            "rolls": 2
+          },
+          {
+            "stat": "生命值",
+            "rolls": 1
+          },
+          {
+            "stat": "防御力百分比",
+            "rolls": 1
+          },
+          {
+            "stat": "攻击力百分比",
+            "rolls": 1
+          }
+        ],
+        "locked": false,
+        "initial_substat_count": 4
+      },
+      {
+        "position": 4,
+        "set_name": "沧浪行歌",
+        "main_stat": "暴击伤害",
+        "level": 15,
+        "substats": [
+          {
+            "stat": "穿透值",
+            "rolls": 0
+          },
+          {
+            "stat": "攻击力",
+            "rolls": 2
+          },
+          {
+            "stat": "攻击力百分比",
+            "rolls": 3
+          },
+          {
+            "stat": "生命值百分比",
+            "rolls": 0
+          }
+        ],
+        "locked": false,
+        "initial_substat_count": 4
+      },
+      {
+        "position": 5,
+        "set_name": "折枝剑歌",
+        "main_stat": "物理伤害",
+        "level": 15,
+        "substats": [
+          {
+            "stat": "防御力百分比",
+            "rolls": 2
+          },
+          {
+            "stat": "异常精通",
+            "rolls": 0
+          },
+          {
+            "stat": "攻击力百分比",
+            "rolls": 2
+          },
+          {
+            "stat": "生命值百分比",
+            "rolls": 0
+          }
+        ],
+        "locked": false,
+        "initial_substat_count": 3
+      },
+      {
+        "position": 6,
+        "set_name": "沧浪行歌",
+        "main_stat": "攻击力百分比",
+        "level": 3,
+        "substats": [
+          {
+            "stat": "异常精通",
+            "rolls": 0
+          },
+          {
+            "stat": "攻击力",
+            "rolls": 0
+          },
+          {
+            "stat": "生命值",
+            "rolls": 0
+          },
+          {
+            "stat": "生命值百分比",
+            "rolls": 0
+          }
+        ],
+        "locked": false,
+        "initial_substat_count": 3
+      }
+    ],
+    "inventory_pieces": [
+      {
+        "position": 1,
+        "set_name": "云岿如我",
+        "main_stat": "生命值",
+        "level": 0,
+        "substats": [
+          {
+            "stat": "攻击力",
+            "rolls": 0
+          },
+          {
+            "stat": "穿透值",
+            "rolls": 0
+          },
+          {
+            "stat": "暴击伤害",
+            "rolls": 0
+          }
+        ],
+        "locked": false,
+        "initial_substat_count": 3
+      },
+      {
+        "position": 1,
+        "set_name": "折枝剑歌",
+        "main_stat": "生命值",
+        "level": 0,
+        "substats": [
+          {
+            "stat": "防御力百分比",
+            "rolls": 0
+          },
+          {
+            "stat": "生命值百分比",
+            "rolls": 0
+          },
+          {
+            "stat": "防御力",
+            "rolls": 0
+          }
+        ],
+        "locked": false,
+        "initial_substat_count": 3
+      },
+      {
+        "position": 1,
+        "set_name": "折枝剑歌",
+        "main_stat": "生命值",
+        "level": 0,
+        "substats": [
+          {
+            "stat": "攻击力百分比",
+            "rolls": 0
+          },
+          {
+            "stat": "暴击率",
+            "rolls": 0
+          },
+          {
+            "stat": "防御力",
+            "rolls": 0
+          }
+        ],
+        "locked": false,
+        "initial_substat_count": 3
+      },
+      {
+        "position": 1,
+        "set_name": "折枝剑歌",
+        "main_stat": "生命值",
+        "level": 15,
+        "substats": [
+          {
+            "stat": "攻击力",
+            "rolls": 0
+          },
+          {
+            "stat": "防御力",
+            "rolls": 2
+          },
+          {
+            "stat": "攻击力百分比",
+            "rolls": 0
+          },
+          {
+            "stat": "暴击伤害",
+            "rolls": 2
+          }
+        ],
+        "locked": false,
+        "initial_substat_count": 3
+      },
+      {
+        "position": 1,
+        "set_name": "沧浪行歌",
+        "main_stat": "生命值",
+        "level": 15,
+        "substats": [
+          {
+            "stat": "防御力百分比",
+            "rolls": 1
+          },
+          {
+            "stat": "暴击伤害",
+            "rolls": 2
+          },
+          {
+            "stat": "攻击力百分比",
+            "rolls": 1
+          },
+          {
+            "stat": "穿透值",
+            "rolls": 0
+          }
+        ],
+        "locked": false,
+        "initial_substat_count": 3
+      },
+      {
+        "position": 1,
+        "set_name": "沧浪行歌",
+        "main_stat": "生命值",
+        "level": 0,
+        "substats": [
+          {
+            "stat": "暴击率",
+            "rolls": 0
+          },
+          {
+            "stat": "攻击力百分比",
+            "rolls": 0
+          },
+          {
+            "stat": "攻击力",
+            "rolls": 0
+          }
+        ],
+        "locked": false,
+        "initial_substat_count": 3
+      },
+      {
+        "position": 1,
+        "set_name": "沧浪行歌",
+        "main_stat": "生命值",
+        "level": 3,
+        "substats": [
+          {
+            "stat": "暴击率",
+            "rolls": 0
+          },
+          {
+            "stat": "暴击伤害",
+            "rolls": 0
+          },
+          {
+            "stat": "生命值百分比",
+            "rolls": 1
+          },
+          {
+            "stat": "异常精通",
+            "rolls": 0
+          }
+        ],
+        "locked": false,
+        "initial_substat_count": 4
+      },
+      {
+        "position": 2,
+        "set_name": "云岿如我",
+        "main_stat": "攻击力",
+        "level": 6,
+        "substats": [
+          {
+            "stat": "生命值",
+            "rolls": 1
+          },
+          {
+            "stat": "暴击伤害",
+            "rolls": 0
+          },
+          {
+            "stat": "暴击率",
+            "rolls": 0
+          },
+          {
+            "stat": "防御力百分比",
+            "rolls": 0
+          }
+        ],
+        "locked": false,
+        "initial_substat_count": 3
+      },
+      {
+        "position": 2,
+        "set_name": "云岿如我",
+        "main_stat": "攻击力",
+        "level": 0,
+        "substats": [
+          {
+            "stat": "异常精通",
+            "rolls": 0
+          },
+          {
+            "stat": "生命值百分比",
+            "rolls": 0
+          },
+          {
+            "stat": "防御力百分比",
+            "rolls": 0
+          },
+          {
+            "stat": "生命值",
+            "rolls": 0
+          }
+        ],
+        "locked": false,
+        "initial_substat_count": 4
+      },
+      {
+        "position": 2,
+        "set_name": "云岿如我",
+        "main_stat": "攻击力",
+        "level": 0,
+        "substats": [
+          {
+            "stat": "防御力",
+            "rolls": 0
+          },
+          {
+            "stat": "生命值",
+            "rolls": 0
+          },
+          {
+            "stat": "生命值百分比",
+            "rolls": 0
+          }
+        ],
+        "locked": false,
+        "initial_substat_count": 3
+      },
+      {
+        "position": 2,
+        "set_name": "云岿如我",
+        "main_stat": "攻击力",
+        "level": 0,
+        "substats": [
+          {
+            "stat": "异常精通",
+            "rolls": 0
+          },
+          {
+            "stat": "生命值",
+            "rolls": 0
+          },
+          {
+            "stat": "生命值百分比",
+            "rolls": 0
+          },
+          {
+            "stat": "防御力",
+            "rolls": 0
+          }
+        ],
+        "locked": false,
+        "initial_substat_count": 4
+      },
+      {
+        "position": 2,
+        "set_name": "云岿如我",
+        "main_stat": "攻击力",
+        "level": 0,
+        "substats": [
+          {
+            "stat": "暴击率",
+            "rolls": 0
+          },
+          {
+            "stat": "生命值",
+            "rolls": 0
+          },
+          {
+            "stat": "防御力百分比",
+            "rolls": 0
+          }
+        ],
+        "locked": false,
+        "initial_substat_count": 3
+      },
+      {
+        "position": 2,
+        "set_name": "云岿如我",
+        "main_stat": "攻击力",
+        "level": 0,
+        "substats": [
+          {
+            "stat": "防御力百分比",
+            "rolls": 0
+          },
+          {
+            "stat": "生命值",
+            "rolls": 0
+          },
+          {
+            "stat": "生命值百分比",
+            "rolls": 0
+          }
+        ],
+        "locked": false,
+        "initial_substat_count": 3
+      },
+      {
+        "position": 2,
+        "set_name": "云岿如我",
+        "main_stat": "攻击力",
+        "level": 15,
+        "substats": [
+          {
+            "stat": "防御力",
+            "rolls": 0
+          },
+          {
+            "stat": "生命值百分比",
+            "rolls": 2
+          },
+          {
+            "stat": "防御力百分比",
+            "rolls": 0
+          },
+          {
+            "stat": "生命值",
+            "rolls": 2
+          }
+        ],
+        "locked": false,
+        "initial_substat_count": 3
+      },
+      {
+        "position": 2,
+        "set_name": "云岿如我",
+        "main_stat": "攻击力",
+        "level": 3,
+        "substats": [
+          {
+            "stat": "生命值百分比",
+            "rolls": 0
+          },
+          {
+            "stat": "暴击伤害",
+            "rolls": 0
+          },
+          {
+            "stat": "异常精通",
+            "rolls": 0
+          },
+          {
+            "stat": "穿透值",
+            "rolls": 1
+          }
+        ],
+        "locked": false,
+        "initial_substat_count": 4
+      },
+      {
+        "position": 2,
+        "set_name": "沧浪行歌",
+        "main_stat": "攻击力",
+        "level": 0,
+        "substats": [
+          {
+            "stat": "生命值",
+            "rolls": 0
+          },
+          {
+            "stat": "暴击率",
+            "rolls": 0
+          },
+          {
+            "stat": "防御力百分比",
+            "rolls": 0
+          },
+          {
+            "stat": "防御力",
+            "rolls": 0
+          }
+        ],
+        "locked": false,
+        "initial_substat_count": 4
+      },
+      {
+        "position": 2,
+        "set_name": "沧浪行歌",
+        "main_stat": "攻击力",
+        "level": 0,
+        "substats": [
+          {
+            "stat": "暴击伤害",
+            "rolls": 0
+          },
+          {
+            "stat": "防御力百分比",
+            "rolls": 0
+          },
+          {
+            "stat": "生命值",
+            "rolls": 0
+          },
+          {
+            "stat": "攻击力百分比",
+            "rolls": 0
+          }
+        ],
+        "locked": false,
+        "initial_substat_count": 4
+      },
+      {
+        "position": 2,
+        "set_name": "沧浪行歌",
+        "main_stat": "攻击力",
+        "level": 0,
+        "substats": [
+          {
+            "stat": "攻击力百分比",
+            "rolls": 0
+          },
+          {
+            "stat": "生命值",
+            "rolls": 0
+          },
+          {
+            "stat": "暴击率",
+            "rolls": 0
+          }
+        ],
+        "locked": false,
+        "initial_substat_count": 3
+      },
+      {
+        "position": 3,
+        "set_name": "云岿如我",
+        "main_stat": "防御力",
+        "level": 0,
+        "substats": [
+          {
+            "stat": "暴击伤害",
+            "rolls": 0
+          },
+          {
+            "stat": "防御力百分比",
+            "rolls": 0
+          },
+          {
+            "stat": "攻击力",
+            "rolls": 0
+          },
+          {
+            "stat": "穿透值",
+            "rolls": 0
+          }
+        ],
+        "locked": false,
+        "initial_substat_count": 4
+      },
+      {
+        "position": 3,
+        "set_name": "云岿如我",
+        "main_stat": "防御力",
+        "level": 0,
+        "substats": [
+          {
+            "stat": "攻击力",
+            "rolls": 0
+          },
+          {
+            "stat": "暴击伤害",
+            "rolls": 0
+          },
+          {
+            "stat": "暴击率",
+            "rolls": 0
+          }
+        ],
+        "locked": false,
+        "initial_substat_count": 3
+      },
+      {
+        "position": 3,
+        "set_name": "云岿如我",
+        "main_stat": "防御力",
+        "level": 0,
+        "substats": [
+          {
+            "stat": "生命值",
+            "rolls": 0
+          },
+          {
+            "stat": "暴击伤害",
+            "rolls": 0
+          },
+          {
+            "stat": "穿透值",
+            "rolls": 0
+          }
+        ],
+        "locked": false,
+        "initial_substat_count": 3
+      },
+      {
+        "position": 3,
+        "set_name": "折枝剑歌",
+        "main_stat": "防御力",
+        "level": 0,
+        "substats": [
+          {
+            "stat": "暴击率",
+            "rolls": 0
+          },
+          {
+            "stat": "穿透值",
+            "rolls": 0
+          },
+          {
+            "stat": "生命值百分比",
+            "rolls": 0
+          }
+        ],
+        "locked": false,
+        "initial_substat_count": 3
+      },
+      {
+        "position": 3,
+        "set_name": "折枝剑歌",
+        "main_stat": "防御力",
+        "level": 0,
+        "substats": [
+          {
+            "stat": "生命值百分比",
+            "rolls": 0
+          },
+          {
+            "stat": "暴击率",
+            "rolls": 0
+          },
+          {
+            "stat": "攻击力",
+            "rolls": 0
+          },
+          {
+            "stat": "防御力百分比",
+            "rolls": 0
+          }
+        ],
+        "locked": false,
+        "initial_substat_count": 4
+      },
+      {
+        "position": 3,
+        "set_name": "折枝剑歌",
+        "main_stat": "防御力",
+        "level": 0,
+        "substats": [
+          {
+            "stat": "攻击力",
+            "rolls": 0
+          },
+          {
+            "stat": "防御力百分比",
+            "rolls": 0
+          },
+          {
+            "stat": "暴击率",
+            "rolls": 0
+          },
+          {
+            "stat": "穿透值",
+            "rolls": 0
+          }
+        ],
+        "locked": false,
+        "initial_substat_count": 4
+      },
+      {
+        "position": 3,
+        "set_name": "沧浪行歌",
+        "main_stat": "防御力",
+        "level": 0,
+        "substats": [
+          {
+            "stat": "暴击伤害",
+            "rolls": 0
+          },
+          {
+            "stat": "异常精通",
+            "rolls": 0
+          },
+          {
+            "stat": "暴击率",
+            "rolls": 0
+          }
+        ],
+        "locked": false,
+        "initial_substat_count": 3
+      },
+      {
+        "position": 3,
+        "set_name": "沧浪行歌",
+        "main_stat": "防御力",
+        "level": 0,
+        "substats": [
+          {
+            "stat": "生命值",
+            "rolls": 0
+          },
+          {
+            "stat": "攻击力百分比",
+            "rolls": 0
+          },
+          {
+            "stat": "暴击率",
+            "rolls": 0
+          }
+        ],
+        "locked": false,
+        "initial_substat_count": 3
+      },
+      {
+        "position": 4,
+        "set_name": "云岿如我",
+        "main_stat": "暴击伤害",
+        "level": 15,
+        "substats": [
+          {
+            "stat": "暴击率",
+            "rolls": 1
+          },
+          {
+            "stat": "生命值百分比",
+            "rolls": 0
+          },
+          {
+            "stat": "攻击力百分比",
+            "rolls": 2
+          },
+          {
+            "stat": "异常精通",
+            "rolls": 1
+          }
+        ],
+        "locked": false,
+        "initial_substat_count": 3
+      },
+      {
+        "position": 4,
+        "set_name": "折枝剑歌",
+        "main_stat": "暴击率",
+        "level": 15,
+        "substats": [
+          {
+            "stat": "生命值",
+            "rolls": 1
+          },
+          {
+            "stat": "防御力百分比",
+            "rolls": 0
+          },
+          {
+            "stat": "防御力",
+            "rolls": 1
+          },
+          {
+            "stat": "生命值百分比",
+            "rolls": 3
+          }
+        ],
+        "locked": false,
+        "initial_substat_count": 4
+      },
+      {
+        "position": 5,
+        "set_name": "云岿如我",
+        "main_stat": "物理伤害",
+        "level": 12,
+        "substats": [
+          {
+            "stat": "暴击伤害",
+            "rolls": 0
+          },
+          {
+            "stat": "生命值",
+            "rolls": 1
+          },
+          {
+            "stat": "穿透值",
+            "rolls": 2
+          },
+          {
+            "stat": "攻击力",
+            "rolls": 0
+          }
+        ],
+        "locked": false,
+        "initial_substat_count": 4
+      },
+      {
+        "position": 5,
+        "set_name": "云岿如我",
+        "main_stat": "物理伤害",
+        "level": 0,
+        "substats": [
+          {
+            "stat": "攻击力百分比",
+            "rolls": 0
+          },
+          {
+            "stat": "暴击率",
+            "rolls": 0
+          },
+          {
+            "stat": "攻击力",
+            "rolls": 0
+          }
+        ],
+        "locked": false,
+        "initial_substat_count": 3
+      },
+      {
+        "position": 5,
+        "set_name": "云岿如我",
+        "main_stat": "物理伤害",
+        "level": 15,
+        "substats": [
+          {
+            "stat": "异常精通",
+            "rolls": 3
+          },
+          {
+            "stat": "穿透值",
+            "rolls": 0
+          },
+          {
+            "stat": "生命值百分比",
+            "rolls": 1
+          },
+          {
+            "stat": "生命值",
+            "rolls": 1
+          }
+        ],
+        "locked": false,
+        "initial_substat_count": 4
+      },
+      {
+        "position": 6,
+        "set_name": "云岿如我",
+        "main_stat": "生命值百分比",
+        "level": 0,
+        "substats": [
+          {
+            "stat": "防御力百分比",
+            "rolls": 0
+          },
+          {
+            "stat": "攻击力百分比",
+            "rolls": 0
+          },
+          {
+            "stat": "生命值",
+            "rolls": 0
+          }
+        ],
+        "locked": false,
+        "initial_substat_count": 3
+      },
+      {
+        "position": 6,
+        "set_name": "云岿如我",
+        "main_stat": "生命值百分比",
+        "level": 15,
+        "substats": [
+          {
+            "stat": "生命值",
+            "rolls": 0
+          },
+          {
+            "stat": "暴击率",
+            "rolls": 0
+          },
+          {
+            "stat": "防御力",
+            "rolls": 2
+          },
+          {
+            "stat": "穿透值",
+            "rolls": 2
+          }
+        ],
+        "locked": false,
+        "initial_substat_count": 3
+      }
+    ],
+    "horizon": 2,
+    "engine": "inventory_recursive",
+    "action_mode": "fast",
+    "input_audit": "冻结的绝区零叶瞬光真实盘面 H=2 性能基准。",
+    "input_audit_lines": [
+      "冻结的绝区零叶瞬光真实盘面 H=2 性能基准。"
+    ]
+  }
+}
