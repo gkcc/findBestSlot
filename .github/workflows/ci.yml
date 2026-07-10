@@ -6,7 +6,8 @@ on:
 
 jobs:
   windows-quality:
-    runs-on: windows-latest
+    # Match the supported local linker/SDK baseline instead of drifting to VS 2026.
+    runs-on: windows-2022
     timeout-minutes: 30
     env:
       QT_QPA_PLATFORM: offscreen
