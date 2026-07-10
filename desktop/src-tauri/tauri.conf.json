@@ -34,7 +34,7 @@
     "targets": ["nsis"],
     "windows": {
       "webviewInstallMode": {
-        "type": "downloadBootstrapper",
+        "type": "offlineInstaller",
         "silent": true
       }
     }

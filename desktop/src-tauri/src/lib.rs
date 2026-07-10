@@ -92,6 +92,8 @@ impl BackendConfig {
     fn command(&self) -> Command {
         if let Some(path) = &self.packaged_backend {
             let mut command = Command::new(path);
+            command.env("PYTHONIOENCODING", "utf-8");
+            command.env("PYTHONUTF8", "1");
             if self.uses_bundled_resources {
                 let resource_dir = self
                     .resource_dir
@@ -108,6 +110,8 @@ impl BackendConfig {
         let mut command = Command::new(&self.python_executable);
         command.args(["-m", "gear_optimizer.desktop_backend"]);
         command.current_dir(&self.project_root);
+        command.env("PYTHONIOENCODING", "utf-8");
+        command.env("PYTHONUTF8", "1");
         let source_path = self.project_root.join("src");
         let python_path = match env::var_os("PYTHONPATH") {
             Some(existing) => {

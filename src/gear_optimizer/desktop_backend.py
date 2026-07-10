@@ -14,6 +14,13 @@ from gear_optimizer.desktop_protocol import (
 from gear_optimizer.desktop_service import DesktopService
 
 
+def _configure_standard_streams() -> None:
+    for stream in (sys.stdin, sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            reconfigure(encoding="utf-8", errors="strict")
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Run the local desktop backend over newline-delimited JSON."
@@ -92,6 +99,7 @@ def _run_one_shot(
 
 
 def main(argv: list[str] | None = None) -> int:
+    _configure_standard_streams()
     args = parse_args(argv)
     root = Path(args.root).resolve() if args.root else None
     if args.schema:

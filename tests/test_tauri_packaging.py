@@ -5,6 +5,7 @@ import tomllib
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 TAURI_ROOT = PROJECT_ROOT / "desktop" / "src-tauri"
+WINDOWS_BUILD_SCRIPT = PROJECT_ROOT / "scripts" / "build_tauri_windows.ps1"
 
 
 def test_packaged_tauri_resources_keep_python_data_and_workers_together():
@@ -32,3 +33,25 @@ def test_base_tauri_config_enables_scoped_local_asset_protocol():
 
     cargo = tomllib.loads((TAURI_ROOT / "Cargo.toml").read_text(encoding="utf-8"))
     assert "protocol-asset" in cargo["dependencies"]["tauri"]["features"]
+
+
+def test_windows_installer_embeds_the_offline_webview_runtime():
+    config = json.loads((TAURI_ROOT / "tauri.conf.json").read_text(encoding="utf-8"))
+
+    install_mode = config["bundle"]["windows"]["webviewInstallMode"]
+    assert install_mode == {"type": "offlineInstaller", "silent": True}
+
+
+def test_windows_application_icon_is_packaged():
+    icon = TAURI_ROOT / "icons" / "icon.ico"
+
+    assert icon.stat().st_size > 10_000
+    assert icon.read_bytes()[:4] == b"\x00\x00\x01\x00"
+
+
+def test_windows_build_finds_standard_user_toolchain_locations():
+    script = WINDOWS_BUILD_SCRIPT.read_text(encoding="utf-8")
+
+    assert 'nodejs\\node.exe' in script
+    assert 'npm\\pnpm.cmd' in script
+    assert '.cargo\\bin\\cargo.exe' in script

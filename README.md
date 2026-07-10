@@ -24,7 +24,7 @@ pnpm test
 pnpm build
 ```
 
-Tauri 开发运行需要 Node.js、pnpm、Rust stable 和系统 WebView2：
+Tauri 开发运行需要 Node.js、pnpm、Rust stable 和系统 WebView2。Windows release 构建还需要 Visual Studio 2022 Build Tools 的 C++ 工作负载、Windows 11 SDK，以及 `stable-x86_64-pc-windows-msvc` Rust 工具链：
 
 ```powershell
 cd desktop
@@ -44,7 +44,7 @@ pip install -e ".[dev,desktop,packaging]"
 .\scripts\build_tauri_windows.ps1
 ```
 
-`-SidecarsOnly` 只构建并烟测两个 Python 可执行文件；`-NoBundle` 再编译 Tauri EXE 但不生成安装器；无参数时生成 NSIS 包。这个脚本不会改变 PySide6 默认发布入口。
+`-SidecarsOnly` 只构建并烟测两个 Python 可执行文件；`-NoBundle` 再编译 Tauri EXE 但不生成安装器；无参数时生成内嵌 WebView2 offline installer 的 NSIS 包。离线安装包会比联网 bootstrapper 方案大约多 127MB，但安装和运行都不依赖网络。这个脚本不会改变 PySide6 默认发布入口。
 
 Rust 迁移状态、跨引擎黄金夹具和 H=2 性能门槛见 [docs/tauri_rust_migration.md](docs/tauri_rust_migration.md)。Rust Action EV 在等价与性能门槛全部通过前不会成为默认引擎。
 

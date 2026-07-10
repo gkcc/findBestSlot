@@ -15,6 +15,7 @@ dist/
 build/
 node_modules/
 target/
+desktop/src-tauri/gen/
 .vite/
 *.tsbuildinfo
 gacha-gear-optimizer.spec

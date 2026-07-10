@@ -53,6 +53,7 @@ Assert-CommandSucceeded "PyInstaller availability check"
 
 if (-not $SkipChecks) {
     & $Python.Source @PythonArgs -m pytest -q `
+        (Join-Path $Root "tests\test_desktop_backend.py") `
         (Join-Path $Root "tests\test_desktop_protocol.py") `
         (Join-Path $Root "tests\test_desktop_jobs.py") `
         (Join-Path $Root "tests\test_desktop_service.py") `
@@ -128,6 +129,15 @@ try {
     $env:GEAR_OPTIMIZER_ACTION_WORKER = $WorkerExe
     & $BackendExe --request-file $RequestPath --response-file $ResponsePath
     Assert-CommandSucceeded "Packaged desktop backend workspace check"
+    $StreamRequestText = Get-Content -LiteralPath $RequestPath -Raw -Encoding UTF8 |
+        ConvertFrom-Json |
+        ConvertTo-Json -Depth 6 -Compress
+    $StreamResponseText = $StreamRequestText | & $BackendExe
+    Assert-CommandSucceeded "Packaged desktop backend NDJSON stream check"
+    $StreamResponse = $StreamResponseText | ConvertFrom-Json
+    if (-not $StreamResponse.ok -or -not $StreamResponse.data.workspace) {
+        throw "Packaged desktop backend returned an invalid NDJSON workspace response."
+    }
 }
 finally {
     $env:GEAR_OPTIMIZER_PROJECT_ROOT = $PreviousProjectRoot
@@ -144,34 +154,62 @@ if ($SidecarsOnly) {
     exit 0
 }
 
+$Node = Get-Command node -ErrorAction SilentlyContinue
+if (-not $Node) {
+    $ProgramFilesNode = Join-Path $env:ProgramFiles "nodejs\node.exe"
+    if (Test-Path -LiteralPath $ProgramFilesNode) {
+        $Node = Get-Item -LiteralPath $ProgramFilesNode
+        $NodeDir = Split-Path -Parent $ProgramFilesNode
+        $env:PATH = "$NodeDir;$env:PATH"
+    }
+}
+if (-not $Node) {
+    throw "node was not found. Install Node.js 20+ and run again."
+}
 $Pnpm = Get-Command pnpm -ErrorAction SilentlyContinue
+if (-not $Pnpm) {
+    $UserPnpm = Join-Path $env:APPDATA "npm\pnpm.cmd"
+    if (Test-Path -LiteralPath $UserPnpm) {
+        $Pnpm = Get-Item -LiteralPath $UserPnpm
+        $PnpmDir = Split-Path -Parent $UserPnpm
+        $env:PATH = "$PnpmDir;$env:PATH"
+    }
+}
 if (-not $Pnpm) {
     throw "pnpm was not found. Install Node.js and pnpm 11.7.0, then run again."
 }
+$PnpmExecutable = if ($Pnpm.Source) { $Pnpm.Source } else { $Pnpm.FullName }
 $Cargo = Get-Command cargo -ErrorAction SilentlyContinue
+if (-not $Cargo) {
+    $RustupCargo = Join-Path $env:USERPROFILE ".cargo\bin\cargo.exe"
+    if (Test-Path -LiteralPath $RustupCargo) {
+        $Cargo = Get-Item -LiteralPath $RustupCargo
+        $CargoDir = Split-Path -Parent $RustupCargo
+        $env:PATH = "$CargoDir;$env:PATH"
+    }
+}
 if (-not $Cargo) {
     throw "cargo was not found. Install the Rust toolchain, then run again."
 }
 
 Push-Location $DesktopRoot
 try {
-    & $Pnpm.Source install --frozen-lockfile
+    & $PnpmExecutable install --frozen-lockfile
     Assert-CommandSucceeded "pnpm install"
     if (-not $SkipChecks) {
-        & $Pnpm.Source test
+        & $PnpmExecutable test
         Assert-CommandSucceeded "Tauri frontend tests"
     }
     $TauriArgs = @(
         "tauri",
         "build",
-        "--locked",
         "--config",
         "src-tauri/tauri.bundle.conf.json"
     )
     if ($NoBundle) {
         $TauriArgs += "--no-bundle"
     }
-    & $Pnpm.Source @TauriArgs
+    & $PnpmExecutable @TauriArgs
     Assert-CommandSucceeded "Tauri desktop build"
 }
 finally {
