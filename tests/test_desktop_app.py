@@ -317,7 +317,7 @@ def test_optimizer_window_constructs_key_pyside6_components(monkeypatch, tmp_pat
         assert window.selected_character().id in window.agent_summary_label.text()
         assert window.edit_target_template_button.text() == "编辑目标模板"
         assert window.delete_target_template_button.text() == "隐藏内置目标模板"
-        assert window.delete_target_template_button.isEnabled() == (len(window.characters) > 1)
+        assert window.delete_target_template_button.isEnabled()
         assert "目标模板=计算目标，不保存装备" in window.target_template_summary_label.text()
         assert "期望套装结构" in window.target_template_summary_label.text()
         assert "每位置期望主属性" in window.target_template_summary_label.text()
@@ -336,11 +336,11 @@ def test_optimizer_window_constructs_key_pyside6_components(monkeypatch, tmp_pat
         if window.selected_agent().faction != "未知":
             assert window.selected_agent().faction in window.agent_summary_label.text()
         assert window.selected_character().id in window.agent_summary_label.text()
-        assert window.overview_confirm_label.text() in {"未确认", "已确认"}
+        assert window.overview_confirm_label.text().startswith("当前 ")
         assert window.current_template_combo.currentData() == ""
         assert not window.load_current_template_button.isEnabled()
         assert window.current_table.rowCount() == 0
-        assert not window.confirm_button.isEnabled()
+        assert not hasattr(window, "confirm_button")
         assert not window.save_current_button.isEnabled()
         assert len(window.current_cards) == 6
         assert all(isinstance(card, PieceCard) for card in window.current_cards)
@@ -351,6 +351,7 @@ def test_optimizer_window_constructs_key_pyside6_components(monkeypatch, tmp_pat
         assert window.inventory_card_scroll.widget() is window.inventory_card_host
         assert "库存" in window.inventory_card_status_label.text()
         assert window.target_set_filter.text() == "只看目标套装"
+        assert window.target_main_filter.text() == "只看目标主属性"
         assert window.weak_position_filter.text() == "只看当前弱位"
         assert window.unfinished_filter.text() == "只看未满级胚子"
         assert window.replaceable_filter.text() == "只看可替换当前"
@@ -363,8 +364,8 @@ def test_optimizer_window_constructs_key_pyside6_components(monkeypatch, tmp_pat
             window.result_tabs.tabText(index)
             for index in range(window.result_tabs.count())
         }
-        assert "当前最优/Action EV 需要确认当前装备" in window.overview_guide_label.text()
-        assert "多代理人调律可直接使用空或部分当前盘面" in window.overview_guide_label.text()
+        assert "完整当前盘面可直接计算" in window.overview_guide_label.text()
+        assert "BOX 调律可使用空或部分盘面" in window.overview_guide_label.text()
         assert not window.clear_inventory_filters_button.isEnabled()
         assert not window.copy_inventory_button.isEnabled()
         assert not window.clear_substats_button.isEnabled()
@@ -399,7 +400,7 @@ def test_optimizer_window_constructs_key_pyside6_components(monkeypatch, tmp_pat
         assert window.current_table.rowCount() == 1
         assert window.inventory_table.rowCount() == 0
         assert "该槽位之前为空" in window.progress_label.text()
-        assert window.confirm_button.isEnabled()
+        assert "1/6" in window.statusBar().currentMessage()
         assert window.save_current_button.isEnabled()
         assert not window.copy_inventory_button.isEnabled()
         assert not window.clear_substats_button.isEnabled()
@@ -461,7 +462,7 @@ def test_optimizer_window_constructs_key_pyside6_components(monkeypatch, tmp_pat
         assert window._selected_inventory_source_row() == 0
         assert window.inventory_cards[0].is_selected
         assert f"原物品 {current_item.item_id} 已回到全局库存" in window.progress_label.text()
-        assert window.current_confirmed_digest is None
+        assert not hasattr(window, "current_confirmed_digest")
         assert window.result_tabs.tabText(0) == "调律建议"
         assert window.result_tabs.tabText(1) == "H=2 说明"
         assert window.result_tabs.tabText(2) == "搭配结果"
@@ -689,7 +690,6 @@ def test_optimizer_window_constructs_key_pyside6_components(monkeypatch, tmp_pat
         assert "库存：库存 #1" in upgrade_text
         assert "不等于这件胚子当前已经比已装备件更好" not in upgrade_text
         for method in [
-            "confirm_current",
             "run_best_loadout",
             "run_action_ev",
             "cancel_action_ev",
@@ -810,7 +810,7 @@ def test_invalid_current_file_preserves_last_loaded_board_and_blocks_save(monkey
         assert "当前装备读取失败" in window._context_load_error
         assert window.current_table.rowCount() == 1
         assert window._hidden_table_pieces(window.current_table) == [previous_piece]
-        assert not window.confirm_button.isEnabled()
+        assert not window.best_button.isEnabled()
         assert not window.save_current_button.isEnabled()
 
         window.save_current()
@@ -846,7 +846,7 @@ def test_load_example_current_preserves_partial_board_without_default_fill(monke
 
         assert window.current_table.rowCount() == 1
         assert window._hidden_table_pieces(window.current_table) == partial
-        assert window.current_confirmed_digest is None
+        assert "1/6" in window.statusBar().currentMessage()
     finally:
         window.close()
         app.processEvents()
@@ -1087,7 +1087,7 @@ def test_multi_agent_tuning_button_renders_recommendation_rows(monkeypatch, tmp_
         app.processEvents()
 
 
-def test_multi_agent_tuning_button_does_not_require_confirmed_full_current(monkeypatch, tmp_path):
+def test_multi_agent_tuning_button_allows_partial_current_with_visible_reason(monkeypatch, tmp_path):
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
     monkeypatch.setenv("GEAR_OPTIMIZER_USER_DATA_DIR", str(tmp_path / "user_data"))
     pytest.importorskip("PySide6")
@@ -1105,16 +1105,15 @@ def test_multi_agent_tuning_button_does_not_require_confirmed_full_current(monke
             character,
             [_default_piece(game, character, game.positions[0].id)],
         )
-        window.current_confirmed_digest = None
-
         window._update_action_buttons()
 
         assert not window.best_button.isEnabled()
         assert not window.action_button.isEnabled()
         assert window.portfolio_button.isEnabled()
-        assert "需要先确认当前装备" in window.best_button.toolTip()
-        assert "需要先确认当前装备" in window.action_button.toolTip()
-        assert "不要求确认完整当前装备" in window.portfolio_button.toolTip()
+        assert "只有 1/6 件" in window.best_button.toolTip()
+        assert "无需额外确认" in window.action_button.toolTip()
+        assert "空或部分当前盘面" in window.portfolio_button.toolTip()
+        assert "1/6" in window.statusBar().currentMessage()
 
         window._update_action_buttons(busy=True)
 
@@ -1122,6 +1121,43 @@ def test_multi_agent_tuning_button_does_not_require_confirmed_full_current(monke
         assert not window.action_button.isEnabled()
         assert not window.portfolio_button.isEnabled()
         assert window.portfolio_button.toolTip() == "正在计算中。"
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_complete_current_stays_calculable_after_inventory_change(monkeypatch, tmp_path):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.setenv("GEAR_OPTIMIZER_USER_DATA_DIR", str(tmp_path / "user_data"))
+    pytest.importorskip("PySide6")
+
+    from PySide6.QtWidgets import QApplication
+    from gear_optimizer.pyside6_app import OptimizerWindow, _default_inventory_piece, _default_piece
+
+    app = QApplication.instance() or QApplication([])
+    window = OptimizerWindow(width=1200, height=760)
+    try:
+        game = window.selected_game()
+        character = window.selected_character()
+        current = [_default_piece(game, character, rule.id) for rule in game.positions]
+        inventory = [_default_inventory_piece(game, character, game.positions[0].id)]
+        window.current_table.set_context(game, character, current)
+        window.inventory_table.set_context(game, character, inventory)
+        window._current_changed()
+
+        assert window.best_button.isEnabled()
+        assert window.action_button.isEnabled()
+        assert "无需额外确认" in window.single_action_status_label.text()
+
+        window.inventory_table.add_piece(
+            _default_inventory_piece(game, character, game.positions[-1].id)
+        )
+        window._inventory_changed()
+
+        assert window.best_button.isEnabled()
+        assert window.action_button.isEnabled()
+        assert "无需额外确认" in window.statusBar().currentMessage()
+        assert "确认当前装备" not in window.best_button.toolTip()
     finally:
         window.close()
         app.processEvents()
@@ -1161,7 +1197,7 @@ def test_single_agent_disabled_reason_is_visible_for_empty_current(monkeypatch, 
         assert not window.best_button.isEnabled()
         assert not window.action_button.isEnabled()
         assert "当前装备为空" in window.single_action_status_label.text()
-        assert "BOX 调律可使用空或部分盘面" in window.single_action_status_label.text()
+        assert "BOX 调律仍可使用空盘面" in window.single_action_status_label.text()
         assert "当前装备为空" in window.action_button.toolTip()
     finally:
         window.close()
@@ -1201,10 +1237,9 @@ def test_current_piece_card_can_unequip_to_inventory(monkeypatch, tmp_path):
         assert current_pieces == []
         assert len(inventory_pieces) == 1
         assert inventory_pieces[0].position == current_piece.position
-        assert window.current_confirmed_digest is None
         assert "已卸下" in window.progress_label.text()
         assert window._selected_inventory_source_row() == 0
-        assert not window.confirm_button.isEnabled()
+        assert not window.best_button.isEnabled()
         assert window.portfolio_button.isEnabled()
         assert "current_piece_unequipped" in pyside6_app.ui_runtime_log_path().read_text(encoding="utf-8")
     finally:
@@ -1258,7 +1293,6 @@ def test_portfolio_audit_runs_in_background_and_records_operations(monkeypatch, 
 
         monkeypatch.setattr(pyside6_app, "portfolio_action_rows", slow_portfolio_action_rows)
 
-        window.current_confirmed_digest = None
         window.run_portfolio_audit()
         _process_events_until(app, entered.is_set)
 
@@ -1272,7 +1306,7 @@ def test_portfolio_audit_runs_in_background_and_records_operations(monkeypatch, 
         log_text = pyside6_app.ui_runtime_log_path().read_text(encoding="utf-8")
         assert "portfolio_audit_clicked" in log_text
         assert "portfolio_compute_start" in log_text
-        assert '"current_confirmed": false' in log_text
+        assert '"current_complete": false' in log_text
 
         release.set()
         _process_events_until(
@@ -1318,8 +1352,8 @@ def test_game_selector_is_native_combo_and_contains_zzz(monkeypatch, tmp_path):
         app.processEvents()
         assert window.game_combo.currentData() == "zzz"
         assert "绝区零" in window.game_combo.currentText()
-        assert "多代理人调律可直接使用空或部分当前盘面" in window.progress_label.text()
-        assert "请先确认当前装备" not in window.progress_label.text()
+        assert "BOX 调律可使用空或部分当前盘面" in window.progress_label.text()
+        assert "确认当前装备" not in window.progress_label.text()
     finally:
         window.close()
         app.processEvents()
@@ -1524,7 +1558,6 @@ def test_target_template_switch_preserves_editing_tables(monkeypatch, tmp_path):
         assert window.current_template_combo.currentData()
         assert window.load_current_template_button.isEnabled()
         assert "旧格式只读兼容" in window.inventory_card_status_label.text()
-        assert window.current_confirmed_digest is None
         assert "目标模板已变化" in window.progress_label.text()
         assert window.save_current_button.isEnabled()
         assert not window.rename_current_template_button.isEnabled()
@@ -1782,7 +1815,14 @@ def test_hide_builtin_target_template_removes_it_from_combo(monkeypatch, tmp_pat
         window.game_combo.setCurrentIndex(zzz_index)
         builtin_id = "zzz_starlight_billy"
         base = next(character for character in window.characters if character.id == builtin_id)
-        saved = save_user_target_template(window.selected_game().id, base, "临时目标")
+        billy = next(agent for agent in window.agents if agent.agent_id == builtin_id)
+        saved = save_user_target_template(
+            window.selected_game().id,
+            base,
+            "临时目标",
+            source_character_id=builtin_id,
+            source_agent_id=billy.agent_id,
+        )
         window._reload_target_template_options(builtin_id)
         index = window.character_combo.findData(builtin_id)
         assert index >= 0
@@ -1809,7 +1849,41 @@ def test_hide_builtin_target_template_removes_it_from_combo(monkeypatch, tmp_pat
         app.processEvents()
 
 
-def test_user_target_template_source_does_not_override_selected_agent_storage(monkeypatch, tmp_path):
+def test_last_builtin_target_can_be_hidden_without_cross_agent_fallback(monkeypatch, tmp_path):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.setenv("GEAR_OPTIMIZER_USER_DATA_DIR", str(tmp_path / "user_data"))
+    pytest.importorskip("PySide6")
+
+    from PySide6.QtWidgets import QApplication, QMessageBox
+    from gear_optimizer.pyside6_app import OptimizerWindow
+
+    app = QApplication.instance() or QApplication([])
+    window = OptimizerWindow(width=1000, height=720)
+    try:
+        agent_id = window.selected_agent().agent_id
+        builtin_id = window.selected_character().id
+        assert window.character_combo.count() == 1
+        monkeypatch.setattr(
+            QMessageBox,
+            "question",
+            lambda *_args, **_kwargs: QMessageBox.StandardButton.Yes,
+        )
+
+        window.delete_target_template()
+
+        assert window.selected_agent().agent_id == agent_id
+        assert window.character_combo.findData(builtin_id) < 0
+        assert window._selected_character_is_missing_target()
+        assert window.character_combo.count() == 1
+        assert window.edit_target_template_button.text() == "创建目标模板"
+        assert not window.best_button.isEnabled()
+        assert "缺目标模板" in window.best_button.toolTip()
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_target_template_options_follow_selected_agent(monkeypatch, tmp_path):
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
     monkeypatch.setenv("GEAR_OPTIMIZER_USER_DATA_DIR", str(tmp_path / "user_data"))
     pytest.importorskip("PySide6")
@@ -1825,26 +1899,53 @@ def test_user_target_template_source_does_not_override_selected_agent_storage(mo
         if zzz_index >= 0:
             window.game_combo.setCurrentIndex(zzz_index)
         source_agent = next(agent for agent in window.agents if agent.name == "星徽·比利")
+        ye_agent = next(agent for agent in window.agents if agent.name == "叶瞬光")
         source_template = next(character for character in window.characters if character.id == "zzz_starlight_billy")
-        saved = save_user_target_template(
+        billy_target = save_user_target_template(
             window.selected_game().id,
             source_template.model_copy(update={"name": "比利自定义目标"}),
             "比利自定义目标",
             source_character_id=source_agent.character_preset_id,
             source_agent_id=source_agent.agent_id,
         )
+        ye_target = save_user_target_template(
+            window.selected_game().id,
+            source_template.model_copy(update={"name": "叶瞬光目标"}),
+            "叶瞬光目标",
+            source_character_id="",
+            source_agent_id=ye_agent.agent_id,
+        )
+        window._reload_target_template_options(billy_target.id)
 
-        stale_agent = next(agent for agent in window.agents if agent.name == "叶瞬光")
-        window._selected_agent_id_by_game[window.selected_game().id] = stale_agent.agent_id
-        window._reload_target_template_options(saved.id)
+        window._select_agent(ye_agent)
+        ye_combo_ids = {
+            window.character_combo.itemData(index)
+            for index in range(window.character_combo.count())
+        }
+        assert window.selected_agent().agent_id == ye_agent.agent_id
+        assert window.selected_character().id == ye_target.id
+        assert ye_combo_ids == {ye_target.id}
+        assert billy_target.id not in ye_combo_ids
+        assert window.selected_storage_character_id() == ye_agent.agent_id
 
-        assert window.selected_character().id == saved.id
-        assert window.selected_agent().agent_id == stale_agent.agent_id
-        assert window.selected_storage_character_id() == stale_agent.agent_id
-        assert window.selected_legacy_storage_character_id() == source_agent.character_preset_id
-        window._refresh_agent_selector_summary()
-        assert f"数据归属：{stale_agent.agent_id}" in window.agent_summary_label.text()
-        assert f"目标模板来源：{source_agent.character_preset_id}" in window.agent_summary_label.text()
+        window._select_agent(source_agent)
+        billy_combo_ids = {
+            window.character_combo.itemData(index)
+            for index in range(window.character_combo.count())
+        }
+        assert window.selected_agent().agent_id == source_agent.agent_id
+        assert window.selected_character().id in {source_template.id, billy_target.id}
+        assert billy_combo_ids == {source_template.id, billy_target.id}
+        assert ye_target.id not in billy_combo_ids
+        assert window.selected_storage_character_id() == source_agent.agent_id
+
+        plain_billy = next(agent for agent in window.agents if agent.agent_id == "zzz_billy_kid")
+        window._select_agent(plain_billy)
+        assert window.selected_agent().agent_id == plain_billy.agent_id
+        assert window._selected_character_is_missing_target()
+        assert window.character_combo.count() == 1
+        assert ye_target.id != window.character_combo.currentData()
+        assert window.selected_storage_character_id() == plain_billy.agent_id
     finally:
         window.close()
         app.processEvents()
@@ -3256,6 +3357,121 @@ def test_piece_editor_and_cards_show_revealed_next_substat(monkeypatch):
         dialog.close()
         table.close()
         card.close()
+        app.processEvents()
+
+
+def test_new_inventory_defaults_follow_active_filters(monkeypatch, tmp_path):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.setenv("GEAR_OPTIMIZER_USER_DATA_DIR", str(tmp_path / "user_data"))
+    pytest.importorskip("PySide6")
+
+    from PySide6.QtWidgets import QApplication, QDialog
+    import gear_optimizer.pyside6_app as pyside6_app
+    from gear_optimizer.models import position_key
+    from gear_optimizer.pyside6_app import OptimizerWindow, _default_inventory_piece
+
+    app = QApplication.instance() or QApplication([])
+    window = OptimizerWindow(width=1200, height=760)
+    try:
+        zzz_index = window.game_combo.findData("zzz")
+        window.game_combo.setCurrentIndex(zzz_index)
+        game = window.selected_game()
+        character = window.selected_character()
+        target_position = game.positions[4]
+        target_main = character.preferred_mains_for(target_position.id)[0]
+        seed = _default_inventory_piece(
+            game,
+            character,
+            target_position.id,
+            main_stat=target_main,
+        )
+        window.inventory_table.set_context(game, character, [seed])
+        window._refresh_inventory_filters()
+
+        window.position_filter.setCurrentIndex(
+            window.position_filter.findData(position_key(target_position.id))
+        )
+        window.target_set_filter.setChecked(True)
+        window.target_main_filter.setChecked(True)
+        expected_set = window._ordered_target_set_names()[0]
+
+        candidate = window._new_inventory_piece_from_filters()
+        assert position_key(candidate.position) == position_key(target_position.id)
+        assert candidate.set_name == expected_set
+        assert candidate.main_stat == target_main
+
+        captured = []
+
+        class FakeDialog:
+            piece = None
+
+            def __init__(self, _game, _character, piece, **_kwargs):
+                captured.append(piece)
+
+            def exec(self):
+                return QDialog.DialogCode.Rejected
+
+        monkeypatch.setattr(pyside6_app, "GearPieceEditDialog", FakeDialog)
+        window.add_inventory()
+        assert captured == [candidate]
+
+        second_position = game.positions[1]
+        window.target_set_filter.setChecked(False)
+        window.target_main_filter.setChecked(False)
+        window.position_filter.setCurrentIndex(
+            window.position_filter.findData(position_key(second_position.id))
+        )
+        second_candidate = window._new_inventory_piece_from_filters()
+        assert position_key(second_candidate.position) == position_key(second_position.id)
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_target_main_filter_only_shows_matching_inventory(monkeypatch, tmp_path):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    monkeypatch.setenv("GEAR_OPTIMIZER_USER_DATA_DIR", str(tmp_path / "user_data"))
+    pytest.importorskip("PySide6")
+
+    from PySide6.QtWidgets import QApplication
+    from gear_optimizer.pyside6_app import OptimizerWindow, _default_inventory_piece
+
+    app = QApplication.instance() or QApplication([])
+    window = OptimizerWindow(width=1200, height=760)
+    try:
+        zzz_index = window.game_combo.findData("zzz")
+        window.game_combo.setCurrentIndex(zzz_index)
+        game = window.selected_game()
+        character = window.selected_character()
+        rule = game.positions[4]
+        target_main = character.preferred_mains_for(rule.id)[0]
+        non_target_main = next(stat for stat in rule.main_stats if stat != target_main)
+        target_piece = _default_inventory_piece(
+            game,
+            character,
+            rule.id,
+            main_stat=target_main,
+        )
+        other_piece = _default_inventory_piece(
+            game,
+            character,
+            rule.id,
+            main_stat=non_target_main,
+        )
+        window.inventory_table.set_context(game, character, [target_piece, other_piece])
+        window._refresh_inventory_filters()
+        window._refresh_inventory_view()
+
+        window.target_main_filter.setChecked(True)
+        app.processEvents()
+
+        assert len(window.inventory_cards) == 1
+        visible_row = window.inventory_cards[0].row_index
+        assert window._hidden_table_pieces(window.inventory_table)[visible_row].main_stat == target_main
+        assert "目标主属性" in window.inventory_card_status_label.text()
+        assert window.clear_inventory_filters_button.isEnabled()
+    finally:
+        window.close()
         app.processEvents()
 
 

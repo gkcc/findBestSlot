@@ -604,12 +604,19 @@ def _default_inventory_piece(
     game: GameRules,
     character: CharacterPreset,
     position: str | int,
+    *,
+    set_name: str | None = None,
+    main_stat: str | None = None,
 ) -> GearPiece:
     piece = _default_piece(game, character, position)
-    available = game.available_substats(piece.main_stat)
+    rule = game.position(position)
+    resolved_main = main_stat if main_stat in rule.main_stats else piece.main_stat
+    allowed_sets = game.sets_for_position(position)
+    resolved_set = set_name if set_name in allowed_sets else piece.set_name
+    available = game.available_substats(resolved_main)
     preferred = [
         stat
-        for stat in character.ordered_effective_substats(exclude=piece.main_stat)
+        for stat in character.ordered_effective_substats(exclude=resolved_main)
         if stat in available
     ]
     fill_stats = [stat for stat in available if stat not in preferred]
@@ -619,6 +626,8 @@ def _default_inventory_piece(
     ]
     return piece.model_copy(
         update={
+            "set_name": resolved_set,
+            "main_stat": resolved_main,
             "level": 0,
             "initial_substat_count": 3,
             "substats": substats,
@@ -3384,10 +3393,10 @@ class OptimizerWindow(QMainWindow):
         self.characters: list[CharacterPreset] = []
         self.agents: list[AgentMetadata] = []
         self._selected_agent_id_by_game: dict[str, str] = {}
+        self._selected_target_template_id_by_agent: dict[tuple[str, str], str] = {}
         self._target_template_source_by_id: dict[str, str] = {}
         self._target_template_source_agent_by_id: dict[str, str] = {}
         self.probabilities: list[ProbabilityModel] = []
-        self.current_confirmed_digest: str | None = None
         self._results_stale = True
         self._has_calculated_once = False
         self._last_weakest_label = "-"
@@ -3437,6 +3446,7 @@ class OptimizerWindow(QMainWindow):
 
         self.game_combo = QComboBox()
         self.character_combo = QComboBox()
+        self.character_combo.setToolTip("只显示当前代理人的目标模板；切换代理人会自动切换模板和装备归属。")
         self.probability_combo = QComboBox()
         self.edit_target_template_button = QPushButton("编辑目标模板")
         self.edit_target_template_button.setToolTip(
@@ -3459,7 +3469,7 @@ class OptimizerWindow(QMainWindow):
         self.overview_game_label = QLabel("-")
         self.overview_character_label = QLabel("-")
         self.overview_probability_label = QLabel("-")
-        self.overview_confirm_label = _badge("未确认", muted=True)
+        self.overview_confirm_label = _badge("当前 0 件", muted=True)
         self.overview_inventory_label = _badge("库存 0 件", muted=True)
         self.overview_stale_label = _badge("结果未生成", muted=True)
         self.overview_weakest_label = QLabel("-")
@@ -3468,8 +3478,8 @@ class OptimizerWindow(QMainWindow):
         self.overview_metric_label = QLabel("-")
         self.overview_metric_label.setWordWrap(True)
         self.overview_guide_label = QLabel(
-            "先确认目标模板（位置主属性、套装结构、副属性有效排序），再维护库存与当前装备；"
-            "当前最优/Action EV 需要确认当前装备，多代理人调律可直接使用空或部分当前盘面。"
+            "先选择代理人并维护其目标模板、当前装备和游戏共享库存；"
+            "完整当前盘面可直接计算，BOX 调律可使用空或部分盘面。"
         )
         self.overview_guide_label.setWordWrap(True)
         self.input_audit_label = QLabel("-")
@@ -3480,7 +3490,7 @@ class OptimizerWindow(QMainWindow):
         self.result_config_summary_label = QLabel("-")
         self.result_config_summary_label.setObjectName("MutedText")
         self.result_config_summary_label.setWordWrap(False)
-        self.single_action_status_label = QLabel("单代理状态：等待确认当前装备。")
+        self.single_action_status_label = QLabel("单代理状态：正在检查当前盘面。")
         self.single_action_status_label.setObjectName("MutedText")
         self.single_action_status_label.setWordWrap(True)
         self.result_config_toggle_button = QPushButton("编辑配置")
@@ -3497,7 +3507,6 @@ class OptimizerWindow(QMainWindow):
         self.copy_result_input_audit_button.setToolTip("复制本次输入口径，可直接发给 GPT 或用于复核。")
         self.current_template_combo = QComboBox()
         self.load_current_template_button = QPushButton("载入快照")
-        self.confirm_button = QPushButton("确认当前装备")
         self.save_current_button = QPushButton("保存为快照")
         self.rename_current_template_button = QPushButton("重命名快照")
         self.delete_current_template_button = QPushButton("删除快照")
@@ -3514,6 +3523,7 @@ class OptimizerWindow(QMainWindow):
         self.set_filter = QComboBox()
         self.main_filter = QComboBox()
         self.target_set_filter = QCheckBox("只看目标套装")
+        self.target_main_filter = QCheckBox("只看目标主属性")
         self.weak_position_filter = QCheckBox("只看当前弱位")
         self.unfinished_filter = QCheckBox("只看未满级胚子")
         self.replaceable_filter = QCheckBox("只看可替换当前")
@@ -3550,7 +3560,7 @@ class OptimizerWindow(QMainWindow):
         self.progress_bar.setTextVisible(True)
         self.progress_bar.setMinimumHeight(36)
         self.progress_bar.setFormat("精确计算 0%")
-        self.progress_label = QLabel("当前装备未确认。")
+        self.progress_label = QLabel("正在载入当前盘面。")
         self.progress_label.setObjectName("ProgressTitle")
         self.progress_label.setWordWrap(True)
         self.progress_meter_label = QLabel("")
@@ -3598,6 +3608,7 @@ class OptimizerWindow(QMainWindow):
         self.log = QTextEdit()
         self.log.setReadOnly(True)
         self.log.setVisible(False)
+        self.statusBar().setSizeGripEnabled(False)
         self._log_ui_event(
             "window_init",
             games=[f"{game.name} ({game.id})" for game in self.games],
@@ -3685,20 +3696,21 @@ class OptimizerWindow(QMainWindow):
         inventory_page_layout = QVBoxLayout(inventory_page)
         inventory_group = QGroupBox("背包库存（未装备盘）")
         inventory_layout = QVBoxLayout(inventory_group)
-        filter_layout = QHBoxLayout()
-        filter_layout.addWidget(QLabel("位置"))
-        filter_layout.addWidget(self.position_filter)
-        filter_layout.addWidget(QLabel("套装"))
-        filter_layout.addWidget(self.set_filter)
-        filter_layout.addWidget(QLabel("主属性"))
-        filter_layout.addWidget(self.main_filter)
-        filter_layout.addWidget(self.target_set_filter)
-        filter_layout.addWidget(self.weak_position_filter)
-        filter_layout.addWidget(self.unfinished_filter)
-        filter_layout.addWidget(self.replaceable_filter)
-        filter_layout.addWidget(self.duplicate_filter)
-        filter_layout.addWidget(self.clear_inventory_filters_button)
-        filter_layout.addStretch(1)
+        filter_layout = QGridLayout()
+        filter_layout.addWidget(QLabel("位置"), 0, 0)
+        filter_layout.addWidget(self.position_filter, 0, 1)
+        filter_layout.addWidget(QLabel("套装"), 0, 2)
+        filter_layout.addWidget(self.set_filter, 0, 3)
+        filter_layout.addWidget(QLabel("主属性"), 0, 4)
+        filter_layout.addWidget(self.main_filter, 0, 5)
+        filter_layout.addWidget(self.clear_inventory_filters_button, 0, 6)
+        filter_layout.addWidget(self.target_set_filter, 1, 0, 1, 2)
+        filter_layout.addWidget(self.target_main_filter, 1, 2, 1, 2)
+        filter_layout.addWidget(self.weak_position_filter, 1, 4)
+        filter_layout.addWidget(self.unfinished_filter, 1, 5)
+        filter_layout.addWidget(self.replaceable_filter, 1, 6)
+        filter_layout.addWidget(self.duplicate_filter, 1, 7)
+        filter_layout.setColumnStretch(8, 1)
         inventory_layout.addLayout(filter_layout)
         self.inventory_summary_table.setVisible(False)
         inventory_layout.addWidget(self.inventory_card_status_label)
@@ -3738,10 +3750,6 @@ class OptimizerWindow(QMainWindow):
         self.current_card_grid.setHorizontalSpacing(12)
         self.current_card_grid.setVerticalSpacing(12)
         current_layout.addLayout(self.current_card_grid)
-        current_buttons = QHBoxLayout()
-        current_buttons.addWidget(self.confirm_button)
-        current_buttons.addStretch(1)
-        current_layout.addLayout(current_buttons)
         current_page_layout.addWidget(current_group)
         self.tabs.addTab(current_page, "当前装备")
 
@@ -3876,13 +3884,13 @@ class OptimizerWindow(QMainWindow):
         self.set_filter.currentIndexChanged.connect(lambda _index: self._refresh_inventory_view())
         self.main_filter.currentIndexChanged.connect(lambda _index: self._refresh_inventory_view())
         self.target_set_filter.stateChanged.connect(lambda _state: self._refresh_inventory_view())
+        self.target_main_filter.stateChanged.connect(lambda _state: self._refresh_inventory_view())
         self.weak_position_filter.stateChanged.connect(lambda _state: self._refresh_inventory_view())
         self.unfinished_filter.stateChanged.connect(lambda _state: self._refresh_inventory_view())
         self.replaceable_filter.stateChanged.connect(lambda _state: self._refresh_inventory_view())
         self.duplicate_filter.stateChanged.connect(lambda _state: self._refresh_inventory_view())
         self.clear_inventory_filters_button.clicked.connect(self.clear_inventory_filters)
         self.log_toggle_button.toggled.connect(self._set_log_visible)
-        self.confirm_button.clicked.connect(self.confirm_current)
         self.load_current_template_button.clicked.connect(self.load_current_template)
         self.save_current_button.clicked.connect(self.save_current)
         self.rename_current_template_button.clicked.connect(self.rename_current_template)
@@ -3926,10 +3934,9 @@ class OptimizerWindow(QMainWindow):
         probability_text = self.selected_probability_model().name if self.probabilities else "-"
         current_count = self.current_table.rowCount()
         inventory_count = self.inventory_table.rowCount()
-        confirmed_text = "已确认" if self.current_confirmed_digest else "未确认"
         return (
             f"{game_text} | {agent_text} | 目标 {target_text} | 概率 {probability_text} | "
-            f"当前 {current_count}/6 | 库存 {inventory_count} | {confirmed_text}"
+            f"当前 {current_count}/{len(self.selected_game().positions)} | 库存 {inventory_count}"
         )
 
     def _sync_result_config_visibility(self) -> None:
@@ -4015,11 +4022,6 @@ class OptimizerWindow(QMainWindow):
             for character in base_characters
             if character.id not in hidden_builtin_template_ids
         ]
-        if not visible_base_characters and not user_templates:
-            visible_base_characters = base_characters
-            hidden_builtin_template_ids = set()
-            if hasattr(self, "log"):
-                self.log.append("所有内置目标模板都被隐藏，已临时恢复显示以避免目标列表为空。")
         self.characters = [*visible_base_characters, *user_templates]
         known_template_ids = {character.id for character in [*base_characters, *user_templates]}
         user_template_sources = {
@@ -4044,22 +4046,20 @@ class OptimizerWindow(QMainWindow):
         }
         self._target_template_source_agent_by_id = user_template_source_agents
         self.agents = agent_metadata_with_fallbacks(game.id, base_characters)
-        self.character_combo.blockSignals(True)
-        self.character_combo.clear()
-        for character in self.characters:
-            prefix = "自定义 · " if character.id.startswith("user_") else ""
-            self.character_combo.addItem(f"{prefix}{character.name} ({character.id})", character.id)
         selected_agent_id = self._selected_agent_id_by_game.get(game.id)
         selected_agent = next((agent for agent in self.agents if agent.agent_id == selected_agent_id), None)
-        if selected_agent is not None and self._target_template_for_agent(selected_agent) is None:
-            missing_character = self._ensure_missing_target_template_option(selected_agent)
-            if not selected_character_id or _is_missing_target_template_id(selected_character_id):
-                selected_character_id = missing_character.id
-        if selected_character_id:
-            index = self.character_combo.findData(selected_character_id)
-            if index >= 0:
-                self.character_combo.setCurrentIndex(index)
-        self.character_combo.blockSignals(False)
+        if selected_agent is None and selected_character_id:
+            selected_agent = self._agent_for_target_template_id(selected_character_id)
+        if selected_agent is None:
+            selected_agent = next(
+                (agent for agent in self.agents if self._target_templates_for_agent(agent)),
+                self.agents[0] if self.agents else None,
+            )
+        if selected_agent is None:
+            self.character_combo.clear()
+            return
+        self._selected_agent_id_by_game[game.id] = selected_agent.agent_id
+        self._populate_target_template_combo(selected_agent, selected_character_id)
 
     def _target_template_summary_text(self, character: CharacterPreset) -> str:
         plan = character.active_set_plan()
@@ -4131,22 +4131,101 @@ class OptimizerWindow(QMainWindow):
         else:
             self.delete_target_template_button.setText("隐藏内置目标模板")
             self.delete_target_template_button.setToolTip("从本机下拉列表隐藏这个内置目标模板；不会删除内置配置、库存或当前装备快照。")
-        self.delete_target_template_button.setEnabled(is_user_template or len(self.characters) > 1)
+        self.delete_target_template_button.setEnabled(True)
         self.target_template_summary_label.setText(self._target_template_summary_text(character))
 
     def _selected_character_is_missing_target(self) -> bool:
         return _is_missing_target_template_id(str(self.character_combo.currentData() or ""))
 
+    def _target_template_selection_key(self, agent: AgentMetadata) -> tuple[str, str]:
+        return (self.selected_game().id, agent.agent_id)
+
+    def _target_template_belongs_to_agent(
+        self,
+        character: CharacterPreset,
+        agent: AgentMetadata,
+    ) -> bool:
+        if _is_missing_target_template_id(character.id):
+            return False
+        if character.id == agent.character_preset_id:
+            return True
+        if self._target_template_source_agent_by_id.get(character.id) == agent.agent_id:
+            return True
+        source_character_id = self._target_template_source_by_id.get(character.id, "")
+        return bool(agent.character_preset_id and source_character_id == agent.character_preset_id)
+
+    def _target_templates_for_agent(self, agent: AgentMetadata) -> list[CharacterPreset]:
+        return [
+            character
+            for character in self.characters
+            if self._target_template_belongs_to_agent(character, agent)
+        ]
+
+    def _agent_for_target_template_id(self, character_id: str) -> AgentMetadata | None:
+        character = self._character_by_id(character_id)
+        if character is None:
+            return None
+        return next(
+            (
+                agent
+                for agent in self.agents
+                if self._target_template_belongs_to_agent(character, agent)
+            ),
+            None,
+        )
+
     def _target_template_for_agent(self, agent: AgentMetadata) -> CharacterPreset | None:
-        explicit_id = str(agent.character_preset_id or "")
-        if explicit_id:
-            character = self._character_by_id(explicit_id)
-            if character is not None:
-                return character
-        for character in self.characters:
-            if self._target_template_source_agent_by_id.get(character.id) == agent.agent_id:
-                return character
-        return None
+        templates = self._target_templates_for_agent(agent)
+        remembered_id = self._selected_target_template_id_by_agent.get(
+            self._target_template_selection_key(agent),
+            "",
+        )
+        remembered = next((item for item in templates if item.id == remembered_id), None)
+        if remembered is not None:
+            return remembered
+        explicit = next(
+            (item for item in templates if item.id == agent.character_preset_id),
+            None,
+        )
+        return explicit or (templates[0] if templates else None)
+
+    def _populate_target_template_combo(
+        self,
+        agent: AgentMetadata,
+        preferred_character_id: str | None = None,
+    ) -> None:
+        templates = self._target_templates_for_agent(agent)
+        if not templates:
+            templates = [self._ensure_missing_target_template_option(agent)]
+        template_ids = {character.id for character in templates}
+        selected_id = str(preferred_character_id or "")
+        if selected_id not in template_ids:
+            remembered_id = self._selected_target_template_id_by_agent.get(
+                self._target_template_selection_key(agent),
+                "",
+            )
+            selected_id = remembered_id if remembered_id in template_ids else ""
+        if not selected_id:
+            default_character = self._target_template_for_agent(agent)
+            selected_id = default_character.id if default_character is not None else templates[0].id
+        self.character_combo.blockSignals(True)
+        try:
+            self.character_combo.clear()
+            for character in templates:
+                if _is_missing_target_template_id(character.id):
+                    label = f"缺目标模板：{agent.name} ({agent.agent_id})"
+                else:
+                    prefix = "自定义 · " if character.id.startswith("user_") else ""
+                    label = f"{prefix}{character.name} ({character.id})"
+                self.character_combo.addItem(label, character.id)
+            index = self.character_combo.findData(selected_id)
+            self.character_combo.setCurrentIndex(index if index >= 0 else 0)
+        finally:
+            self.character_combo.blockSignals(False)
+        active_id = str(self.character_combo.currentData() or "")
+        self._selected_target_template_id_by_agent[
+            self._target_template_selection_key(agent)
+        ] = active_id
 
     def _ensure_missing_target_template_option(self, agent: AgentMetadata) -> CharacterPreset:
         missing_id = _missing_target_template_id(agent.agent_id)
@@ -4154,8 +4233,6 @@ class OptimizerWindow(QMainWindow):
         if character is None:
             character = _missing_target_template(self.selected_game(), agent)
             self.characters.append(character)
-        if self.character_combo.findData(missing_id) < 0:
-            self.character_combo.addItem(f"缺目标模板：{agent.name} ({agent.agent_id})", missing_id)
         return character
 
     def selected_agent(self) -> AgentMetadata | None:
@@ -4163,27 +4240,7 @@ class OptimizerWindow(QMainWindow):
             return None
         game_id = self.selected_game().id if self.games else ""
         selected_id = self._selected_agent_id_by_game.get(game_id)
-        for agent in self.agents:
-            if agent.agent_id == selected_id:
-                return agent
-        source_agent_id = self._selected_target_template_source_agent_id()
-        if source_agent_id:
-            for agent in self.agents:
-                if agent.agent_id == source_agent_id:
-                    return agent
-        source_character_id = self._selected_target_template_source_character_id()
-        if source_character_id:
-            for agent in self.agents:
-                if agent.character_preset_id == source_character_id:
-                    return agent
-        character_id = self.character_combo.currentData()
-        for agent in self.agents:
-            if agent.agent_id == character_id and agent.character_preset_id == character_id:
-                return agent
-        for agent in self.agents:
-            if agent.character_preset_id == character_id:
-                return agent
-        return self.agents[0]
+        return next((agent for agent in self.agents if agent.agent_id == selected_id), None)
 
     def _agent_summary_text(self, agent: AgentMetadata | None) -> str:
         if agent is None:
@@ -4247,18 +4304,7 @@ class OptimizerWindow(QMainWindow):
             agent_name=agent.name,
             configured_target_template_id=agent.character_preset_id,
         )
-        character = self._target_template_for_agent(agent)
-        if character is None:
-            character = self._ensure_missing_target_template_option(agent)
-        index = self.character_combo.findData(character.id)
-        if self.character_combo.currentIndex() == index:
-            self._reload_character_context()
-            return
-        self.character_combo.blockSignals(True)
-        try:
-            self.character_combo.setCurrentIndex(index)
-        finally:
-            self.character_combo.blockSignals(False)
+        self._populate_target_template_combo(agent)
         self._reload_character_context()
 
     def open_agent_selector(self) -> None:
@@ -4350,24 +4396,6 @@ class OptimizerWindow(QMainWindow):
         _suppress_transient_popups()
         game = self.selected_game()
         character = self.selected_character()
-        selected_id = self._selected_agent_id_by_game.get(game.id)
-        selected_agent = next((agent for agent in self.agents if agent.agent_id == selected_id), None)
-        if selected_agent is None or selected_agent.character_preset_id != character.id:
-            matching_agent = next(
-                (
-                    agent
-                    for agent in self.agents
-                    if agent.agent_id == character.id and agent.character_preset_id == character.id
-                ),
-                None,
-            )
-            if matching_agent is None:
-                matching_agent = next(
-                    (agent for agent in self.agents if agent.character_preset_id == character.id),
-                    None,
-                )
-            if matching_agent is not None:
-                self._selected_agent_id_by_game[game.id] = matching_agent.agent_id
         storage_character_id = self.selected_storage_character_id()
         load_errors: list[str] = []
         canonical_mode = canonical_inventory_available(game.id)
@@ -4410,7 +4438,6 @@ class OptimizerWindow(QMainWindow):
             inventory_item_ids = [None for _piece in inventory_pieces]
         if load_errors:
             self._context_load_error = "；".join(load_errors)
-            self.current_confirmed_digest = None
             self._clear_loaded_current_snapshot()
             self.log.append(
                 f"数据上下文切换失败，仍保留上一次成功加载的盘面：{self._context_load_error}"
@@ -4439,7 +4466,6 @@ class OptimizerWindow(QMainWindow):
         self._inventory_loaded_storage_id = inventory_source_id
         self.current_table.set_context(game, character, current_pieces, current_item_ids)
         self.inventory_table.set_context(game, character, inventory_pieces, inventory_item_ids)
-        self.current_confirmed_digest = None
         self._last_weakest_label = "-"
         self._last_recommended_action_summary = "尚未计算"
         self._last_main_metric_summary = "-"
@@ -4466,8 +4492,8 @@ class OptimizerWindow(QMainWindow):
         self._refresh_inventory_view()
         self._refresh_agent_selector_summary()
         self._clear_results(
-            "已切换游戏、代理人或目标模板。当前最优/Action EV 需要确认当前装备；"
-            "多代理人调律可直接使用空或部分当前盘面。"
+            "已切换游戏、代理人或目标模板。完整当前盘面可直接计算；"
+            "BOX 调律可使用空或部分当前盘面。"
         )
         self._update_action_buttons()
 
@@ -4480,6 +4506,11 @@ class OptimizerWindow(QMainWindow):
         _suppress_transient_popups()
         game = self.selected_game()
         character = self.selected_character()
+        agent = self.selected_agent()
+        if agent is not None:
+            self._selected_target_template_id_by_agent[
+                self._target_template_selection_key(agent)
+            ] = character.id
         current_pieces = self._hidden_table_pieces(self.current_table)
         inventory_pieces = self._hidden_table_pieces(self.inventory_table)
         self.current_table.set_context(
@@ -4501,7 +4532,6 @@ class OptimizerWindow(QMainWindow):
             if user_inventory_store_path(game.id, self.selected_storage_character_id()).exists()
             else self._inventory_loaded_storage_id or SHARED_INVENTORY_ID
         )
-        self.current_confirmed_digest = None
         self._last_weakest_label = "-"
         self._last_recommended_action_summary = "尚未计算"
         self._last_main_metric_summary = "-"
@@ -4525,8 +4555,7 @@ class OptimizerWindow(QMainWindow):
         self._refresh_inventory_view()
         self._refresh_agent_selector_summary()
         self._clear_results(
-            "目标模板已变化：库存和当前装备未改动；当前最优/Action EV 需要重新确认当前装备，"
-            "多代理人调律可直接使用当前草稿。"
+            "目标模板已变化：库存和当前装备未改动；完整当前盘面可直接重新计算。"
         )
         self._update_action_buttons()
 
@@ -4768,7 +4797,10 @@ class OptimizerWindow(QMainWindow):
         )
 
     def _fallback_target_template_id_after_removal(self, removed_id: str) -> str | None:
-        for character in self.characters:
+        agent = self.selected_agent()
+        if agent is None:
+            return None
+        for character in self._target_templates_for_agent(agent):
             if character.id != removed_id:
                 return character.id
         return None
@@ -4777,16 +4809,7 @@ class OptimizerWindow(QMainWindow):
         character = self.selected_character()
         game = self.selected_game()
         is_user_template = character.id.startswith("user_")
-        fallback_target_id = self.selected_legacy_storage_character_id()
-        if fallback_target_id == character.id:
-            fallback_target_id = self._fallback_target_template_id_after_removal(character.id)
-        if fallback_target_id is None:
-            QMessageBox.information(
-                self,
-                "目标模板",
-                "不能移除最后一个目标模板；至少需要保留一个可计算目标。",
-            )
-            return
+        fallback_target_id = self._fallback_target_template_id_after_removal(character.id)
         if not is_user_template:
             answer = QMessageBox.question(
                 self,
@@ -4890,8 +4913,13 @@ class OptimizerWindow(QMainWindow):
         else:
             self.overview_character_label.setText(self.character_combo.currentText() or "-")
         self.overview_probability_label.setText(self.probability_combo.currentText() or "-")
-        confirmed = self.current_confirmed_digest is not None
-        self._set_badge_text(self.overview_confirm_label, "已确认" if confirmed else "未确认", not confirmed)
+        current_count = self.current_table.rowCount()
+        required_count = len(self.selected_game().positions)
+        self._set_badge_text(
+            self.overview_confirm_label,
+            f"当前 {current_count}/{required_count}",
+            current_count != required_count,
+        )
         self._set_badge_text(
             self.overview_inventory_label,
             f"库存 {self.inventory_table.rowCount()} 件",
@@ -4899,12 +4927,18 @@ class OptimizerWindow(QMainWindow):
         )
         status_text, muted = self._result_status_text()
         self._set_badge_text(self.overview_stale_label, status_text, muted)
+        weak_position = self._current_weak_position_key()
+        self._last_weakest_label = (
+            self.selected_game().position_name(weak_position)
+            if weak_position is not None
+            else "-"
+        )
         self.overview_weakest_label.setText(self._last_weakest_label)
         self.overview_action_label.setText(self._last_recommended_action_summary)
         self.overview_metric_label.setText(self._last_main_metric_summary)
         guide = (
-            "没有结果。先确认目标规则，再维护库存与当前装备；"
-            "当前最优/Action EV 需要确认当前装备，多代理人调律可直接使用空或部分当前盘面。"
+            "没有结果。先选择代理人并维护目标规则、共享库存与当前装备；"
+            "完整当前盘面可直接计算，BOX 调律可使用空或部分盘面。"
         )
         if self._results_stale and self._has_calculated_once:
             guide = "装备、库存或概率模型已变化，旧结果不可作为当前结论，请重新计算。"
@@ -4921,7 +4955,6 @@ class OptimizerWindow(QMainWindow):
         character = self.selected_character()
         agent = self.selected_agent()
         agent_text = agent.name if agent is not None else "未选择代理人"
-        confirmed_text = "已确认" if self.current_confirmed_digest else "未确认"
         current_count = self.current_table.rowCount()
         inventory_count = self.inventory_table.rowCount()
         locked_count = 0
@@ -4956,8 +4989,7 @@ class OptimizerWindow(QMainWindow):
                     "target_template_id": character.id,
                     "probability_model_id": self.selected_probability_model().id,
                     "horizon": horizon,
-                    "current_confirmed": bool(self.current_confirmed_digest),
-                    "current_digest": self.current_confirmed_digest or current_digest,
+                    "current_digest": current_digest,
                     "inventory_digest": inventory_digest,
                 },
                 ensure_ascii=False,
@@ -4969,8 +5001,8 @@ class OptimizerWindow(QMainWindow):
                 f"代理人：{agent_text}；目标模板：{character.name} ({character.id})",
                 f"{self._data_scope_text()}；{self._inventory_scope_text()}",
                 f"游戏/概率模型：{game.name} ({game.id}) / {self.probability_combo.currentText() or '-'}；horizon={horizon}",
-                f"当前装备：{current_count}/{len(game.positions)} 件，{confirmed_text}；库存：{inventory_count} 件，其中未满级 {unfinished_count} 件、锁定 {locked_count} 件",
-                f"输入指纹：{_short_digest(input_digest)}；当前装备指纹：{_short_digest(self.current_confirmed_digest or current_digest)}；库存指纹：{_short_digest(inventory_digest)}",
+                f"当前装备：{current_count}/{len(game.positions)} 件，计算时直接读取当前盘面；库存：{inventory_count} 件，其中未满级 {unfinished_count} 件、锁定 {locked_count} 件",
+                f"输入指纹：{_short_digest(input_digest)}；当前装备指纹：{_short_digest(current_digest)}；库存指纹：{_short_digest(inventory_digest)}",
                 self._target_template_summary_text(character),
             ]
         )
@@ -5451,6 +5483,10 @@ class OptimizerWindow(QMainWindow):
             return False
         if self.target_set_filter.isChecked() and piece.set_name not in self._target_set_names():
             return False
+        if self.target_main_filter.isChecked():
+            preferred_mains = self.selected_character().preferred_mains_for(piece.position)
+            if preferred_mains and piece.main_stat not in preferred_mains:
+                return False
         if self.weak_position_filter.isChecked() and not self._piece_is_current_weak_position(piece):
             return False
         if self.unfinished_filter.isChecked() and piece.level >= self.selected_game().enhancement.max_level:
@@ -5472,6 +5508,7 @@ class OptimizerWindow(QMainWindow):
             check.isChecked()
             for check in [
                 self.target_set_filter,
+                self.target_main_filter,
                 self.weak_position_filter,
                 self.unfinished_filter,
                 self.replaceable_filter,
@@ -5491,6 +5528,7 @@ class OptimizerWindow(QMainWindow):
                 parts.append(f"{label}={combo.currentText()}")
         for text, check in [
             ("目标套装", self.target_set_filter),
+            ("目标主属性", self.target_main_filter),
             ("当前弱位", self.weak_position_filter),
             ("未满级", self.unfinished_filter),
             ("可替换当前", self.replaceable_filter),
@@ -5501,23 +5539,7 @@ class OptimizerWindow(QMainWindow):
         return f"筛选：{'，'.join(parts)}；" if parts else ""
 
     def _refresh_inventory_filter_action_state(self) -> None:
-        has_selected_inventory = self._has_selected_inventory_piece()
-        busy = self._action_busy()
-        writes_ready = not self._context_load_error and self._canonical_inventory_mode
-        has_inventory_piece = self.inventory_table.rowCount() > 0
-        self.copy_inventory_button.setEnabled(not busy and writes_ready and has_selected_inventory)
-        self.clear_substats_button.setEnabled(not busy and writes_ready and has_selected_inventory)
-        self.delete_inventory_button.setEnabled(not busy and writes_ready and has_selected_inventory)
-        self.export_inventory_button.setEnabled(not busy and has_inventory_piece)
-        self.clear_inventory_filters_button.setEnabled(
-            self._inventory_filters_active() and not busy
-        )
-        migration_hint = "旧格式当前为只读兼容；请先点击“迁移为全局库存”。"
-        for card in getattr(self, "inventory_cards", []):
-            card.set_actions_enabled(
-                not busy and writes_ready,
-                migration_hint if not writes_ready and not self._context_load_error else "",
-            )
+        self._update_action_buttons()
 
     def _inventory_source_row_visible_under_filters(self, source_row: int) -> bool:
         pieces = self._hidden_table_pieces(self.inventory_table)
@@ -5538,6 +5560,7 @@ class OptimizerWindow(QMainWindow):
         combos = [self.position_filter, self.set_filter, self.main_filter]
         checks = [
             self.target_set_filter,
+            self.target_main_filter,
             self.weak_position_filter,
             self.unfinished_filter,
             self.replaceable_filter,
@@ -5562,11 +5585,91 @@ class OptimizerWindow(QMainWindow):
         self.progress_label.setText("已清除库存筛选；显示全部库存。")
 
     def _target_set_names(self) -> set[str]:
+        return set(self._ordered_target_set_names())
+
+    def _ordered_target_set_names(self) -> list[str]:
         character = self.selected_character()
         plan = character.active_set_plan()
         if plan is None or plan.is_unrestricted:
-            return {character.target_set}
-        return set(plan.target_sets)
+            return [character.target_set] if character.target_set else []
+        return list(
+            dict.fromkeys(
+                set_name
+                for requirement in plan.requirements
+                for set_name in requirement.set_names
+            )
+        )
+
+    def _new_inventory_piece_from_filters(self) -> GearPiece:
+        game = self.selected_game()
+        character = self.selected_character()
+        position_filter = str(self.position_filter.currentData() or "")
+        set_filter = str(self.set_filter.currentData() or "")
+        main_filter = str(self.main_filter.currentData() or "")
+        weak_position = self._current_weak_position_key() if self.weak_position_filter.isChecked() else ""
+        target_sets = self._ordered_target_set_names()
+
+        for rule in game.positions:
+            key = position_key(rule.id)
+            if position_filter and key != position_filter:
+                continue
+            if weak_position and key != weak_position:
+                continue
+            allowed_sets = game.sets_for_position(rule.id)
+            if set_filter:
+                if set_filter not in allowed_sets:
+                    continue
+                if self.target_set_filter.isChecked() and set_filter not in target_sets:
+                    continue
+                set_candidates = [set_filter]
+            elif self.target_set_filter.isChecked():
+                set_candidates = [name for name in target_sets if name in allowed_sets]
+                if not set_candidates:
+                    continue
+            else:
+                set_candidates = [_default_set_for_position(game, character, rule.id)]
+
+            preferred_mains = [
+                stat
+                for stat in character.preferred_mains_for(rule.id)
+                if stat in rule.main_stats
+            ]
+            if main_filter:
+                if main_filter not in rule.main_stats:
+                    continue
+                if (
+                    self.target_main_filter.isChecked()
+                    and preferred_mains
+                    and main_filter not in preferred_mains
+                ):
+                    continue
+                main_candidates = [main_filter]
+            elif self.target_main_filter.isChecked() and preferred_mains:
+                main_candidates = preferred_mains
+            else:
+                main_candidates = [
+                    _default_piece(game, character, rule.id).main_stat
+                ]
+            return _default_inventory_piece(
+                game,
+                character,
+                rule.id,
+                set_name=set_candidates[0],
+                main_stat=main_candidates[0],
+            ).model_copy(update={"locked": False})
+
+        fallback_position = position_filter or weak_position or position_key(game.positions[0].id)
+        rule = game.position(fallback_position)
+        allowed_sets = game.sets_for_position(rule.id)
+        fallback_set = set_filter if set_filter in allowed_sets else None
+        fallback_main = main_filter if main_filter in rule.main_stats else None
+        return _default_inventory_piece(
+            game,
+            character,
+            rule.id,
+            set_name=fallback_set,
+            main_stat=fallback_main,
+        ).model_copy(update={"locked": False})
 
     def _current_pieces_by_position(self) -> dict[str, GearPiece]:
         return {
@@ -5575,6 +5678,8 @@ class OptimizerWindow(QMainWindow):
         }
 
     def _current_weak_position_key(self) -> str | None:
+        if self.current_table.game is None or self.current_table.character is None:
+            return None
         pieces = self._hidden_table_pieces(self.current_table)
         if not pieces:
             return None
@@ -5800,11 +5905,10 @@ class OptimizerWindow(QMainWindow):
             self._refresh_overview()
 
     def _current_changed(self) -> None:
-        self.current_confirmed_digest = None
         self._clear_loaded_current_snapshot()
         self._highlighted_inventory_source_rows = set()
         self._highlighted_inventory_label = "入选"
-        self._clear_results("当前装备已变化，请重新确认。")
+        self._clear_results("当前装备已变化；旧结果已失效，完整盘面可直接重新计算。")
         self._update_action_buttons()
         self._refresh_current_cards()
         self._refresh_inventory_view()
@@ -6157,6 +6261,9 @@ class OptimizerWindow(QMainWindow):
         payload = self._last_action_progress_payload or {"label": "正在等待计算进度"}
         self._render_action_progress(payload)
 
+    def _current_gear_complete(self) -> bool:
+        return self.current_table.rowCount() == len(self.selected_game().positions)
+
     def _single_agent_action_status(self, busy: bool) -> tuple[str, str]:
         if busy:
             return "单代理状态：正在计算中，当前最优和调律建议暂不可用。", "正在计算中。"
@@ -6172,100 +6279,200 @@ class OptimizerWindow(QMainWindow):
                 f"单代理状态：不可计算，{name} 缺目标模板。请先点击“创建目标模板”配置主属性、套装和副词条目标。",
                 "当前代理人缺目标模板，请先创建目标模板。",
             )
-        if self.current_confirmed_digest is None:
-            current_count = len(self._hidden_table_pieces(self.current_table))
-            required_count = len(self.selected_game().positions)
-            if current_count <= 0:
-                return (
-                    f"单代理状态：不可计算，当前装备为空；单代理当前最优/调律建议需要先录入并确认完整 {required_count} 件当前装备。BOX 调律可使用空或部分盘面。",
-                    "当前装备为空；单角色 Action EV 需要先录入并确认完整当前装备。",
-                )
-            if current_count < required_count:
-                return (
-                    f"单代理状态：不可计算，当前装备只有 {current_count}/{required_count} 件且未确认；请补齐并点击“确认当前装备”。BOX 调律可使用空或部分盘面。",
-                    "当前装备未完整确认；单角色 Action EV 需要先确认当前装备（完整当前盘面）。",
-                )
+        current_count = self.current_table.rowCount()
+        required_count = len(self.selected_game().positions)
+        if current_count <= 0:
             return (
-                "单代理状态：不可计算，当前装备已录入但尚未确认；请点击“确认当前装备”后再计算当前最优或调律建议。",
-                "单角色 Action EV 需要先确认当前装备。",
+                f"单代理状态：当前装备为空，单代理当前最优/调律建议需要完整 {required_count} 件；BOX 调律仍可使用空盘面。",
+                f"当前装备为空；请录入完整 {required_count} 件后直接计算，无需额外确认。",
+            )
+        if current_count != required_count:
+            return (
+                f"单代理状态：当前装备只有 {current_count}/{required_count} 件；补齐后可直接计算。BOX 调律仍可使用部分盘面。",
+                f"当前装备只有 {current_count}/{required_count} 件；补齐后直接计算，无需额外确认。",
             )
         return (
-            "单代理状态：可计算。当前最优和调律建议将使用已确认当前装备作为基线。",
-            "用已确认当前装备作为单角色基线计算。",
+            "单代理状态：可计算。将直接使用当前装备和游戏共享库存，无需额外确认。",
+            "直接使用当前装备和游戏共享库存计算。",
         )
+
+    def _set_button_availability(
+        self,
+        button: QPushButton,
+        enabled: bool,
+        *,
+        enabled_tip: str,
+        disabled_reason: str,
+    ) -> None:
+        button.setEnabled(enabled)
+        message = enabled_tip if enabled else disabled_reason
+        button.setToolTip(message)
+        button.setStatusTip(message)
+        button.setAccessibleDescription(message)
 
     def _update_action_buttons(self, busy: bool = False) -> None:
         busy = busy or self._action_busy()
         context_ready = not self._context_load_error
         has_target_template = not self._selected_character_is_missing_target()
+        current_complete = self._current_gear_complete()
         single_character_enabled = (
-            self.current_confirmed_digest is not None
+            current_complete
             and not busy
             and has_target_template
             and context_ready
         )
+        has_portfolio_target = any(
+            self._target_template_for_agent(agent) is not None for agent in self.agents
+        )
         portfolio_enabled = (
             not busy
             and context_ready
-            and any(self._target_template_for_agent(agent) is not None for agent in self.agents)
+            and has_portfolio_target
         )
-        self.best_button.setEnabled(single_character_enabled)
-        self.action_button.setEnabled(single_character_enabled)
-        self.portfolio_button.setEnabled(portfolio_enabled)
         single_status, single_reason = self._single_agent_action_status(busy)
         self.single_action_status_label.setText(single_status)
-        if busy:
-            self.best_button.setToolTip(single_reason)
-            self.action_button.setToolTip(single_reason)
-            self.portfolio_button.setToolTip("正在计算中。")
-        elif not context_ready:
-            self.best_button.setToolTip(single_reason)
-            self.action_button.setToolTip(single_reason)
-            self.portfolio_button.setToolTip(single_reason)
-        elif not has_target_template:
-            self.best_button.setToolTip(single_reason)
-            self.action_button.setToolTip(single_reason)
-            self.portfolio_button.setToolTip("BOX 调律只会启用已有目标模板的代理人。")
-        elif self.current_confirmed_digest is None:
-            self.best_button.setToolTip(single_reason)
-            self.action_button.setToolTip(single_reason)
-            self.portfolio_button.setToolTip("多代理人调律不要求确认完整当前装备，可使用空或部分当前盘面。")
+        if busy or not context_ready:
+            portfolio_reason = single_reason
+        elif not has_portfolio_target:
+            portfolio_reason = "没有任何代理人配置目标模板，请先为至少一名代理人创建目标模板。"
         else:
-            self.best_button.setToolTip("用已确认当前装备作为单角色基线计算当前最优搭配。")
-            self.action_button.setToolTip("用已确认当前装备作为单角色基线计算调律建议。")
-            self.portfolio_button.setToolTip("多代理人调律可使用已确认、空或部分当前盘面。")
-        self.cancel_action_button.setEnabled(
-            self._action_process is not None or self._portfolio_worker is not None
+            portfolio_reason = "BOX 调律可使用空或部分当前盘面。"
+        self._set_button_availability(
+            self.best_button,
+            single_character_enabled,
+            enabled_tip="直接使用当前装备和游戏共享库存计算当前最优搭配。",
+            disabled_reason=single_reason,
         )
+        self._set_button_availability(
+            self.action_button,
+            single_character_enabled,
+            enabled_tip="直接使用当前装备和游戏共享库存计算单代理人调律建议。",
+            disabled_reason=single_reason,
+        )
+        self._set_button_availability(
+            self.portfolio_button,
+            portfolio_enabled,
+            enabled_tip="多代理人调律可使用空或部分当前盘面。",
+            disabled_reason=portfolio_reason,
+        )
+        cancel_enabled = self._action_process is not None or self._portfolio_worker is not None
         if self._portfolio_worker is not None:
-            self.cancel_action_button.setToolTip("取消当前多代理人调律后台计算。")
+            cancel_tip = "取消当前多代理人调律后台计算。"
         elif self._action_process is not None:
-            self.cancel_action_button.setToolTip("取消当前 Action EV 子进程计算。")
+            cancel_tip = "取消当前 Action EV 子进程计算。"
         else:
-            self.cancel_action_button.setToolTip("")
+            cancel_tip = "当前没有正在运行的计算。"
+        self._set_button_availability(
+            self.cancel_action_button,
+            cancel_enabled,
+            enabled_tip=cancel_tip,
+            disabled_reason=cancel_tip,
+        )
         has_current_piece = self.current_table.rowCount() > 0
         writes_ready = context_ready and self._canonical_inventory_mode
         migration_hint = "旧格式当前为只读兼容；请先点击“迁移为全局库存”。"
-        self.confirm_button.setEnabled(not busy and context_ready and has_current_piece)
         has_current_template = bool(str(self.current_template_combo.currentData() or ""))
-        self.load_current_template_button.setEnabled(not busy and context_ready and has_current_template)
-        self.save_current_button.setEnabled(not busy and context_ready and has_current_piece)
-        self.rename_current_template_button.setEnabled(not busy and writes_ready and has_current_template)
-        self.delete_current_template_button.setEnabled(not busy and writes_ready and has_current_template)
-        self.load_example_button.setEnabled(not busy and context_ready)
-        self.add_inventory_button.setEnabled(not busy and writes_ready)
         has_selected_inventory = self._has_selected_inventory_piece()
         has_inventory_piece = self.inventory_table.rowCount() > 0
-        self.copy_inventory_button.setEnabled(not busy and writes_ready and has_selected_inventory)
-        self.clear_substats_button.setEnabled(not busy and writes_ready and has_selected_inventory)
-        self.delete_inventory_button.setEnabled(not busy and writes_ready and has_selected_inventory)
-        self.migrate_inventory_button.setEnabled(
-            not busy and context_ready and not self._canonical_inventory_mode
+        busy_reason = "正在计算中，暂不能修改数据。"
+        context_reason = (
+            "装备数据读取失败；修复数据文件并重新切换上下文。"
+            if not context_ready
+            else busy_reason
         )
-        self.save_inventory_button.setEnabled(not busy and writes_ready)
-        self.export_inventory_button.setEnabled(not busy and context_ready and has_inventory_piece)
-        self.clear_inventory_filters_button.setEnabled(
-            not busy and context_ready and self._inventory_filters_active()
+        write_reason = (
+            busy_reason
+            if busy
+            else context_reason
+            if not context_ready
+            else migration_hint
+        )
+        self._set_button_availability(
+            self.load_current_template_button,
+            not busy and context_ready and has_current_template,
+            enabled_tip="载入当前代理人的选中装备快照。",
+            disabled_reason=(
+                busy_reason if busy else context_reason if not context_ready else "当前代理人没有可载入的装备快照。"
+            ),
+        )
+        self._set_button_availability(
+            self.save_current_button,
+            not busy and context_ready and has_current_piece,
+            enabled_tip="保存当前代理人的装备快照。迁移前保存旧格式；迁移后保存 item_id loadout。",
+            disabled_reason=(
+                busy_reason if busy else context_reason if not context_ready else "当前装备为空，没有可保存内容。"
+            ),
+        )
+        for button, enabled_tip in [
+            (self.rename_current_template_button, "重命名当前代理人的选中装备快照。"),
+            (self.delete_current_template_button, "删除当前代理人的选中装备快照。"),
+        ]:
+            self._set_button_availability(
+                button,
+                not busy and writes_ready and has_current_template,
+                enabled_tip=enabled_tip,
+                disabled_reason=(
+                    busy_reason
+                    if busy
+                    else context_reason
+                    if not context_ready
+                    else migration_hint
+                    if not self._canonical_inventory_mode
+                    else "当前代理人没有选中的装备快照。"
+                ),
+            )
+        self._set_button_availability(
+            self.load_example_button,
+            not busy and context_ready,
+            enabled_tip="载入示例当前装备，仅覆盖当前页面草稿。",
+            disabled_reason=busy_reason if busy else context_reason,
+        )
+        self._set_button_availability(
+            self.add_inventory_button,
+            not busy and writes_ready,
+            enabled_tip="新增库存件；默认值会继承当前位置、套装和主属性筛选。",
+            disabled_reason=write_reason,
+        )
+        for button, enabled_tip in [
+            (self.copy_inventory_button, "复制选中的库存件。"),
+            (self.clear_substats_button, "清空选中库存件的副属性。"),
+            (self.delete_inventory_button, "删除选中的库存件。"),
+        ]:
+            self._set_button_availability(
+                button,
+                not busy and writes_ready and has_selected_inventory,
+                enabled_tip=enabled_tip,
+                disabled_reason=(write_reason if not writes_ready or busy else "请先选择一件库存。"),
+            )
+        self._set_button_availability(
+            self.migrate_inventory_button,
+            not busy and context_ready and not self._canonical_inventory_mode,
+            enabled_tip="预览并迁移为游戏共享全局库存和代理人 item_id loadout。",
+            disabled_reason=(
+                busy_reason if busy else context_reason if not context_ready else "当前已经是全局库存格式。"
+            ),
+        )
+        self._set_button_availability(
+            self.save_inventory_button,
+            not busy and writes_ready,
+            enabled_tip="刷新并保存游戏共享全局库存。",
+            disabled_reason=write_reason,
+        )
+        self._set_button_availability(
+            self.export_inventory_button,
+            not busy and context_ready and has_inventory_piece,
+            enabled_tip="导出当前游戏的完整库存明细。",
+            disabled_reason=(
+                busy_reason if busy else context_reason if not context_ready else "库存为空，没有可导出内容。"
+            ),
+        )
+        self._set_button_availability(
+            self.clear_inventory_filters_button,
+            not busy and context_ready and self._inventory_filters_active(),
+            enabled_tip="清除全部库存筛选。",
+            disabled_reason=(
+                busy_reason if busy else context_reason if not context_ready else "当前没有启用任何库存筛选。"
+            ),
         )
         self.inventory_card_scroll.setEnabled(not busy and context_ready)
         for card in getattr(self, "current_cards", []):
@@ -6278,19 +6485,19 @@ class OptimizerWindow(QMainWindow):
                 not busy and writes_ready,
                 migration_hint if not writes_ready and context_ready else "",
             )
-        self.save_current_button.setToolTip(
-            "保存当前代理人的装备快照。迁移前保存为旧格式快照；迁移后保存为 item_id loadout。"
-        )
-        for button in [
-            self.rename_current_template_button,
-            self.delete_current_template_button,
-            self.add_inventory_button,
-            self.copy_inventory_button,
-            self.clear_substats_button,
-            self.delete_inventory_button,
-            self.save_inventory_button,
-        ]:
-            button.setToolTip(migration_hint if not writes_ready and context_ready else "")
+        if busy:
+            global_status = "正在计算中；可点击“取消”，数据编辑暂时锁定。"
+        elif not context_ready:
+            global_status = f"当前上下文不可用：{self._context_load_error}"
+        elif not has_target_template:
+            global_status = "当前代理人缺目标模板；请先创建目标模板。库存仍可维护。"
+        elif not current_complete:
+            global_status = f"当前装备 {self.current_table.rowCount()}/{len(self.selected_game().positions)}；补齐后可直接进行单代理计算，BOX 调律仍可用。"
+        elif not self._canonical_inventory_mode:
+            global_status = "单代理计算可用且无需额外确认；库存编辑为旧格式只读，请先迁移为全局库存。"
+        else:
+            global_status = "当前上下文可用；计算直接读取当前装备和游戏共享库存，无需额外确认。"
+        self.statusBar().showMessage(global_status)
 
     def _storage_context_ready_or_report(self) -> bool:
         if not self._context_load_error:
@@ -6328,7 +6535,7 @@ class OptimizerWindow(QMainWindow):
         except Exception as exc:
             warnings.append(str(exc))
         if warnings:
-            self._show_warning("当前装备还不能确认", warnings)
+            self._show_warning("当前装备还不能计算", warnings)
             return None
         return pieces
 
@@ -6360,27 +6567,6 @@ class OptimizerWindow(QMainWindow):
             self._show_warning("库存里有不能计算的装备", warnings)
             return None
         return pieces
-
-    def confirm_current(self) -> None:
-        if not self._storage_context_ready_or_report():
-            return
-        pieces = self._collect_current_or_warn()
-        if pieces is None:
-            return
-        self.current_confirmed_digest = _pieces_digest(pieces)
-        analysis = analyse_current_gear(pieces, self.selected_game(), self.selected_character())
-        self._last_weakest_label = analysis.weakest_position_name or "-"
-        self.progress_label.setText(
-            f"当前装备已确认。最弱位置：{analysis.weakest_position_name or '-'}。"
-        )
-        self._log_ui_event(
-            "current_gear_confirmed",
-            current_count=len(pieces),
-            current_digest=self.current_confirmed_digest,
-            weakest_position=analysis.weakest_position,
-        )
-        self._update_action_buttons()
-        self._refresh_overview()
 
     def load_current_template(self) -> None:
         if not self._storage_context_ready_or_report():
@@ -6678,13 +6864,12 @@ class OptimizerWindow(QMainWindow):
         character = self.selected_character()
         self.current_table.set_context(game, character, current_pieces)
         self.inventory_table.set_context(game, character, inventory_pieces)
-        self.current_confirmed_digest = None
         self._selected_inventory_source_row_value = new_inventory_row
         self._refresh_current_cards()
         self._refresh_inventory_filters()
         self._focus_inventory_source_row(new_inventory_row)
         self._clear_results(
-            "已卸下当前装备。当前最优/Action EV 需要重新确认；多代理人调律可直接使用当前草稿。"
+            "已卸下当前装备。单代理计算需要完整当前盘面；BOX 调律可直接使用当前草稿。"
         )
         self._update_action_buttons()
         self._log_ui_event(
@@ -6706,7 +6891,7 @@ class OptimizerWindow(QMainWindow):
             return
         game = self.selected_game()
         character = self.selected_character()
-        piece = _default_inventory_piece(game, character, game.positions[0].id).model_copy(update={"locked": False})
+        piece = self._new_inventory_piece_from_filters()
         dialog = GearPieceEditDialog(
             game,
             character,
@@ -7054,7 +7239,6 @@ class OptimizerWindow(QMainWindow):
         character = self.selected_character()
         self.current_table.set_context(game, character, current_pieces)
         self.inventory_table.set_context(game, character, inventory_pieces)
-        self.current_confirmed_digest = None
         self._selected_inventory_source_row_value = returned_inventory_row
         self._refresh_current_cards()
         self._refresh_inventory_filters()
@@ -7063,7 +7247,7 @@ class OptimizerWindow(QMainWindow):
         else:
             self._refresh_inventory_view()
         self._clear_results(
-            "已完成当前装备和库存互换。当前最优/Action EV 需要重新确认；多代理人调律可直接使用当前草稿。"
+            "已完成当前装备和库存互换。完整当前盘面可直接重新计算。"
         )
         self._update_action_buttons()
         returned_current_suffix = (
@@ -7231,14 +7415,6 @@ class OptimizerWindow(QMainWindow):
             path=str(output_path),
             piece_count=len(pieces),
         )
-
-    def _ensure_current_still_confirmed(self, pieces: list[GearPiece]) -> bool:
-        if self.current_confirmed_digest != _pieces_digest(pieces):
-            QMessageBox.warning(self, "需要重新确认", "当前装备已变化，请先点击“确认当前装备”。")
-            self.current_confirmed_digest = None
-            self._update_action_buttons()
-            return False
-        return True
 
     def _worker_rows_from_output(self) -> list[dict[str, Any]]:
         if not self._action_output_path:
@@ -7558,11 +7734,11 @@ class OptimizerWindow(QMainWindow):
             QMessageBox.information(self, "缺目标模板", "当前代理人还没有目标模板，请先创建目标模板后再计算。")
             return
         current_pieces = self._collect_current_or_warn()
-        if current_pieces is None or not self._ensure_current_still_confirmed(current_pieces):
+        if current_pieces is None:
             self._log_ui_event(
                 "best_loadout_compute_failed",
                 run_id=best_loadout_run_id,
-                reason="current_gear_invalid_or_unconfirmed",
+                reason="current_gear_invalid_or_incomplete",
             )
             return
         inventory_pieces = self._collect_inventory_or_warn()
@@ -7624,7 +7800,7 @@ class OptimizerWindow(QMainWindow):
             "portfolio_audit_clicked",
             game_id=self.selected_game().id,
             character_id=self.selected_character().id,
-            current_confirmed=self.current_confirmed_digest is not None,
+            current_complete=self._current_gear_complete(),
         )
         current_pieces = self._collect_current_partial_or_warn()
         if current_pieces is None:
@@ -7872,7 +8048,7 @@ class OptimizerWindow(QMainWindow):
             QMessageBox.information(self, "缺目标模板", "当前代理人还没有目标模板，请先创建目标模板后再计算。")
             return
         current_pieces = self._collect_current_or_warn()
-        if current_pieces is None or not self._ensure_current_still_confirmed(current_pieces):
+        if current_pieces is None:
             return
         inventory_pieces = self._collect_inventory_or_warn()
         if inventory_pieces is None:
