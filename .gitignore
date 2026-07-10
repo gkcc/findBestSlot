@@ -13,6 +13,10 @@ htmlcov/
 
 dist/
 build/
+node_modules/
+target/
+.vite/
+*.tsbuildinfo
 gacha-gear-optimizer.spec
 
 user_data/

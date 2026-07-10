@@ -11,6 +11,28 @@
 - 桌面版复用 `src/gear_optimizer` 的核心算法、YAML 配置、库存保存和当前装备保存逻辑。
 - PyInstaller Windows exe 会打包 `src`、`configs`、`examples`、`assets` 和 PySide6 runtime。
 
+## Tauri 维护端（渐进迁移）
+
+`desktop/` 是新的离线 Windows 桌面端。当前迁移范围是代理人、目标模板、当前装备和游戏全局库存；PySide6 仍是默认完整应用，不会被这个阶段性版本替换。
+
+前端检查：
+
+```powershell
+cd desktop
+pnpm install
+pnpm test
+pnpm build
+```
+
+Tauri 开发运行需要 Node.js、pnpm、Rust stable 和系统 WebView2：
+
+```powershell
+cd desktop
+pnpm tauri dev
+```
+
+Tauri 通过标准输入输出启动 `python -m gear_optimizer.desktop_backend`，不监听本地端口。开发时可用 `GEAR_OPTIMIZER_PYTHON` 指定 Python 路径；打包版本将使用随应用分发的 backend sidecar。
+
 ## 使用方式
 
 进入应用后默认主视角是“总览”：
